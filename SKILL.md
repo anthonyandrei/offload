@@ -87,8 +87,18 @@ The task prompt must state, in this order: the task, the exact files it owns, an
 that it must not touch any other file, the frozen paths if any, and the gate command so the
 worker can check itself before finishing.
 
-`--model` defaults to `gemini-3.7-flash-high`. Use `gemini-3.1-pro-high` for a task that needs
-harder reasoning than the default model handles well.
+`--model` is always `gemini-3.7-flash-high`. There is no escalation target inside `agy` worth
+reaching for. On DeepSWE (2026-08-20) it scores 65% pass@1, against 47% for 3.6-flash and 36%
+for 3.5-flash, and no Gemini pro model has been measured at all. The Claude models `agy` exposes
+are 4.6-era builds; the nearest measured relatives, `claude-opus-4.8` at 59% and `claude-sonnet-5`
+at 54%, both score below the default.
+
+If a task proves too hard for this model, that is a signal to pull the task back to the
+orchestrator, not to shop for another model. Step 5 already stops after one retry.
+
+To re-check this choice later, compare `agy models` against
+[deepswe.datacurve.ai](https://deepswe.datacurve.ai/). Those pass@1 figures come from DeepSWE's
+own harness, not from `agy`, so treat them as a ranking rather than a prediction.
 
 ## Step 3 — Collect
 
