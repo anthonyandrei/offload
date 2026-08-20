@@ -3,19 +3,26 @@
 `offload` is a Claude Code skill. It sends implementation work to `agy` (the Antigravity CLI,
 running Gemini models) instead of running the work in Claude Code itself.
 
-Claude Code stays the orchestrator. It plans the work, writes an acceptance check for each part,
-dispatches `agy` workers, checks their work against the check, and reports the result. It does
-not repeat what a worker says about its own work. It checks the work.
+Claude Code stays the orchestrator. It splits the work, decides which files each piece touches
+via a scout worker, writes the acceptance criteria for each piece, turns criteria into an
+executable test via a gate-author worker, dispatches implementers, and judges the result — itself
+for a handful of mechanical checks, via a reviewer worker for a first pass on anything with no
+pass/fail command. It does not repeat what a worker says about its own work. It checks the work,
+or checks what an independent second worker said about it.
 
 ## What this does not do
 
-This is not a general multi-agent framework. It does not do read-only research fan-out — many
-workers answering a question with no file changes. Use a different tool for that.
+This is not a general multi-agent framework. It does not do open-ended research fan-out with no
+acceptance criteria at all. Every worker `offload` dispatches is answering to a gate — a command,
+or written criteria a reviewer judges the diff against.
 
-It does not sandbox a worker's filesystem access. `agy`'s `--add-dir` flag grants a worker access
-to a directory. It does not confine the worker to that directory. Nothing in this skill can stop
-a worker from editing a file it was not assigned. The skill catches this after the fact, by
-comparing the git diff to the assignment, and reports it. It cannot prevent it.
+It does not sandbox an `accept-edits` worker's filesystem access. `agy`'s `--add-dir` flag grants
+a worker access to a directory. It does not confine the worker to that directory. Nothing in this
+skill can stop a gate-author or implementer from editing a file it was not assigned. The skill
+catches this after the fact, by comparing the git diff to the assignment, and reports it. It
+cannot prevent it. Scout and reviewer workers run in `agy`'s `--mode plan` instead, which is a
+real guarantee — confirmed by direct test, a worker in that mode asked to create a file produces
+a plan artifact and writes nothing to the working tree.
 
 ## Requirements
 
@@ -48,17 +55,24 @@ skill is one file of instructions for Claude Code to follow. It runs no code of 
 Every task `offload` dispatches carries exactly one gate — a way to check the work, not trust it.
 
 **Machine gate.** A command that exits 0 when the work is correct, usually a test. The
-orchestrator writes the test itself, before dispatch, and marks it frozen — the worker may not
-edit it. A test the worker writes to prove its own work proves nothing, because the worker can
-weaken the assertion the moment it is inconvenient.
+orchestrator writes the acceptance criteria; a gate-author worker turns them into the test file,
+at a path the orchestrator names. Before the test is frozen, the orchestrator red-checks it — runs
+it against the untouched tree and requires a non-zero exit, so a tautology or an already-passing
+test is caught by an exit code, not a read — then reads the file itself, because a red check alone
+cannot tell a well-formed test from one that asserts the wrong thing. Only then is it frozen; the
+implementer may not edit it.
 
-Example: the task is "make `parse_date` handle a two-digit year." The orchestrator writes
-`test_two_digit_year` first, marks `tests/test_parser.py` frozen, and dispatches the worker to
-make it pass.
+Example: the task is "make `parse_date` handle a two-digit year." The orchestrator writes the
+criterion, a gate-author worker writes `test_two_digit_year` in `tests/test_parser.py`, the
+orchestrator confirms it fails against the current code and reads it, then freezes the file and
+dispatches the implementer to make it pass.
 
 **Diff gate.** For work with no natural pass/fail command — documentation, configuration, a
-rewrite. The orchestrator writes the acceptance criteria as plain sentences, then reads the
-finished diff and judges it against them.
+rewrite. The orchestrator writes the acceptance criteria as plain sentences. A reviewer worker —
+never the implementer — reads the finished diff against them and returns a verdict per criterion,
+each `pass` backed by a verbatim quote from the diff. The orchestrator greps that quote against
+the real diff; a match closes the loop without a read, a criterion that fails, hedges, or quotes
+something that doesn't match sends the orchestrator to read the diff itself.
 
 Example: the task is "rewrite the install section so it matches the current flags." The
 orchestrator's criteria: every flag named in the section must exist in `--help` output, and no
@@ -120,7 +134,18 @@ These came from building this skill. They may save you the same debugging.
   be folded into one "failed."** A timeout is often worth retrying with more time. A crash usually
   is not.
 - **`--add-dir` grants access to a directory. It does not confine a worker to it.** There is no
-  flag that restricts which files inside the workspace a worker can touch.
+  flag that restricts which files inside the workspace a worker can touch. `--mode plan` is
+  different — it is a real restriction, not an assignment. Confirmed by direct test: a worker in
+  `--mode plan` told to create a file produces a plan artifact instead and writes nothing to the
+  working tree.
+- **`--json-schema` composes with `--output-format json`.** Confirmed by direct test. The parsed,
+  schema-validated object appears in a separate `structured_output` field on the result — parse
+  that field, not `response`. `response` still carries the model's conversational text and can
+  include a stray duplicate of the same JSON as loose text.
+- **`--effort` is not an independent flag on the flash models — it's baked into the model name.**
+  `--model gemini-3.7-flash-high --effort low` errors with "conflicts with --effort=low". Pick the
+  effort tier by picking `gemini-3.7-flash-low` / `-medium` / `-high` directly; don't pass
+  `--effort` alongside one of those model names.
 
 ## License
 
