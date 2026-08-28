@@ -127,8 +127,9 @@ Once every scout has returned (or fallen back — Step 6), reconcile:
 - Write the final acceptance criteria per task now, in prose, even for machine-gated tasks —
   Step 2's gate-author needs them.
 
-This is judgment. Nothing downstream checks whether the split itself is right — a wrong split
-produces tasks that each pass their own gate while the assembled result is still broken.
+This is judgment, and it is the one place in this skill with nothing checking it. A wrong split —
+a requirement dropped, a task boundary drawn wrong — produces tasks that each pass their own gate
+while the assembled result is still broken. Nothing downstream catches that.
 
 ## Step 2 — Author gates
 
@@ -328,20 +329,20 @@ Label every line one of three ways:
 - **Claimed** — the worker said it in its `response` text and nothing checked it. State it, but
   do not present it as fact.
 
-## Limits, stated plainly
+## Limits
 
 - **`--add-dir` grants access. It does not confine.** No flag stops an `accept-edits` worker from
-  editing a file outside its assignment. `--mode plan` is a real guarantee for scout and reviewer —
-  confirmed by direct test, it refuses to write at all — but gate-author and implementer still run
-  `accept-edits`, and Step 5's audit catches an ownership problem after the fact, not before. A
-  clean starting tree (Precondition 3) is what makes an ownership violation recoverable with
-  `git checkout -- <file>`.
-- **There is no gate outside a git repository.** If the target has no `.git`, refuse rather than
-  fall back to a weaker check.
+  editing a file outside its assignment. Gate-author and implementer run `accept-edits`, so Step
+  5's audit catches an ownership problem after the fact, not before. A clean starting tree
+  (Precondition 3) is what makes an ownership violation recoverable with
+  `git checkout -- <file>`. `--mode plan` carries the guarantee instead, for the two roles that
+  have it: see Roles and models.
+- **A writing worker has no gate outside a git repository.** Precondition 2 refuses rather than
+  falling back to a weaker check. An all-`--mode plan` run has nothing to gate this way and runs
+  anywhere.
 - **A worker can dispatch nothing further.** `offload` is one level of delegation. No worker —
   scout, gate-author, implementer, or reviewer — may spawn its own workers. This skill's
   self-guard at the top exists for exactly that case.
-- **The split itself has no gate.** Every check in this skill is local to one task. A wrong
-  decomposition — a requirement dropped, a task boundary drawn wrong — produces tasks that each
-  pass their own gate while the assembled result is still broken. Nothing downstream catches this;
-  Step 1's finalize-the-split judgment is what stands between the plan and that failure mode.
+- **The split itself has no gate.** Every check in this skill is local to one task. Step 1's
+  finalize-the-split judgment is the only thing standing between a wrong decomposition and a run
+  where every task passes.
