@@ -55,6 +55,9 @@ skillshare sync
 ```
 
 `--track` keeps the `.git` history, so `skillshare update offload` pulls new versions later.
+Skillshare prefixes a tracked repo's folder with an underscore to hold it outside its normal sync
+loop, so the skill lands at `_offload/` and you invoke it as `_offload`, not `offload`. Edits made
+in place get clobbered on the next pull; change things upstream instead.
 
 **Option B: copy the file**
 
@@ -89,6 +92,35 @@ Example: the task is "rewrite the install section so it matches the current flag
 orchestrator's criteria: every flag named in the section must exist in `--help` output, and no
 flag in `--help` output relevant to install is missing from the section.
 
+## How it gets offered
+
+You shouldn't have to remember this skill exists. Two pieces of text make Claude Code raise it on
+its own.
+
+The skill's description names two shapes it watches for. One is an implementation split: work that
+breaks into three or more independent tasks, each with its own gate, in a clean git repo. The other
+is a review, audit, lint, or check that fans out over a lot of files. Either shape loads the skill.
+
+Loading it is not the same as running it. `Preconditions` says to offer first. State what would get
+dispatched, then ask. Once per session, and a no settles it for that session.
+
+That part needs its own line, because a description can say when a skill is relevant but not how
+you want to be treated about it. One line in `~/.claude/CLAUDE.md`:
+
+```markdown
+## Skill precedence
+- Work `_offload` fits: offer it once, then let a no stand for the rest of the session.
+```
+
+Keep the two separate. The description holds the triggers; the line holds the disposition. If the
+line starts restating triggers you have two places to update and they will drift.
+
+Notice early, shape late. A plan built for `agy` workers is a worse plan for doing the work
+yourself, so the offer should come before the plan gets detailed, not after.
+
+None of this is enforced. It's a nudge and a nudge can be missed. You'll notice the times it works
+and you won't notice the times it should have fired.
+
 ## The hook (optional)
 
 `hooks/offload-ask.sh` is a Claude Code `PreToolUse` hook. It fires just before Claude Code calls
@@ -96,8 +128,14 @@ flag in `--help` output relevant to install is missing from the section.
 the execution phase to `agy` workers. Answer no, and nothing changes: the plan proceeds as normal.
 Answer yes, and the plan gains a dispatch spec before you approve it.
 
-The hook is optional. Without it, invoke the skill directly by asking for it, or by saying
-"offload this" once a plan exists.
+The hook is the deterministic version of the offer above. The description-based offer is a
+suggestion the model can miss; the hook fires every time, whether or not the work suits offloading.
+It's worth installing if you already run plan mode with permissions, since it hangs off
+`ExitPlanMode` and costs you nothing on any other tool call. Skip it if you'd rather be asked only
+when it makes sense.
+
+Without the hook, invoke the skill directly by asking for it, or by saying "offload this" once a
+plan exists.
 
 The hook needs [`jq`](https://jqlang.org) to parse its input. If `jq` is missing, the hook does
 nothing and plan mode works exactly as it does without it. A missing dependency never blocks plan
