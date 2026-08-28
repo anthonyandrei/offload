@@ -2,8 +2,11 @@
 name: offload
 description: Use when the user wants execution handed to another vendor's CLI agents instead of
   running it here — "offload this", "run this on agy", "use gemini subagents to execute", or
-  after answering yes to the offload question at the end of planning. Dispatches parallel
-  headless agy workers, gates their output, and reports what was proven versus claimed.
+  after answering yes to the offload question at the end of planning. Also reach for it
+  unprompted, to offer this route, when work splits into three or more independently gated
+  tasks in a clean git repository, or when the user asks for a review, audit, lint, or check
+  that fans out across many files. Dispatches parallel headless agy workers, gates their
+  output, and reports what was proven versus claimed.
 ---
 
 # offload
@@ -24,7 +27,15 @@ worker said about it.
 
 ## Preconditions
 
+**Offer before you dispatch.** When you reached this skill on your own rather than being asked
+for it, put the choice to the user first: say what you would dispatch and ask whether to offload
+it. Ask once per session. A no settles it — run the work yourself, and let the subject rest for
+the rest of the session.
+
 Check these before you dispatch anything. Refuse and state the failing check if any fails.
+Checks 2 and 3 apply to a run that dispatches any `accept-edits` worker — a gate-author or an
+implementer. A run built entirely of `--mode plan` workers, an audit fan-out, waives both: a
+worker that cannot write leaves nothing to audit and nothing to roll back.
 
 1. **`agy` is on the machine.** Try `agy` on `PATH` first. If that fails, try
    `~/.local/bin/agy`. If neither runs, refuse and tell the user to install `agy`.
