@@ -1,7 +1,7 @@
 ---
 name: offload
 description: Use when the user wants execution handed to another vendor's CLI agents instead of
-  running it here — "offload this", "run this on agy", "use gemini subagents to execute", or
+  running it here. Triggers include "offload this", "run this on agy", "use gemini subagents to execute", or
   after answering yes to the offload question at the end of planning. Also reach for it
   unprompted, to offer this route, when work splits into three or more independently gated
   tasks in a clean git repository, or when the user asks for a review, audit, lint, or check
@@ -11,16 +11,19 @@ description: Use when the user wants execution handed to another vendor's CLI ag
 
 # offload
 
-If you are running as an `agy` worker, stop. Do not use this skill. Return your answer to your
-orchestrator. `offload` dispatches workers — scouts, gate-authors, implementers, reviewers. None
-of them dispatch further workers of their own.
+If you are `agy`, stop here. This applies both when this skill dispatched you as a worker and when
+you are a top-level `agy` session that happened to load this file. Return worker results to your
+orchestrator. `agy` is the worker role this skill exists to dispatch to. Every step below assumes
+an orchestrator that is not `agy`. Any other agent that can read this file and run shell commands
+can orchestrate, including Claude Code, Codex CLI, and similar agents. `offload` dispatches scouts,
+gate-authors, implementers, and reviewers. None dispatch further workers.
 
 ## What this skill does
 
 `offload` sends work to `agy` (the Antigravity CLI, running Gemini models) in four worker roles.
 You stay the orchestrator. You decide how the work splits, write the acceptance criteria for each
-piece, and read the small number of things that require judgment. Everything mechanical —
-repo discovery, gate authoring, the code itself, first-pass diff review — goes to a worker.
+piece, and read the small number of things that require judgment. Workers handle repo discovery,
+gate authoring, the code itself, and first-pass diff review.
 
 You do not relay what a worker says about its own work. You check it, or you check what a second
 worker said about it.
@@ -29,13 +32,12 @@ worker said about it.
 
 **Offer before you dispatch.** When you reached this skill on your own rather than being asked
 for it, put the choice to the user first: say what you would dispatch and ask whether to offload
-it. Ask once per session. A no settles it — run the work yourself, and let the subject rest for
-the rest of the session.
+it. Ask once per session. A no settles it. Run the work yourself for the rest of the session.
 
 Check these before you dispatch anything. Refuse and state the failing check if any fails.
-Checks 2 and 3 apply to a run that dispatches any `accept-edits` worker — a gate-author or an
-implementer. A run built entirely of `--mode plan` workers, an audit fan-out, waives both: a
-worker that cannot write leaves nothing to audit and nothing to roll back.
+Checks 2 and 3 apply to a run that dispatches any `accept-edits` worker, such as a gate-author or
+an implementer. A run built entirely of `--mode plan` workers, such as an audit fan-out, waives
+both. A worker that cannot write leaves nothing to audit and nothing to roll back.
 
 1. **`agy` is on the machine.** Try `agy` on `PATH` first. If that fails, try
    `~/.local/bin/agy`. If neither runs, refuse and tell the user to install `agy`.
@@ -54,23 +56,23 @@ worker that cannot write leaves nothing to audit and nothing to roll back.
 | implementer | 3 | `gemini-3.7-flash-high` | `accept-edits` | Do the task. |
 | reviewer | 4 | `gemini-3.7-flash-high` | `plan` | Judge a diff against your criteria, one verdict per criterion, diff-gated tasks only. |
 
-`--mode plan` makes `agy` refuse to write — confirmed by direct test: asked to create a file, it
-produces a plan artifact and touches nothing in the working tree. Scout and reviewer use it
+`--mode plan` makes `agy` refuse to write. A direct test asked it to create a file and confirmed
+that it produced a plan artifact without touching the working tree. Scout and reviewer use it
 because neither should ever be capable of changing code, not just unlikely to. Gate-author and
 implementer keep `accept-edits`, because writing files is the job.
 
-Scout runs on the cheapest model in the fleet. Its job is repo discovery, not reasoning, and if
-its file list is wrong, the mechanical ownership check in Step 5 catches the fallout — the model
-choice is cheap to be wrong about. `gate-author`, `implementer`, and `reviewer` stay on
+Scout runs on the cheapest model in the fleet. Its job is repo discovery, not reasoning. If its
+file list is wrong, the mechanical ownership check in Step 5 catches the fallout. The model choice
+is cheap to be wrong about. `gate-author`, `implementer`, and `reviewer` stay on
 `gemini-3.7-flash-high`, for the reason given at the end of Step 3: on DeepSWE it is the strongest
 model `agy` exposes, by a wide margin.
 
-## Step 1 — Split and scout
+## Step 1: Split and scout
 
 ### Provisional split
 
 Break the work into provisional tasks: a slug and a one-sentence description of what each should
-accomplish. Do not assign files yet — that is what scouting is for. If you already know two tasks
+accomplish. Do not assign files yet. Scouting determines their file lists. If you already know two tasks
 will collide on a file, note it now; the scout wave will confirm or correct it.
 
 ### The two gates
@@ -79,19 +81,19 @@ Decide, per task, which gate applies. Exactly one of the two:
 
 **Machine gate.** A command that exits 0 when the work is correct. Authored in Step 2 by a
 gate-author worker, from criteria you write here, then red-checked and read by you before it is
-frozen. A test the implementer writes to prove its own work proves nothing — the same is true of
-a test the implementer's sibling gate-author wrote if nothing checks it, which is why Step 2 exists.
+frozen. A test the implementer writes to prove its own work proves nothing. The same is true of a
+test written by the implementer's sibling gate-author if nothing checks it. That is why Step 2 exists.
 
-**Diff gate.** For work with no natural pass/fail command — prose, documentation, configuration, a
-reorganization. Write the acceptance criteria as plain sentences now. A reviewer worker judges the
+**Diff gate.** Use this for work with no natural pass/fail command, such as prose, documentation,
+configuration, or a reorganization. Write the acceptance criteria as plain sentences now. A reviewer worker judges the
 finished diff against them in Step 5; you read the diff yourself only when the reviewer's verdict
 doesn't hold up.
 
-There is no third option. Work that is neither testable nor diffable — pure research with no file
-changes — is out of scope for this skill.
+There is no third option. Pure research with no file changes is out of scope because it is neither
+testable nor diffable.
 
 For a machine-gated task, also decide: **is this task behavior-preserving?** A refactor's test
-should pass before the change and after it. Record yes/no per task — Step 2's red check is waived
+should pass before the change and after it. Record yes/no per task. Step 2's red check is waived
 when the answer is yes.
 
 ### Scout
@@ -114,22 +116,22 @@ SCOUT_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"t
 
 Confirmed by direct test: `--json-schema` composes with `--output-format json` and adds a
 `structured_output` field holding the validated object, separate from `response`. Read
-`structured_output`, not `response` — `response` can carry a stray duplicate of the same JSON as
+Read `structured_output`, not `response`. `response` can carry a stray duplicate of the same JSON as
 loose text.
 
 ### Finalize the split
 
-Once every scout has returned (or fallen back — Step 6), reconcile:
+Once every scout has returned or fallen back under Step 6, reconcile:
 
 - Two tasks whose file lists overlap do not run in parallel. Serialize them.
 - A file list that contradicts your provisional split (a task touching far more or less than
   expected) is a signal to resplit, not to ignore.
-- Write the final acceptance criteria per task now, in prose, even for machine-gated tasks —
+- Write the final acceptance criteria per task now, in prose, even for machine-gated tasks.
   Step 2's gate-author needs them.
 
-This is judgment, and it is the one place in this skill with nothing checking it. A wrong split —
-a requirement dropped, a task boundary drawn wrong — produces tasks that each pass their own gate
-while the assembled result is still broken. Nothing downstream catches that.
+This is judgment, and it is the one place in this skill with nothing checking it. A wrong split can
+drop a requirement or draw a task boundary incorrectly. Each task may pass its own gate while the
+assembled result remains broken. Nothing downstream catches that.
 
 ## Step 2 — Author gates
 
@@ -167,8 +169,9 @@ For each gate-author that reports `SUCCESS` (three-outcome model, same as Step 4
 
 ## Step 3 — Dispatch implementers
 
-One `Bash` call per worker, `run_in_background: true`. Dispatch every implementer before you
-collect any of them.
+One non-blocking background call per worker. Claude Code's `Bash` tool takes
+`run_in_background: true`; use whatever your harness offers for the same thing. Dispatch every
+implementer before you collect any of them.
 
 ```bash
 "$AGY" -p "<task prompt>" \
@@ -301,7 +304,7 @@ verdict from being reported as if they carried the same weight as your own.
 | worker | gate | provenance | result | files |
 |--------|------|------------|--------|-------|
 | parser | pytest tests/test_parser.py | agy+red+read | ✓ 12/12 | as assigned (scout) |
-| render | pytest tests/test_render.py | opus (fallback) | ✓ 8/8 | ⚠ +1 stray |
+| render | pytest tests/test_render.py | orchestrator (fallback) | ✓ 8/8 | ⚠ +1 stray |
 | docs   | diff                        | agy+grep      | △ judged | as assigned (scout) |
 
 ### render — ownership violation
@@ -316,16 +319,16 @@ pass: 3/3 criteria, all quotes matched. No escalation.
 - "also improved error messages"
 ```
 
-Provenance values: `opus` (you did it), `agy+red+read` (gate-author, validated by you),
-`agy+grep` (reviewer, quotes matched, you didn't open the diff), `agy→opus` (reviewer escalated,
-you judged it), and `opus (fallback)` for anything that degraded per Step 6.
+Provenance values: `orchestrator` (you did it), `agy+red+read` (gate-author, validated by you),
+`agy+grep` (reviewer, quotes matched, you didn't open the diff), `agy→orchestrator` (reviewer
+escalated, you judged it), and `orchestrator (fallback)` for anything that degraded per Step 6.
 
 Label every line one of three ways:
 
 - **Proven** — a command ran and you read its exit code or output.
 - **Judged** — a diff gate. Say who judged it, using the provenance values above. If a reviewer's
   verdict escalated to you and you are running as a lighter model than the one that planned this
-  task, mark the line `NEEDS-OPUS-REVIEW` so the user knows to check it themselves.
+  task, mark the line `NEEDS-STRONGER-REVIEW` so the user knows to check it themselves.
 - **Claimed** — the worker said it in its `response` text and nothing checked it. State it, but
   do not present it as fact.
 
@@ -340,9 +343,8 @@ Label every line one of three ways:
 - **A writing worker has no gate outside a git repository.** Precondition 2 refuses rather than
   falling back to a weaker check. An all-`--mode plan` run has nothing to gate this way and runs
   anywhere.
-- **A worker can dispatch nothing further.** `offload` is one level of delegation. No worker —
-  scout, gate-author, implementer, or reviewer — may spawn its own workers. This skill's
-  self-guard at the top exists for exactly that case.
+- **A worker can dispatch nothing further.** `offload` is one level of delegation. See the
+  self-guard at the top.
 - **The split itself has no gate.** Every check in this skill is local to one task. Step 1's
   finalize-the-split judgment is the only thing standing between a wrong decomposition and a run
   where every task passes.

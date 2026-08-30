@@ -1,10 +1,12 @@
 # offload
 
-`offload` is a Claude Code skill. It sends work to `agy` (the Antigravity CLI, running Gemini
-models) instead of running it in Claude Code itself.
+`offload` is a skill for CLI coding agents. It sends work to `agy` (the Antigravity CLI, running
+Gemini models) instead of running it in whatever agent you're already sitting in.
 
-Claude Code stays the orchestrator. It never repeats what a worker says about its own work. It
-checks the work, or checks what a second independent worker said about it.
+Whatever agent loads this skill stays the orchestrator: Claude Code, Codex CLI, anything that can
+read a `SKILL.md` file and run shell commands. Anything except `agy`. `agy` is the worker here, not
+the orchestrator too. The orchestrator never repeats what a worker says about its own work. It
+checks the work, or checks what a second worker said about it.
 
 Four worker roles split the labor:
 
@@ -37,7 +39,9 @@ artifact and writes nothing to the working tree.
 
 ## Requirements
 
-- [Claude Code](https://claude.com/claude-code).
+- A CLI coding agent that can load a `SKILL.md` file and run shell commands. This includes Claude
+  Code, Codex CLI, and similar agents. `agy` is the worker this skill dispatches, so it cannot run
+  the skill as its orchestrator.
 - [`agy`](https://antigravity.google), the Antigravity CLI. `offload` looks for it on `PATH`
   first, then at `~/.local/bin/agy`.
 
@@ -65,8 +69,9 @@ in place get clobbered on the next pull. Change things upstream instead.
 
 **Option B: copy the file**
 
-Copy `SKILL.md` into `~/.claude/skills/offload/SKILL.md`. There is nothing else to install. The
-skill is one file of instructions for Claude Code to follow. It runs no code of its own.
+Copy `SKILL.md` into your agent's skills directory. For Claude Code, use
+`~/.claude/skills/offload/SKILL.md`. There is nothing else to install. The skill is one file of
+instructions for your agent to follow. It runs no code of its own.
 
 ## The two gates
 
@@ -99,7 +104,7 @@ every flag named in the section must exist in `--help` output, and no install-re
 
 ## How it gets offered
 
-You shouldn't have to remember this skill exists. Two pieces of text make Claude Code raise it on
+You shouldn't have to remember this skill exists. Two pieces of text make your agent raise it on
 its own.
 
 The skill's description names two shapes it watches for. One is an implementation split: work that
@@ -110,7 +115,8 @@ Loading it is not the same as running it. `Preconditions` says to offer first. S
 dispatched, then ask. Once per session, and a no settles it for that session.
 
 That part needs its own line. A description can say when a skill is relevant, but it can't say how
-you want to be treated about it. One line in `~/.claude/CLAUDE.md`:
+you want to be treated about it. Add one line to whatever file your agent loads every session.
+Use `~/.claude/CLAUDE.md` for Claude Code and `AGENTS.md` for agents that read that instead:
 
 ```markdown
 ## Skill precedence
@@ -126,9 +132,10 @@ yourself, so the offer should come before the plan gets detailed, not after.
 None of this is enforced. It's a nudge and a nudge can be missed. You'll notice the times it works
 and you won't notice the times it should have fired.
 
-## The hook (optional)
+## The hook (Claude Code only, optional)
 
-`hooks/offload-ask.sh` is a Claude Code `PreToolUse` hook. It fires just before Claude Code calls
+`hooks/offload-ask.sh` is a Claude Code `PreToolUse` hook, so it only works if Claude Code is your
+orchestrator. There's no equivalent for other agents yet. It fires just before Claude Code calls
 `ExitPlanMode`, the moment a plan is about to be shown for approval, and asks whether to offload
 the execution phase to `agy` workers. Answer no and nothing changes, the plan proceeds as normal.
 Answer yes and the plan gains a dispatch spec before you approve it.
