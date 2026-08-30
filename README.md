@@ -8,7 +8,7 @@ read a `SKILL.md` file and run shell commands. Anything except `agy`. `agy` is t
 the orchestrator too. The orchestrator never repeats what a worker says about its own work. It
 checks the work, or checks what a second worker said about it.
 
-Four worker roles split the labor:
+Five worker roles split the labor:
 
 | Role | Job |
 |---|---|
@@ -16,24 +16,25 @@ Four worker roles split the labor:
 | gate-author | Turns the orchestrator's acceptance criteria into a test file. |
 | implementer | Does the task. |
 | reviewer | Judges a finished diff against the criteria. Can't write. |
+| researcher | Investigates a bounded question with concrete evidence. Can't write. |
 
 The orchestrator still decides how the work splits and what "correct" means for each piece. That
 judgment has no gate behind it, so it stays put. Everything downstream goes to a worker and then
 gets checked: a red run and a read before a gate-author's test is trusted, an exit code for the
-implementer's result, a grep against a quoted line before a reviewer's verdict is trusted.
+implementer's result, a grep against a quoted line before a reviewer's verdict is trusted, and direct evidence checks and sampling for research findings.
 
 ## What this does not do
 
 This is not a general multi-agent framework. It won't do open-ended research fan-out with no
-acceptance criteria. Every worker it dispatches answers to a gate: a command, or written criteria
-a reviewer judges the diff against.
+acceptance criteria. Every worker it dispatches answers to a gate or an evidence-backed verification protocol: a machine-gate command, written criteria
+a reviewer judges the diff against, or a bounded read-only research/audit assignment with evidence citations subject to risk-based verification.
 
 It does not sandbox a writing worker's filesystem access. `agy`'s `--add-dir` grants a worker
 access to a directory. It does not confine the worker to it. Nothing in this skill can stop a
 gate-author or implementer from editing a file it was not assigned. The skill catches that after
 the fact by comparing the git diff to the assignment, and reports it. It cannot prevent it.
 
-Scouts and reviewers run under `--mode plan` instead. That one is a real restriction, not an
+Scouts, reviewers, and researchers run under `--mode plan` instead. That one is a real restriction, not an
 assignment. Confirmed by direct test: a worker in that mode told to create a file produces a plan
 artifact and writes nothing to the working tree.
 
@@ -50,8 +51,9 @@ Two more apply only to a run that dispatches a writing worker, a gate-author or 
 - A git repository. There is no way to check a writing worker's changes without git.
 - A clean working tree. `offload` can't tell your uncommitted changes from a worker's.
 
-A run built entirely of `--mode plan` workers waives both. An audit fan-out writes nothing, so
-there is nothing to check and nothing to roll back. It runs anywhere.
+Only all-plan research/audit runs waive Git and clean-tree preconditions. Every gate-author or
+implementer run retains them. An audit fan-out writes nothing, so there is nothing to check and
+nothing to roll back. It runs anywhere.
 
 ## Install
 
@@ -73,10 +75,13 @@ Copy `SKILL.md` into your agent's skills directory. For Claude Code, use
 `~/.claude/skills/offload/SKILL.md`. There is nothing else to install. The skill is one file of
 instructions for your agent to follow. It runs no code of its own.
 
-## The two gates
+## The execution gates and research lane
 
-Every task `offload` dispatches carries exactly one gate: a way to check the work instead of
-trusting it.
+Every task `offload` dispatches carries a check instead of trusting worker assertions.
+
+### Writing tasks: the two gates
+
+For tasks that create or edit code or files, choose exactly one of two gates:
 
 **Machine gate.** A command that exits 0 when the work is correct, usually a test. The
 orchestrator writes the acceptance criteria; a gate-author worker turns them into a test file at a
@@ -101,6 +106,25 @@ something that doesn't match sends the orchestrator to read the diff itself.
 Example: the task is "rewrite the install section so it matches the current flags." The criteria:
 every flag named in the section must exist in `--help` output, and no install-relevant flag in
 `--help` output is missing from the section.
+
+### Read-only tasks: bounded research/audit lane
+
+For codebase investigations, audits, or invariant checks that make no changes to files.
+
+A research assignment declares:
+1. Exactly one bounded question.
+2. An allowed scope of files or directories.
+3. Evidence expectations (file paths with line numbers/ranges or runnable reproduction commands).
+4. An explicit non-mutation rule (read-only investigation, no file creation/edits, no nested workers).
+
+The worker runs `gemini-3.7-flash-high` in `--mode plan` with a JSON schema returning a stable lane ID, lane kind, bounded question, findings, overall status, and uncertainty.
+
+The verification flow directly checks findings instead of trusting claims:
+- Rejects evidence outside the declared scope and inspects worker-supplied commands before running them.
+- Confirms each priority, then directly checks every high-priority claim against code or command output.
+- Samples lower-priority claims, leaves unsupported claims unverified, and records per-finding provenance.
+
+Open-ended research without bounded questions, scope, and evidence expectations is out of scope.
 
 ## How it gets offered
 

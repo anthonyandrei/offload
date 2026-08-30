@@ -41,7 +41,7 @@ fi
 
 touch "$marker"
 
-reason='Before calling ExitPlanMode, ask the user with AskUserQuestion: "Offload execution to agy subagents instead of running it here?" If they say yes, revise the plan file to add an offload dispatch spec first — for each task: a provisional description for scouting, one gate (a machine-gate command a gate-author worker will author and you will red-check and read, or written diff-review criteria a reviewer worker will judge), and any frozen paths — following the offload skill. If they say no, or a plan is not the right fit for offloading, leave the plan as it is. Then call ExitPlanMode again either way.'
+reason='Before calling ExitPlanMode, ask the user with AskUserQuestion: "Offload execution to agy subagents instead of running it here?" If they say yes, revise the plan file to add an offload dispatch spec first — for writing tasks: a provisional description for scouting, one gate (a machine-gate command a gate-author worker will author and you will red-check and read, or written diff-review criteria a reviewer worker will judge), and frozen paths; for research/audit tasks: a stable lane ID, lane kind, bounded question, allowed scope, evidence expectations, and an explicit non-mutation rule — following the offload skill. If they say no, or a plan is not the right fit for offloading, leave the plan as it is. Then call ExitPlanMode again either way.'
 
 jq -n --arg reason "$reason" '{
   hookSpecificOutput: {
