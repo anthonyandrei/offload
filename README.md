@@ -1,183 +1,251 @@
 # offload
 
-`offload` is a skill for CLI coding agents. It sends work to `agy` (the Antigravity CLI, running
-Gemini models) instead of running it in whatever agent you're already sitting in.
+`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless `agy` subagent workers (the Antigravity CLI, running Gemini models).
 
-Whatever agent loads this skill stays the orchestrator: Claude Code, Codex CLI, anything that can
-read a `SKILL.md` file and run shell commands. Anything except `agy`. `agy` is the worker here, not
-the orchestrator too. The orchestrator never repeats what a worker says about its own work. It
-checks the work, or checks what a second worker said about it.
+Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Code, Codex CLI, or any agent that can read instructions and run shell commands. `agy` is the worker, not the orchestrator. The orchestrator never accepts worker claims at face value. It verifies work mechanically through test gates, git diff ownership checks, verbatim quote matching, independent citation auditing, and direct repository checks.
 
-Five worker roles split the labor:
+Offload's online-research workflow is adapted from Asa by Achibukz, used with permission. Do not publish a private repository URL, branch, commit, screenshots, or copied text.
 
-| Role | Job |
-|---|---|
-| scout | Reads the repo, reports which files a task would touch. Can't write. |
-| gate-author | Turns the orchestrator's acceptance criteria into a test file. |
-| implementer | Does the task. |
-| reviewer | Judges a finished diff against the criteria. Can't write. |
-| researcher | Investigates a bounded question with concrete evidence. Can't write. |
+## Worker safety and containment
 
-The orchestrator still decides how the work splits and what "correct" means for each piece. That
-judgment has no gate behind it, so it stays put. Everything downstream goes to a worker and then
-gets checked: a red run and a read before a gate-author's test is trusted, an exit code for the
-implementer's result, a grep against a quoted line before a reviewer's verdict is trusted, and direct evidence checks and sampling for research findings.
-
-## What this does not do
-
-This is not a general multi-agent framework. It won't do open-ended research fan-out with no
-acceptance criteria. Every worker it dispatches answers to a gate or an evidence-backed verification protocol: a machine-gate command, written criteria
-a reviewer judges the diff against, or a bounded read-only research/audit assignment with evidence citations subject to risk-based verification.
-
-It does not sandbox a writing worker's filesystem access. `agy`'s `--add-dir` grants a worker
-access to a directory. It does not confine the worker to it. Nothing in this skill can stop a
-gate-author or implementer from editing a file it was not assigned. The skill catches that after
-the fact by comparing the git diff to the assignment, and reports it. It cannot prevent it.
-
-Scouts, reviewers, and researchers run under `--mode plan` instead. That one is a real restriction, not an
-assignment. Confirmed by direct test: a worker in that mode told to create a file produces a plan
-artifact and writes nothing to the working tree.
+- **`--mode plan` is a behavioral hint, not a write barrier.** Direct testing showed that plan-mode workers can write files. Never rely on `--mode plan` alone to protect live repository files.
+- **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at a live repository tree.
+- **Filesystem isolation.** Research workflows run inside disposable workspaces outside the live repository. Workers receive only scoped snapshots of declared files, keeping live repository files untouched.
+- **Mechanical verification.** Execution workflows require a clean git working tree, frozen path checks, automated test gates, and mechanical ownership diffs (`comm -23`).
+- **Prohibition on nested dispatch.** Assignments instruct workers not to dispatch nested workers.
 
 ## Requirements
 
-- A CLI coding agent that can load a `SKILL.md` file and run shell commands. This includes Claude
-  Code, Codex CLI, and similar agents. `agy` is the worker this skill dispatches, so it cannot run
-  the skill as its orchestrator.
-- [`agy`](https://antigravity.google), the Antigravity CLI. `offload` looks for it on `PATH`
-  first, then at `~/.local/bin/agy`.
+- A CLI coding agent that can read skills and run shell commands (Claude Code, Codex CLI, or similar).
+- [`agy`](https://antigravity.google), the Antigravity CLI, available on `PATH` or at `~/.local/bin/agy`.
+- For execution workflows: a git repository with a clean working tree (`git status --porcelain` is empty). Research workflows run in disposable workspaces.
 
-Two more apply only to a run that dispatches a writing worker, a gate-author or an implementer:
+## Installation
 
-- A git repository. There is no way to check a writing worker's changes without git.
-- A clean working tree. `offload` can't tell your uncommitted changes from a worker's.
-
-Only all-plan research/audit runs waive Git and clean-tree preconditions. Every gate-author or
-implementer run retains them. An audit fan-out writes nothing, so there is nothing to check and
-nothing to roll back. It runs anywhere.
-
-## Install
-
-**Option A: [skillshare](https://github.com/runkids/skillshare)**
+### Option A: skillshare
 
 ```bash
 skillshare install anthonyandrei/offload --track
 skillshare sync
 ```
 
-`--track` keeps the `.git` history, so `skillshare update offload` pulls new versions later.
-Skillshare prefixes a tracked repo's folder with an underscore to hold it outside its normal sync
-loop, so the skill lands at `_offload/` and you invoke it as `_offload`, not `offload`. Edits made
-in place get clobbered on the next pull. Change things upstream instead.
+The `--track` flag keeps git history so `skillshare update offload` can pull updates. Skillshare places tracked repositories under an underscore prefix, so the skill installs at `_offload/` and is invoked as `_offload`.
 
-**Option B: copy the file**
+### Option B: copy the entire skill directory
 
-Copy `SKILL.md` into your agent's skills directory. For Claude Code, use
-`~/.claude/skills/offload/SKILL.md`. There is nothing else to install. The skill is one file of
-instructions for your agent to follow. It runs no code of its own.
+Copy the whole skill directory into your agent's skills folder:
 
-## The execution gates and research lane
+```bash
+cp -R /path/to/offload ~/.claude/skills/offload
+```
 
-Every task `offload` dispatches carries a check instead of trusting worker assertions.
+Because `offload` contains mode documents in `modes/` and helper scripts in `scripts/`, you must copy the entire directory rather than a single file.
 
-### Writing tasks: the two gates
+## Router and mode selection
 
-For tasks that create or edit code or files, choose exactly one of two gates:
+Root `SKILL.md` is a lightweight router that resolves how a task runs. It routes tasks into three mode documents:
 
-**Machine gate.** A command that exits 0 when the work is correct, usually a test. The
-orchestrator writes the acceptance criteria; a gate-author worker turns them into a test file at a
-path the orchestrator names. Before the test is frozen, the orchestrator red-checks it: runs it
-against the untouched tree and requires a non-zero exit, so a tautology or an already-passing test
-gets caught by an exit code, not a read. Then it reads the file, because a red check alone can't
-tell a well-formed test from one that asserts the wrong thing. Only then is the file frozen, and
-the implementer may not edit it.
+1. **Explicit mode override.** Honor explicit user requests specifying `execution`, `repo-research`, or `web-research`.
+2. **Research-backed mutations.** When a code change depends on external research, route to `modes/web-research.md` first to gather evidence and audit citations. Pass the audited summary to `modes/execution.md` for implementation.
+3. **Direct mutations.** Route code or file changes directly to `modes/execution.md`.
+4. **Local read-only questions.** Route questions answerable from local repository files to `modes/repo-research.md`.
+5. **External read-only questions.** Route questions requiring current web facts or external documentation to `modes/web-research.md`.
+6. **Mixed local and external questions.** Route questions needing both local files and web evidence to `modes/web-research.md` with a declared repository snapshot.
 
-Example: the task is "make `parse_date` handle a two-digit year." The orchestrator writes the
-criterion, a gate-author writes `test_two_digit_year` in `tests/test_parser.py`, the orchestrator
-confirms it fails against the current code and reads it, then freezes the file and dispatches the
-implementer to make it pass.
+Single factual lookups stay local with the orchestrator and are not offloaded.
 
-**Diff gate.** For work with no natural pass/fail command: documentation, configuration, a
-rewrite. The orchestrator writes the acceptance criteria as plain sentences. A reviewer worker,
-never the implementer, reads the finished diff against them and returns a verdict per criterion.
-Each `pass` carries a verbatim quote from the diff. The orchestrator greps that quote against the
-real diff; a match closes the loop without a read. A criterion that fails, hedges, or quotes
-something that doesn't match sends the orchestrator to read the diff itself.
+## Worker roles
 
-Example: the task is "rewrite the install section so it matches the current flags." The criteria:
-every flag named in the section must exist in `--help` output, and no install-relevant flag in
-`--help` output is missing from the section.
+| Role | Mode | Default model | Job |
+|---|---|---|---|
+| scout | Execution | `gemini-3.7-flash-low` | Discovers repository-relative file paths touched by provisional tasks. |
+| gate-author | Execution | `gemini-3.7-flash-high` | Authors executable test files from acceptance criteria. |
+| implementer | Execution | `gemini-3.7-flash-high` | Modifies owned code files to satisfy gates. |
+| reviewer | Execution | `gemini-3.7-flash-high` | Evaluates diffs adversarially against criteria for diff-gated tasks. |
+| researcher | Research | `gemini-3.7-flash-high` | Collects structured findings for assigned evidence angles or bounded local scopes. |
+| synthesizer | Web research | `gemini-3.7-flash-high` | Builds claim ledgers, resolves conflicts, and drafts answers. |
+| auditor | Web research | `gemini-3.7-flash-high` | Independently verifies citation URLs and claims against live sources. |
 
-### Read-only tasks: bounded research/audit lane
+The live smoke comparison retained Flash for every role. The proposed Pro split did not complete
+its mandatory synthesis stage, while the all-Flash control completed synthesis and citation audit
+with four supported claims. The recorded comparison is in
+[`tests/live-smoke-comparison.md`](tests/live-smoke-comparison.md).
 
-For codebase investigations, audits, or invariant checks that make no changes to files.
+## Workflows
 
-A research assignment declares:
-1. Exactly one bounded question.
-2. An allowed scope of files or directories.
-3. Evidence expectations (file paths with line numbers/ranges or runnable reproduction commands).
-4. An explicit non-mutation rule (read-only investigation, no file creation/edits, no nested workers).
+### Execution workflow (`modes/execution.md`)
 
-The worker runs `gemini-3.7-flash-high` in `--mode plan` with a JSON schema returning a stable lane ID, lane kind, bounded question, findings, overall status, and uncertainty.
+Used for code and file modifications across independent gated tasks.
 
-The verification flow directly checks findings instead of trusting claims:
-- Rejects evidence outside the declared scope and inspects worker-supplied commands before running them.
-- Confirms each priority, then directly checks every high-priority claim against code or command output.
-- Samples lower-priority claims, leaves unsupported claims unverified, and records per-finding provenance.
+1. **Split and scout.** Break work into provisional tasks. Dispatch parallel scouts under `--mode plan` with a JSON schema to identify touched files. If tasks overlap on files, serialize them.
+2. **Assign gates.** Every task receives exactly one gate:
+   - **Machine gate.** An automated test command exiting 0 on success. A gate-author worker writes the test. The orchestrator runs a red check against the untouched tree to verify failure, reads the test code to confirm intent, and commits the test to freeze it.
+   - **Diff gate.** Plain-text criteria for tasks without test commands (such as documentation or configuration changes). A reviewer worker evaluates the diff adversarially, returning verbatim quotes from the diff for each passed criterion. The orchestrator greps quotes against the real diff.
+3. **Dispatch implementers.** Dispatch implementers in parallel from a clean git tree with explicit owned files, frozen paths, and gate commands.
+4. **Mechanical verification.**
+   - Ownership check: compare modified files against assigned files using `comm -23`:
+     ```bash
+     { git diff --name-only; git status --porcelain | awk '{print $2}'; } | sort -u > touched.txt
+     printf '%s\n' "${OWNED[@]}" | sort -u > owned.txt
+     comm -23 touched.txt owned.txt
+     ```
+   - Frozen paths check: run `git diff --quiet -- <frozen paths>` to confirm frozen tests remained untouched.
+   - Gate command: run the machine test command or verify reviewer diff quotes.
 
-Open-ended research without bounded questions, scope, and evidence expectations is out of scope.
+### Repository research workflow (`modes/repo-research.md`)
 
-## How it gets offered
+Used for bounded local codebase investigations, audits, and invariant checks without mutating files.
 
-You shouldn't have to remember this skill exists. Two pieces of text make your agent raise it on
-its own.
+1. **Assignment specification.** Every assignment declares four items:
+   - One bounded question.
+   - Allowed scope of files or directories.
+   - Evidence expectations (file paths with line numbers or reproducible commands).
+   - Explicit non-mutation rule.
+2. **Filesystem isolation.** Create a disposable workspace. Copy only declared scope paths into a snapshot directory. Run the worker pointed at the snapshot directory.
+3. **Verification protocol.** Run read-only orchestrator checks against the live repository:
+   - Reject citations outside declared scope.
+   - Check all high-priority findings directly in live files (`orchestrator+checked`).
+   - Sample medium- and low-priority findings (`orchestrator+sampled`).
+   - Mark unsupported claims as unverified (`agy+unverified`).
 
-The skill's description names two shapes it watches for. One is an implementation split: work that
-breaks into three or more independent tasks, each with its own gate, in a clean git repo. The other
-is a review, audit, lint, or check that fans out over a lot of files. Either shape loads the skill.
+### Web research workflow (`modes/web-research.md`)
 
-Loading it is not the same as running it. `Preconditions` says to offer first. State what would get
-dispatched, then ask. Once per session, and a no settles it for that session.
+Used for technical investigations, documentation lookups, and multi-angle research against online sources.
 
-That part needs its own line. A description can say when a skill is relevant, but it can't say how
-you want to be treated about it. Add one line to whatever file your agent loads every session.
-Use `~/.claude/CLAUDE.md` for Claude Code and `AGENTS.md` for agents that read that instead:
+1. **Stage 1: Dispatch researchers.** Split the question into independent evidence angles (such as official documentation, independent benchmarks, or failure modes). Dispatch parallel researchers returning structured JSON claims with source URLs, publication dates, and source types.
+2. **Stage 2: Synthesize claim ledger.** A synthesizer worker merges researcher findings into a structured claim ledger. The synthesizer discards unsupported incidental claims, preserves decision-relevant uncertainty, and drafts a proposed answer.
+3. **Stage 3: Independent citation audit.** An independent auditor opens each URL cited in the proposed answer to verify resolution, direct claim support, date fitness, and primary versus derivative classification.
+4. **Audit revision loop.** If the auditor requests revisions, the synthesizer runs one revision pass to narrow or remove rejected claims, followed by a final audit.
+
+## Research profiles and automatic deep triggers
+
+Web research operates under two profiles:
+
+- **Standard profile.** Dispatches 2 or 3 parallel researchers across distinct angles, followed by 1 synthesizer and 1 auditor. Use for general technical questions, documentation lookups, and library comparisons.
+- **Deep profile.** Dispatches up to 5 researchers in total. Deep research starts from standard findings and adds only supplementary angles to resolve specific uncertainty or conflicts, without re-running standard angles.
+
+Deep profile activates on explicit user request or automatically when one of four triggers occurs:
+
+1. **Material source conflict.** High-trust primary sources directly contradict one another.
+2. **Costly or hard-to-reverse decision.** Architectural choices, infrastructure migrations, or licensing commitments.
+3. **Citation-sensitive output.** Formal specifications, security advisories, or compliance requirements.
+4. **Substantial counterevidence.** Initial findings challenge core architectural assumptions.
+
+The active profile and trigger are recorded in the report and in `provenance.json`.
+
+## Workspace isolation and scoped snapshots
+
+Research workers never run directly against live repository files.
+
+`scripts/make-research-workspace.sh` creates a disposable directory outside the repository:
+
+```bash
+WORKSPACE=$(./scripts/make-research-workspace.sh --source-repo "$PWD" --path src/auth --path config.json)
+```
+
+The script copies only declared paths into `<workspace>/repo/`. Worker prompts and `--add-dir` arguments point to the snapshot directory. The live repository remains untouched.
+
+## Source policy
+
+- **Public sources default.** Research workers query public web sources by default.
+- **Explicit authorization for private sources.** Accessing private, internal, or authenticated repositories and APIs requires explicit user authorization for that specific run. Never forward cookies, session tokens, browser profiles, or environment credentials implicitly.
+
+## Failure handling and partial results
+
+- **Implementer failures.** If an implementer fails its gate or violates ownership, retry once with the error output. If the retry fails, halt that task.
+- **Researcher failures.** If a researcher crashes or times out, retry once. If the retry fails, synthesis proceeds as long as at least two independent evidence angles remain. The final report explicitly names any omitted angle.
+- **Synthesis and audit failures.** Synthesis and citation audit are mandatory stages. If either stage crashes, times out, or fails to resolve citations, the run transitions to `partial` status.
+- **Partial result contract.** A `partial` run returns verified claims and raw findings collected before the failure. It strictly withholds firm conclusions or recommendations, states the failed stage, and preserves all raw artifacts for debugging.
+
+## Compact provenance and report contract
+
+### Provenance tracking and workspace cleanup
+
+At the end of a research run, `scripts/collect-provenance.sh` validates and generates `provenance.json`:
+
+```bash
+./scripts/collect-provenance.sh \
+  --run-id "run-01" \
+  --request-summary "Evaluate database migration options" \
+  --selected-mode "web-research" \
+  --profile "standard" \
+  --start-time "2026-08-31T10:00:00Z" \
+  --end-time "2026-08-31T10:04:30Z" \
+  --duration-seconds 270 \
+  --scratch-path "$WORKSPACE" \
+  --workers "$WORKERS_JSON" \
+  --final-citations "$CITATIONS_JSON" \
+  --audit-verdicts "$AUDITS_JSON" \
+  --final-status "success" \
+  --incomplete-stage-reasons "[]" \
+  --output "$WORKSPACE/provenance.json"
+```
+
+After generating provenance, `scripts/cleanup-research-workspace.sh` cleans the temporary workspace:
+
+```bash
+./scripts/cleanup-research-workspace.sh --workspace "$WORKSPACE" --status success
+```
+
+- On `success`, the script removes intermediate worker files and snapshot directories while preserving `final.md` and `provenance.json`.
+- On `partial` or failure, the script retains all raw artifacts and logs.
+
+### Shared report format
+
+All modes format results into a consistent summary:
+
+```markdown
+## Offload run: N workers, <duration>
+
+| worker | gate / lane | provenance | result | files / findings |
+|--------|-------------|------------|--------|------------------|
+| parser | pytest tests/test_parser.py | agy+red+read | ✓ 12/12 | as assigned (scout) |
+| render | pytest tests/test_render.py | orchestrator (fallback) | ✓ 8/8 | ⚠ +1 stray |
+| docs   | diff                        | agy+grep      | △ judged | as assigned (scout) |
+| auth-audit | audit (isolated)        | orchestrator+checked (high) + orchestrator+sampled (med/low) | complete | 3 findings (2 verified, 1 unverified) |
+
+### Claimed by Gemini, not verified
+- "also improved error messages"
+- "Legacy endpoints may be affected"
+```
+
+### Provenance values
+
+- `orchestrator`: Step performed directly by orchestrator.
+- `agy+red+read`: Gate written by worker, checked with red run and inspection.
+- `agy+grep`: Diff reviewed by worker, verbatim quote verified in git diff.
+- `agy→orchestrator`: Reviewer escalated, diff inspected by orchestrator.
+- `orchestrator+checked`: Evidence directly verified in live repository.
+- `orchestrator+sampled`: Sample of medium or low priority citations verified.
+- `agy+unverified`: Finding lacking verifiable evidence.
+- `orchestrator (fallback)`: Worker failed, completed by orchestrator.
+
+### Result classifications
+
+- **Proven**: Verified by automated test exit code or mechanical check.
+- **Judged**: Evaluated against written criteria by diff reviewer or orchestrator.
+- **Verified**: Confirmed by direct orchestrator check or codebase sampling.
+- **Audited**: Verified by independent citation auditor against live sources.
+- **Claimed**: Asserted in worker output without verification; explicitly marked unverified.
+
+## Proactive offers and hook integration
+
+The skill monitors for tasks that break into three or more gated implementation tasks, or audits that fan out across multiple files or angles.
+
+When detected, the orchestrator offers offloading once per session. A negative response settles the decision for that session.
+
+Add this instruction to `~/.claude/CLAUDE.md` or `AGENTS.md`:
 
 ```markdown
 ## Skill precedence
 - Work `_offload` fits: offer it once, then let a no stand for the rest of the session.
 ```
 
-Keep the two separate. The description holds the triggers, the line holds the disposition. If the
-line starts restating triggers you have two places to update and they will drift.
+### Claude Code plan mode hook (optional)
 
-Notice early, shape late. A plan built for `agy` workers is a worse plan for doing the work
-yourself, so the offer should come before the plan gets detailed, not after.
+`hooks/offload-ask.sh` intercepts `ExitPlanMode` tool calls in Claude Code to ask whether to offload execution before showing the plan.
 
-None of this is enforced. It's a nudge and a nudge can be missed. You'll notice the times it works
-and you won't notice the times it should have fired.
-
-## The hook (Claude Code only, optional)
-
-`hooks/offload-ask.sh` is a Claude Code `PreToolUse` hook, so it only works if Claude Code is your
-orchestrator. There's no equivalent for other agents yet. It fires just before Claude Code calls
-`ExitPlanMode`, the moment a plan is about to be shown for approval, and asks whether to offload
-the execution phase to `agy` workers. Answer no and nothing changes, the plan proceeds as normal.
-Answer yes and the plan gains a dispatch spec before you approve it.
-
-The hook is the deterministic version of the offer above. The offer is a suggestion the model can
-miss; the hook fires every time, whether or not the work suits offloading. Worth installing if you
-already run plan mode with permissions, since it hangs off `ExitPlanMode` and costs you nothing on
-any other tool call. Skip it if you'd rather be asked only when it makes sense.
-
-Without the hook, invoke the skill by asking for it, or by saying "offload this" once a plan
-exists.
-
-The hook needs [`jq`](https://jqlang.org) to parse its input. If `jq` is missing the hook does
-nothing and plan mode works exactly as it does without it. A missing dependency never blocks plan
-mode.
-
-To install the hook, add this to `~/.claude/settings.json`, with the path pointing at wherever you
-installed this repo:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -197,38 +265,23 @@ installed this repo:
 }
 ```
 
-If you use [skillshare](https://github.com/runkids/skillshare) with its own
-`SessionStart`/`SessionEnd` sync hooks copying `settings.json` to and from a shared location, add
-this snippet to **both** copies. A hook added to only one copy is silently overwritten the next
-time the session starts.
+The hook requires `jq`. If `jq` is absent, the hook passes through without blocking.
 
-The hook asks once per session, the first time a plan reaches approval. It does not ask again for a
-second plan later in the same session.
+## Deterministic test suite
 
-## Findings about `agy`
+Run the automated acceptance suite to verify router structure, mode contracts, workspace isolation, provenance collection, and safety rules:
 
-These came from building this skill. They may save you the same debugging.
+```bash
+bash tests/test_research_modes.sh
+```
 
-- **`agy`'s default `--print-timeout` is 5 minutes. On expiry it writes no output at all**, not
-  even a partial result. A run that is merely slow looks identical to one that crashed. `offload`
-  uses `--print-timeout 20m` instead.
-- **`--output-format json` returns one flat JSON object**: `status`, `response`,
-  `duration_seconds`, `num_turns`, `usage`. Not a stream of events. Parse the top level directly.
-- **A worker can succeed, crash, or time out, and those three outcomes mean different things.**
-  Never fold them into one "failed." A timeout is often worth retrying with more time. A crash
-  usually is not.
-- **`--add-dir` grants access to a directory. It does not confine a worker to it.** No flag
-  restricts which files inside the workspace a worker can touch. `--mode plan` is different. It is
-  a real restriction, not an assignment: confirmed by direct test, a worker in `--mode plan` told
-  to create a file produces a plan artifact instead and writes nothing to the working tree.
-- **`--json-schema` composes with `--output-format json`.** Confirmed by direct test. The parsed,
-  schema-validated object appears in a separate `structured_output` field on the result. Parse
-  that field, not `response`, which still carries the model's conversational text and can include
-  a stray duplicate of the same JSON as loose text.
-- **`--effort` is not an independent flag on the flash models. It's baked into the model name.**
-  `--model gemini-3.7-flash-high --effort low` errors with "conflicts with --effort=low". Pick the
-  effort tier by picking `gemini-3.7-flash-low` / `-medium` / `-high` directly. Don't pass
-  `--effort` alongside one of those model names.
+## Findings about agy
+
+- **`agy` default `--print-timeout` is 5 minutes.** On expiry it writes no output at all. `offload` passes `--print-timeout 20m`.
+- **`--output-format json` returns one flat JSON object.** Parse top-level fields `status`, `response`, `duration_seconds`, `num_turns`, and `usage`.
+- **`--json-schema` outputs validated JSON in `structured_output`.** Parse `structured_output` rather than `response`.
+- **Flash model effort is set in the model name.** Use `gemini-3.7-flash-low`, `gemini-3.7-flash-medium`, or `gemini-3.7-flash-high`. Do not pass `--effort` alongside these models.
+- **`--mode plan` is a behavioral hint, not a write barrier.** Direct tests showed plan-mode workers can write files. `--add-dir` grants directory access without confining writes. Security relies on workspace isolation and mechanical verification.
 
 ## License
 
