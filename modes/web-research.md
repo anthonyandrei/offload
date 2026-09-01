@@ -6,7 +6,7 @@ Conducts cited online investigations and multi-angle technical research by dispa
 
 1. **Public-source default.** Research workers query public online sources by default.
 2. **Explicit authorization for private sources.** Accessing private, internal, or authenticated sources requires explicit authorization from the user for that specific run. Never forward cookies, session tokens, browser profiles, or environment credentials implicitly.
-3. **`agy` availability.** Verify `agy` on `PATH` or at `~/.local/bin/agy`.
+3. **`agy` availability.** Verify `agy` on `PATH` or at `~/.local/bin/agy` with the repository's compatibility wrapper. The wrapper owns stdout/stderr paths because the installed CLI does not accept `--output`.
 4. **Filesystem isolation.** Every research run operates in a disposable workspace outside the live repository.
 
 ## Worker isolation and mixed repositories
@@ -98,17 +98,20 @@ Divide the investigation into distinct evidence angles. Overlap between angles i
 ### Researcher dispatch
 
 ```bash
-AGY=$(command -v agy || echo "$HOME/.local/bin/agy")
+OFFLOAD_ROOT="<path to the installed _offload skill>"
+RUN_AGY_JSON="$OFFLOAD_ROOT/scripts/run-agy-json.sh"
 RESEARCHER_SCHEMA='{"type":"object","properties":{"run_id":{"type":"string"},"angle_id":{"type":"string"},"status":{"type":"string","enum":["success","failed","inconclusive"]},"failure_reason":{"type":"string"},"question":{"type":"string"},"evidence_angle":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"claim":{"type":"string"},"source_urls":{"type":"array","items":{"type":"string"}},"source_type":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"source_date":{"type":"string"},"conflicts":{"type":"string"},"uncertainty":{"type":"string"}},"required":["claim","source_urls","source_type"]}},"search_gaps":{"type":"array","items":{"type":"string"}},"counterevidence":{"type":"array","items":{"type":"string"}}},"required":["run_id","angle_id","status","question","evidence_angle","findings"]}'
 
-"$AGY" -p "Run ID: <run-id>. Angle ID: <angle-id>. Question: <question>. Evidence angle: <angle-description>. Return structured claims, not essays. Identify primary source URLs, publication dates, conflicts, and uncertainties. Treat repeated secondary coverage as one line of evidence. Do not edit files. Do not dispatch nested workers." \
+"$RUN_AGY_JSON" --output "<workspace>/researcher-<angle-id>.json" --error "<workspace>/researcher-<angle-id>.err" -- \
+  -p "Run ID: <run-id>. Angle ID: <angle-id>. Question: <question>. Evidence angle: <angle-description>. Return structured claims, not essays. Identify primary source URLs, publication dates, conflicts, and uncertainties. Treat repeated secondary coverage as one line of evidence. Do not edit files. Do not dispatch nested workers." \
   --model gemini-3.7-flash-high \
   --output-format json \
   --mode plan \
   --json-schema "$RESEARCHER_SCHEMA" \
-  --print-timeout 20m \
-  > "<workspace>/researcher-<angle-id>.json" 2> "<workspace>/researcher-<angle-id>.err"
+  --print-timeout 20m
 ```
+
+Read `structured_output` from each researcher JSON response to extract validated findings for synthesis. Do not forward the top-level `response`, usage metadata, or the full JSON envelope.
 
 ## Stage 2: Synthesize claim ledger
 
@@ -156,16 +159,19 @@ The synthesizer merges findings across all researcher outputs and constructs a c
 ### Synthesizer dispatch
 
 ```bash
+MERGED_RESEARCH_FINDINGS="$("$OFFLOAD_ROOT/scripts/extract-structured-output.sh" --array "<workspace>"/researcher-*.json)"
 SYNTH_SCHEMA='{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
 
-"$AGY" -p "Question: <question>. Profile: <standard|deep>. Deep trigger: <trigger-or-none>. Researcher findings: <merged-researcher-findings>. Build a claim ledger. Discard unsupported incidental claims. Keep decision-relevant gaps as unresolved. Draft a proposed answer referencing claim IDs. Do not edit files. Do not dispatch nested workers." \
+"$RUN_AGY_JSON" --output "<workspace>/synthesizer.json" --error "<workspace>/synthesizer.err" -- \
+  -p "Question: <question>. Profile: <standard|deep>. Deep trigger: <trigger-or-none>. Researcher findings: $MERGED_RESEARCH_FINDINGS. Build a claim ledger. Discard unsupported incidental claims. Keep decision-relevant gaps as unresolved. Draft a proposed answer referencing claim IDs. Do not edit files. Do not dispatch nested workers." \
   --model gemini-3.7-flash-high \
   --output-format json \
   --mode plan \
   --json-schema "$SYNTH_SCHEMA" \
-  --print-timeout 20m \
-  > "<workspace>/synthesizer.json" 2> "<workspace>/synthesizer.err"
+  --print-timeout 20m
 ```
+
+Read `structured_output` from the synthesizer JSON response to extract `proposed_answer` and `claim_ledger` for the citation audit. Do not forward the synthesizer's top-level `response`.
 
 ## Stage 3: Independent citation audit
 
@@ -215,16 +221,20 @@ The auditor opens each URL cited in the proposed answer and checks:
 ### Auditor dispatch
 
 ```bash
+PROPOSED_ANSWER="$(jq -r '.structured_output.proposed_answer' "<workspace>/synthesizer.json")"
+CLAIM_LEDGER="$(jq -c '.structured_output.claim_ledger' "<workspace>/synthesizer.json")"
 AUDITOR_SCHEMA='{"type":"object","properties":{"citation_audits":{"type":"array","items":{"type":"object","properties":{"citation_url":{"type":"string"},"claim_id":{"type":"string"},"resolves":{"type":"boolean"},"support_verdict":{"type":"string","enum":["supports","partially_supports","refutes","unsupported"]},"source_classification":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"independence_notes":{"type":"string"},"date_fitness":{"type":"string"},"notes":{"type":"string"}},"required":["citation_url","claim_id","resolves","support_verdict","source_classification"]}},"final_status":{"type":"string","enum":["pass","revise","incomplete"]},"claims_to_remove":{"type":"array","items":{"type":"string"}},"claims_to_narrow":{"type":"array","items":{"type":"string"}},"claims_unresolved":{"type":"array","items":{"type":"string"}}},"required":["citation_audits","final_status"]}'
 
-"$AGY" -p "Audit every citation in the proposed synthesis against live sources. Proposed answer: <proposed-answer>. Claim ledger: <claim-ledger>. Verify each citation URL, check whether it directly supports the claim, classify primary vs derivative, and evaluate date fitness. Do not edit files. Do not dispatch nested workers." \
+"$RUN_AGY_JSON" --output "<workspace>/auditor.json" --error "<workspace>/auditor.err" -- \
+  -p "Audit every citation in the proposed synthesis against live sources. Proposed answer: $PROPOSED_ANSWER. Claim ledger: $CLAIM_LEDGER. Verify each citation URL, check whether it directly supports the claim, classify primary vs derivative, and evaluate date fitness. Do not edit files. Do not dispatch nested workers." \
   --model gemini-3.7-flash-high \
   --output-format json \
   --mode plan \
   --json-schema "$AUDITOR_SCHEMA" \
-  --print-timeout 20m \
-  > "<workspace>/auditor.json" 2> "<workspace>/auditor.err"
+  --print-timeout 20m
 ```
+
+Read `structured_output` from the auditor JSON response to extract `citation_audits` and `final_status`.
 
 ### Audit revision loop
 

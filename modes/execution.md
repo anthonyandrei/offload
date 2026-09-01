@@ -146,6 +146,8 @@ Verify every worker reporting `SUCCESS`:
      > "<scratch dir>/offload/<slug>.review.json" 2> "<scratch dir>/offload/<slug>.review.err"
    ```
 
+   Read `structured_output` from the JSON response to extract criteria verdicts and quotes.
+
    For each `pass` verdict, grep the quoted line against the actual diff. If all quotes match verbatim, accept the verdict (`agy+grep`). If any quote fails to match, any criterion fails, or the reviewer hedges, inspect the diff directly (`agy→orchestrator`).
 
 ## Step 6: Retry and fallback

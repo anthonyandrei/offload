@@ -31,7 +31,9 @@ for file in \
   modes/web-research.md \
   scripts/make-research-workspace.sh \
   scripts/collect-provenance.sh \
-  scripts/cleanup-research-workspace.sh; do
+  scripts/cleanup-research-workspace.sh \
+  scripts/run-agy-json.sh \
+  scripts/extract-structured-output.sh; do
   require_file "$file"
 done
 pass 'router, modes, and helper files exist'
@@ -67,6 +69,16 @@ for script in \
   [ -x "$ROOT/$script" ] || fail "$script is not executable"
 done
 pass 'research helpers parse and are executable'
+
+require_text modes/web-research.md 'run-agy-json.sh'
+require_text modes/web-research.md 'extract-structured-output.sh'
+require_text modes/web-research.md 'Read `structured_output` from each researcher JSON response'
+require_text modes/web-research.md 'Read `structured_output` from the synthesizer JSON response'
+require_text modes/web-research.md 'Read `structured_output` from the auditor JSON response'
+require_text modes/execution.md 'Read `structured_output` from the JSON response to extract criteria verdicts and quotes'
+pass 'web research mode uses the tested agy helpers'
+
+"$ROOT/tests/test_agy_helpers.sh"
 
 fixture="$TMP_ROOT/source"
 mkdir -p "$fixture/declared" "$fixture/secret"

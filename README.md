@@ -280,6 +280,8 @@ bash tests/test_research_modes.sh
 - **`agy` default `--print-timeout` is 5 minutes.** On expiry it writes no output at all. `offload` passes `--print-timeout 20m`.
 - **`--output-format json` returns one flat JSON object.** Parse top-level fields `status`, `response`, `duration_seconds`, `num_turns`, and `usage`.
 - **`--json-schema` outputs validated JSON in `structured_output`.** Parse `structured_output` rather than `response`.
+- **Use the bundled `scripts/run-agy-json.sh` launcher for worker calls.** It owns result and error paths and rejects the unsupported `agy --output` flag.
+- **Use `scripts/extract-structured-output.sh` between research stages.** It forwards only validated `structured_output`, keeping verbose worker prose out of later prompts.
 - **Flash model effort is set in the model name.** Use `gemini-3.7-flash-low`, `gemini-3.7-flash-medium`, or `gemini-3.7-flash-high`. Do not pass `--effort` alongside these models.
 - **`--mode plan` is a behavioral hint, not a write barrier.** Direct tests showed plan-mode workers can write files. `--add-dir` grants directory access without confining writes. Security relies on workspace isolation and mechanical verification.
 
