@@ -13,13 +13,18 @@ If you are `agy`, stop here. Return worker results to your orchestrator. `agy` i
 
 You never accept worker claims at face value. You verify output through mechanical checks, test execution, diff inspections, or secondary reviews.
 
-## Preconditions
+## Preconditions and helper selection
+
+Select the helper family matching your current host shell:
+
+- **POSIX shells (Bash 3.2+)**: Use `.sh` scripts in `scripts/`. Requires Git, `agy`, `jq`, and Python 3.
+- **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 Check these requirements before dispatching workers:
 
-1. **Offer before dispatch.** When reaching this skill unprompted, offer the choice to the user first. Describe the planned dispatch and ask for confirmation. Ask once per session. A negative response settles the decision for the rest of the session.
+1. **Offer before dispatch.** When reaching this skill unprompted, offer the choice to the user first following the proactive offer contract. Describe the planned dispatch and ask for confirmation. Ask once per session. A negative response settles the decision for the rest of the session.
 2. **Local factual lookups.** Keep a single factual lookup local with the orchestrator; do not offer or route it to offload.
-3. **`agy` availability.** Verify `agy` on `PATH` or at `~/.local/bin/agy`. Refuse execution if neither exists.
+3. **`agy` availability.** Verify `agy` is invokable. The launcher resolves `AGY_BIN` first if set, then `PATH`, then the user-local bin directory (`~/.local/bin/agy` on POSIX, `%USERPROFILE%\.local\bin\agy.exe` on Windows). An invalid explicit `AGY_BIN` fails immediately without fallback.
 4. **Git working tree.** Writing workflows (`modes/execution.md`) require a clean git repository (`git rev-parse --is-inside-work-tree` and empty `git status --porcelain`). Research workflows (`modes/repo-research.md`, `modes/web-research.md`) operate in isolated disposable workspaces.
 
 ## Routing
@@ -35,7 +40,7 @@ Once invoked, select a mode using this order:
 
 ## Modes
 
-Load the matching mode document for the selected route:
+Load the matching mode document for the selected route and shell-specific commands:
 
 - [`modes/execution.md`](modes/execution.md): Dispatches scouts, gate-authors, implementers, and diff reviewers for code and file modifications.
 - [`modes/repo-research.md`](modes/repo-research.md): Dispatches bounded local code investigations and audits in isolated workspaces with direct evidence verification.
@@ -98,6 +103,6 @@ Sample recorded: 1/1 high checked, 1/2 med/low sampled.
 - **`--mode plan` is a behavioral hint, not a write barrier.** Direct probes showed that plan-mode workers can write files. Never rely on `--mode plan` alone to protect live repository files.
 - **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at the live tree.
 - **Filesystem isolation.** Research modes run in disposable workspaces with scoped file snapshots. Live repository files are never exposed directly to research workers.
-- **Execution safety.** Execution mode requires a clean git baseline, mechanical ownership checks (`comm -23`), frozen path diffs, and test gates.
+- **Execution safety.** Execution mode requires a clean git baseline, mechanical execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path diffs, and test gates.
 - **Prohibition on nested dispatch.** Workers are instructed not to dispatch nested workers.
 - **Bounded scope requirement.** Open-ended research without a bounded question, declared scope, and evidence expectations is out of scope.

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  ubuntu-bash:
+    name: Ubuntu Bash contract suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run research modes suite
+        run: bash tests/test_research_modes.sh
+
+      - name: Run execution scope suite
+        run: bash tests/test_execution_scope.sh
+
+  macos-bash:
+    name: macOS Bash contract suite
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run research modes suite
+        run: bash tests/test_research_modes.sh
+
+      - name: Run execution scope suite
+        run: bash tests/test_execution_scope.sh
+
+  windows-powershell:
+    name: Windows PowerShell contract suite
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run research helpers suite
+        run: pwsh -File tests/test_research_helpers.ps1
+
+      - name: Run execution scope suite
+        run: pwsh -File tests/test_execution_scope.ps1

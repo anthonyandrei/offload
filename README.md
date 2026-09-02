@@ -1,8 +1,8 @@
 # offload
 
-`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless `agy` subagent workers (the Antigravity CLI, running Gemini models).
+`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless `agy` workers (the Antigravity CLI, running Gemini models).
 
-Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Code, Codex CLI, or any agent that can read instructions and run shell commands. `agy` is the worker, not the orchestrator. The orchestrator never accepts worker claims at face value. It verifies work mechanically through test gates, git diff ownership checks, verbatim quote matching, independent citation auditing, and direct repository checks.
+Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Code, Codex CLI, or any agent that can read instructions and run shell commands. `agy` is the worker, not the orchestrator. The orchestrator never accepts worker claims at face value. It verifies work mechanically through test gates, execution scope checks, verbatim quote matching, independent citation auditing, and direct repository checks.
 
 Offload's online-research workflow is adapted from Asa by Achibukz, used with permission. Do not publish a private repository URL, branch, commit, screenshots, or copied text.
 
@@ -11,13 +11,26 @@ Offload's online-research workflow is adapted from Asa by Achibukz, used with pe
 - **`--mode plan` is a behavioral hint, not a write barrier.** Direct testing showed that plan-mode workers can write files. Never rely on `--mode plan` alone to protect live repository files.
 - **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at a live repository tree.
 - **Filesystem isolation.** Research workflows run inside disposable workspaces outside the live repository. Workers receive only scoped snapshots of declared files, keeping live repository files untouched.
-- **Mechanical verification.** Execution workflows require a clean git working tree, frozen path checks, automated test gates, and mechanical ownership diffs (`comm -23`).
+- **Mechanical verification.** Execution workflows require a clean git working tree, execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path checks, and automated test gates.
 - **Prohibition on nested dispatch.** Assignments instruct workers not to dispatch nested workers.
+
+## Supported environments
+
+| Host path | Required runtime | Required tools | CI system |
+|---|---|---|---|
+| Native Windows | PowerShell 7+ | Git and `agy` | `windows-latest` |
+| Linux with Bash | Bash 3.2+ | Git, `agy`, `jq`, and Python 3 | `ubuntu-latest` |
+| macOS with Bash | Bash 3.2+ | Git, `agy`, `jq`, and Python 3 | `macos-latest` |
+| Linux or macOS with PowerShell | PowerShell 7+ | Git and `agy` | Supported by contract, not a required CI job |
+
+### Helper family selection
+
+Orchestrators select helper scripts based on their current shell (`.sh` for Bash, `.ps1` for PowerShell), never by host operating system detection or universal launchers. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 ## Requirements
 
 - A CLI coding agent that can read skills and run shell commands (Claude Code, Codex CLI, or similar).
-- [`agy`](https://antigravity.google), the Antigravity CLI, available on `PATH` or at `~/.local/bin/agy`.
+- [`agy`](https://antigravity.google), the Antigravity CLI, available on `PATH`, user-local bin (`~/.local/bin/agy` on POSIX, `%USERPROFILE%\.local\bin\agy.exe` on Windows), or configured via `AGY_BIN`.
 - For execution workflows: a git repository with a clean working tree (`git status --porcelain` is empty). Research workflows run in disposable workspaces.
 
 ## Installation
@@ -35,8 +48,14 @@ The `--track` flag keeps git history so `skillshare update offload` can pull upd
 
 Copy the whole skill directory into your agent's skills folder:
 
+#### Bash
 ```bash
 cp -R /path/to/offload ~/.claude/skills/offload
+```
+
+#### PowerShell
+```powershell
+Copy-Item -Recurse -Path \path\to\offload -Destination $HOME\.claude\skills\offload
 ```
 
 Because `offload` contains mode documents in `modes/` and helper scripts in `scripts/`, you must copy the entire directory rather than a single file.
@@ -77,20 +96,22 @@ with four supported claims. The recorded comparison is in
 
 Used for code and file modifications across independent gated tasks.
 
-1. **Split and scout.** Break work into provisional tasks. Dispatch parallel scouts under `--mode plan` with a JSON schema to identify touched files. If tasks overlap on files, serialize them.
+1. **Split and scout.** Break work into provisional tasks. Dispatch parallel scouts under `--mode plan` via `run-agy-json` with a JSON schema to identify touched files. If tasks overlap on files, serialize them.
 2. **Assign gates.** Every task receives exactly one gate:
    - **Machine gate.** An automated test command exiting 0 on success. A gate-author worker writes the test. The orchestrator runs a red check against the untouched tree to verify failure, reads the test code to confirm intent, and commits the test to freeze it.
-   - **Diff gate.** Plain-text criteria for tasks without test commands (such as documentation or configuration changes). A reviewer worker evaluates the diff adversarially, returning verbatim quotes from the diff for each passed criterion. The orchestrator greps quotes against the real diff.
-3. **Dispatch implementers.** Dispatch implementers in parallel from a clean git tree with explicit owned files, frozen paths, and gate commands.
+   - **Diff gate.** Plain-text criteria for tasks without test commands (such as documentation or configuration changes). A reviewer worker evaluates the diff adversarially, returning verbatim quotes from the diff for each passed criterion. The orchestrator checks quotes against the real diff.
+3. **Dispatch implementers.** Dispatch implementers in parallel from a clean git tree with explicit owned files, frozen paths, and gate commands via `run-agy-json`.
 4. **Mechanical verification.**
-   - Ownership check: compare modified files against assigned files using `comm -23`:
+   - Execution scope check: verify touched paths against assigned owned and frozen paths using `check-execution-scope`:
+     #### Bash
      ```bash
-     { git diff --name-only; git status --porcelain | awk '{print $2}'; } | sort -u > touched.txt
-     printf '%s\n' "${OWNED[@]}" | sort -u > owned.txt
-     comm -23 touched.txt owned.txt
+     "$OFFLOAD_ROOT/scripts/check-execution-scope.sh" --owned src/render.py --frozen tests/test_render.py
      ```
-   - Frozen paths check: run `git diff --quiet -- <frozen paths>` to confirm frozen tests remained untouched.
-   - Gate command: run the machine test command or verify reviewer diff quotes.
+     #### PowerShell
+     ```powershell
+     & "$OffloadRoot/scripts/check-execution-scope.ps1" --owned src/render.py --frozen tests/test_render.py
+     ```
+   - Gate command: run the machine test command or verify reviewer diff quotes verbatim against `git diff`.
 
 ### Repository research workflow (`modes/repo-research.md`)
 
@@ -101,21 +122,23 @@ Used for bounded local codebase investigations, audits, and invariant checks wit
    - Allowed scope of files or directories.
    - Evidence expectations (file paths with line numbers or reproducible commands).
    - Explicit non-mutation rule.
-2. **Filesystem isolation.** Create a disposable workspace. Copy only declared scope paths into a snapshot directory. Run the worker pointed at the snapshot directory.
+2. **Filesystem isolation.** Create a disposable workspace with `make-research-workspace.sh` or `make-research-workspace.ps1`. The helper copies only declared scope paths into a snapshot directory (`<workspace>/repo/`). Run the worker pointed at the snapshot directory via `run-agy-json`.
 3. **Verification protocol.** Run read-only orchestrator checks against the live repository:
    - Reject citations outside declared scope.
    - Check all high-priority findings directly in live files (`orchestrator+checked`).
    - Sample medium- and low-priority findings (`orchestrator+sampled`).
    - Mark unsupported claims as unverified (`agy+unverified`).
+4. **Cleanup.** Run `cleanup-research-workspace.sh` or `cleanup-research-workspace.ps1` with `--status success`.
 
 ### Web research workflow (`modes/web-research.md`)
 
 Used for technical investigations, documentation lookups, and multi-angle research against online sources.
 
-1. **Stage 1: Dispatch researchers.** Split the question into independent evidence angles (such as official documentation, independent benchmarks, or failure modes). Dispatch parallel researchers returning structured JSON claims with source URLs, publication dates, and source types.
-2. **Stage 2: Synthesize claim ledger.** A synthesizer worker merges researcher findings into a structured claim ledger. The synthesizer discards unsupported incidental claims, preserves decision-relevant uncertainty, and drafts a proposed answer.
+1. **Stage 1: Dispatch researchers.** Split the question into independent evidence angles. Dispatch parallel researchers returning structured JSON claims with source URLs, publication dates, and source types via `run-agy-json`.
+2. **Stage 2: Synthesize claim ledger.** Extract findings with `extract-structured-output`. A synthesizer worker merges findings into a structured claim ledger, discards unsupported incidental claims, preserves decision-relevant uncertainty, and drafts a proposed answer.
 3. **Stage 3: Independent citation audit.** An independent auditor opens each URL cited in the proposed answer to verify resolution, direct claim support, date fitness, and primary versus derivative classification.
 4. **Audit revision loop.** If the auditor requests revisions, the synthesizer runs one revision pass to narrow or remove rejected claims, followed by a final audit.
+5. **Provenance and cleanup.** Validate and build `provenance.json` with `collect-provenance`, write `<workspace>/final.md`, and clean the workspace with `cleanup-research-workspace`.
 
 ## Research profiles and automatic deep triggers
 
@@ -137,13 +160,19 @@ The active profile and trigger are recorded in the report and in `provenance.jso
 
 Research workers never run directly against live repository files.
 
-`scripts/make-research-workspace.sh` creates a disposable directory outside the repository:
+The workspace helper creates a unique temporary directory outside the repository:
 
+#### Bash
 ```bash
 WORKSPACE=$(./scripts/make-research-workspace.sh --source-repo "$PWD" --path src/auth --path config.json)
 ```
 
-The script copies only declared paths into `<workspace>/repo/`. Worker prompts and `--add-dir` arguments point to the snapshot directory. The live repository remains untouched.
+#### PowerShell
+```powershell
+$Workspace = (& ./scripts/make-research-workspace.ps1 --source-repo (Get-Location).Path --path src/auth --path config.json).Trim()
+```
+
+The script copies only declared paths into `<workspace>/repo/` and creates the `.offload-research-workspace` marker. Worker prompts and `--add-dir` arguments point to the snapshot directory. The live repository remains untouched.
 
 ## Source policy
 
@@ -152,7 +181,7 @@ The script copies only declared paths into `<workspace>/repo/`. Worker prompts a
 
 ## Failure handling and partial results
 
-- **Implementer failures.** If an implementer fails its gate or violates ownership, retry once with the error output. If the retry fails, halt that task.
+- **Implementer failures.** If an implementer fails its gate or violates execution scope, retry once with the error output. If the retry fails, halt that task.
 - **Researcher failures.** If a researcher crashes or times out, retry once. If the retry fails, synthesis proceeds as long as at least two independent evidence angles remain. The final report explicitly names any omitted angle.
 - **Synthesis and audit failures.** Synthesis and citation audit are mandatory stages. If either stage crashes, times out, or fails to resolve citations, the run transitions to `partial` status.
 - **Partial result contract.** A `partial` run returns verified claims and raw findings collected before the failure. It strictly withholds firm conclusions or recommendations, states the failed stage, and preserves all raw artifacts for debugging.
@@ -161,8 +190,9 @@ The script copies only declared paths into `<workspace>/repo/`. Worker prompts a
 
 ### Provenance tracking and workspace cleanup
 
-At the end of a research run, `scripts/collect-provenance.sh` validates and generates `provenance.json`:
+At the end of a research run, `collect-provenance` validates and generates `provenance.json`:
 
+#### Bash
 ```bash
 ./scripts/collect-provenance.sh \
   --run-id "run-01" \
@@ -181,14 +211,39 @@ At the end of a research run, `scripts/collect-provenance.sh` validates and gene
   --output "$WORKSPACE/provenance.json"
 ```
 
-After generating provenance, `scripts/cleanup-research-workspace.sh` cleans the temporary workspace:
+#### PowerShell
+```powershell
+& ./scripts/collect-provenance.ps1 `
+  --run-id "run-01" `
+  --request-summary "Evaluate database migration options" `
+  --selected-mode "web-research" `
+  --profile "standard" `
+  --start-time "2026-08-31T10:00:00Z" `
+  --end-time "2026-08-31T10:04:30Z" `
+  --duration-seconds 270 `
+  --scratch-path "$Workspace" `
+  --workers $WorkersJson `
+  --final-citations $CitationsJson `
+  --audit-verdicts $AuditsJson `
+  --final-status "success" `
+  --incomplete-stage-reasons "[]" `
+  --output "$Workspace/provenance.json"
+```
 
+After generating provenance, `cleanup-research-workspace` cleans the temporary workspace:
+
+#### Bash
 ```bash
 ./scripts/cleanup-research-workspace.sh --workspace "$WORKSPACE" --status success
 ```
 
-- On `success`, the script removes intermediate worker files and snapshot directories while preserving `final.md` and `provenance.json`.
-- On `partial` or failure, the script retains all raw artifacts and logs.
+#### PowerShell
+```powershell
+& ./scripts/cleanup-research-workspace.ps1 --workspace "$Workspace" --status success
+```
+
+- On `success`, the helper removes intermediate worker files and snapshot directories while preserving `final.md` and `provenance.json`.
+- On `partial` or failure, the helper retains all raw artifacts and logs.
 
 ### Shared report format
 
@@ -228,51 +283,48 @@ All modes format results into a consistent summary:
 - **Audited**: Verified by independent citation auditor against live sources.
 - **Claimed**: Asserted in worker output without verification; explicitly marked unverified.
 
-## Proactive offers and hook integration
+## Proactive offer contract
 
-The skill monitors for tasks that break into three or more gated implementation tasks, or audits that fan out across multiple files or angles.
+Offload uses a portable, model-readable proactive-offer contract instead of vendor-specific hooks. Orchestrators offer offload unprompted when tasks meet qualified scale thresholds, ask for confirmation before dispatching, and respect user preference for the remainder of the session.
 
-When detected, the orchestrator offers offloading once per session. A negative response settles the decision for that session.
+### Worked context example
 
-Add this instruction to `~/.claude/CLAUDE.md` or `AGENTS.md`:
+Place this instruction block in your agent's project context file (`AGENTS.md`, `CLAUDE.md`, or custom instructions):
 
 ```markdown
-## Skill precedence
-- Work `_offload` fits: offer it once, then let a no stand for the rest of the session.
+## Offload delegation
+
+- Use Offload when the user asks to offload, run work on AGY, use Gemini subagents, or accepts an AGY offer.
+- Offer AGY once, before starting, when implementation splits into three or more independently gated tasks in a clean Git repository, or when a read-only audit or external research requires multiple distinct work lanes. Count research lanes by distinct questions or evidence responsibilities, not browser tabs.
+- Keep narrow factual answers, explanations, single-source lookups, and focused code reviews local.
+- Ask before dispatching.
+- Ask once per session. If the user declines, continue locally without offering AGY again in that session.
+- When Offload applies, let its skill instructions choose the appropriate workflow mode.
 ```
 
-### Claude Code plan mode hook (optional)
+### Optional host adapters
 
-`hooks/offload-ask.sh` intercepts `ExitPlanMode` tool calls in Claude Code to ask whether to offload execution before showing the plan.
+Host automation or hooks that implement the proactive-offer contract must satisfy four requirements:
 
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "ExitPlanMode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/offload/hooks/offload-ask.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-The hook requires `jq`. If `jq` is absent, the hook passes through without blocking.
+1. **Trigger conditions**: Trigger only when the proactive-offer conditions hold (3+ independently gated implementation tasks in a clean git repository, or multi-lane research/audit).
+2. **Session state**: Keep once-per-session state and never ask repeatedly after a refusal.
+3. **User consent**: Ask the user before dispatching workers.
+4. **Fail open**: Fail open so a broken adapter never blocks the host agent's normal workflow.
 
 ## Deterministic test suite
 
-Run the automated acceptance suite to verify router structure, mode contracts, workspace isolation, provenance collection, and safety rules:
+Run the automated acceptance suite to verify contracts across supported helper families:
 
+#### Bash
 ```bash
 bash tests/test_research_modes.sh
+bash tests/test_execution_scope.sh
+```
+
+#### PowerShell
+```powershell
+pwsh -File tests/test_research_helpers.ps1
+pwsh -File tests/test_execution_scope.ps1
 ```
 
 ## Findings about agy
@@ -280,8 +332,8 @@ bash tests/test_research_modes.sh
 - **`agy` default `--print-timeout` is 5 minutes.** On expiry it writes no output at all. `offload` passes `--print-timeout 20m`.
 - **`--output-format json` returns one flat JSON object.** Parse top-level fields `status`, `response`, `duration_seconds`, `num_turns`, and `usage`.
 - **`--json-schema` outputs validated JSON in `structured_output`.** Parse `structured_output` rather than `response`.
-- **Use the bundled `scripts/run-agy-json.sh` launcher for worker calls.** It owns result and error paths and rejects the unsupported `agy --output` flag.
-- **Use `scripts/extract-structured-output.sh` between research stages.** It forwards only validated `structured_output`, keeping verbose worker prose out of later prompts.
+- **Use the bundled launcher helpers (`run-agy-json.sh` or `run-agy-json.ps1`) for worker calls.** They own result and error paths and reject the unsupported `agy --output` flag.
+- **Use structured output extractors (`extract-structured-output.sh` or `extract-structured-output.ps1`) between research stages.** They forward only validated `structured_output`, keeping verbose worker prose out of later prompts.
 - **Flash model effort is set in the model name.** Use `gemini-3.7-flash-low`, `gemini-3.7-flash-medium`, or `gemini-3.7-flash-high`. Do not pass `--effort` alongside these models.
 - **`--mode plan` is a behavioral hint, not a write barrier.** Direct tests showed plan-mode workers can write files. `--add-dir` grants directory access without confining writes. Security relies on workspace isolation and mechanical verification.
 

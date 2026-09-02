@@ -6,15 +6,31 @@ Conducts cited online investigations and multi-angle technical research by dispa
 
 1. **Public-source default.** Research workers query public online sources by default.
 2. **Explicit authorization for private sources.** Accessing private, internal, or authenticated sources requires explicit authorization from the user for that specific run. Never forward cookies, session tokens, browser profiles, or environment credentials implicitly.
-3. **`agy` availability.** Verify `agy` on `PATH` or at `~/.local/bin/agy` with the repository's compatibility wrapper. The wrapper owns stdout/stderr paths because the installed CLI does not accept `--output`.
-4. **Filesystem isolation.** Every research run operates in a disposable workspace outside the live repository.
+3. **Helper family and environment requirements.** Select the helper family matching your host shell:
+   - **POSIX shells (Bash 3.2+)**: Use `.sh` scripts in `scripts/`. Requires Git, `agy`, `jq`, and Python 3.
+   - **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+4. **`agy` availability.** Workers are launched using the matching `run-agy-json` helper, which handles `AGY_BIN` precedence and output capture.
+5. **Filesystem isolation.** Every research run operates in a disposable workspace outside the live repository.
 
 ## Worker isolation and mixed repositories
 
 `--mode plan` provides a behavioral hint, not a write barrier. Direct testing demonstrated that plan-mode workers can write files. Similarly, `--add-dir` grants directory access without confining worker writes. Safety and containment rely on strict filesystem isolation:
 
-1. **Create workspace.** Use `scripts/make-research-workspace.sh` to initialize a temporary directory outside the live codebase.
-2. **Mixed repository handoff.** When research requires context from local files, declare the exact minimal paths required. The workspace helper copies only those declared paths into `<workspace>/repo/`.
+1. **Create workspace.** Initialize a temporary directory outside the live codebase using the matching workspace helper:
+
+   #### Bash
+   ```bash
+   OFFLOAD_ROOT="<path to the installed _offload skill>"
+   WORKSPACE=$("$OFFLOAD_ROOT/scripts/make-research-workspace.sh" --source-repo "$PWD" --path "<declared path>")
+   ```
+
+   #### PowerShell
+   ```powershell
+   $OffloadRoot = "<path to the installed _offload skill>"
+   $Workspace = (& "$OffloadRoot/scripts/make-research-workspace.ps1" --source-repo (Get-Location).Path --path "<declared path>").Trim()
+   ```
+
+2. **Mixed repository handoff.** When research requires context from local files, declare the exact minimal paths required. The workspace helper writes the `.offload-research-workspace` marker and copies only those declared paths into `<workspace>/repo/`.
 3. **No live repository paths.** Never pass the live repository path in worker prompts or `--add-dir` arguments. Point `--add-dir` at the snapshot directory (`<workspace>/repo`) when local context is needed.
 4. **Local evidence verification.** The orchestrator independently checks all local codebase citations against the live repository using read-only commands.
 
@@ -97,6 +113,7 @@ Divide the investigation into distinct evidence angles. Overlap between angles i
 
 ### Researcher dispatch
 
+#### Bash
 ```bash
 OFFLOAD_ROOT="<path to the installed _offload skill>"
 RUN_AGY_JSON="$OFFLOAD_ROOT/scripts/run-agy-json.sh"
@@ -108,6 +125,21 @@ RESEARCHER_SCHEMA='{"type":"object","properties":{"run_id":{"type":"string"},"an
   --output-format json \
   --mode plan \
   --json-schema "$RESEARCHER_SCHEMA" \
+  --print-timeout 20m
+```
+
+#### PowerShell
+```powershell
+$OffloadRoot = "<path to the installed _offload skill>"
+$RunAgyJson = "$OffloadRoot/scripts/run-agy-json.ps1"
+$ResearcherSchema = '{"type":"object","properties":{"run_id":{"type":"string"},"angle_id":{"type":"string"},"status":{"type":"string","enum":["success","failed","inconclusive"]},"failure_reason":{"type":"string"},"question":{"type":"string"},"evidence_angle":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"claim":{"type":"string"},"source_urls":{"type":"array","items":{"type":"string"}},"source_type":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"source_date":{"type":"string"},"conflicts":{"type":"string"},"uncertainty":{"type":"string"}},"required":["claim","source_urls","source_type"]}},"search_gaps":{"type":"array","items":{"type":"string"}},"counterevidence":{"type":"array","items":{"type":"string"}}},"required":["run_id","angle_id","status","question","evidence_angle","findings"]}'
+
+& "$RunAgyJson" --output "<workspace>/researcher-<angle-id>.json" --error "<workspace>/researcher-<angle-id>.err" -- `
+  -p "Run ID: <run-id>. Angle ID: <angle-id>. Question: <question>. Evidence angle: <angle-description>. Return structured claims, not essays. Identify primary source URLs, publication dates, conflicts, and uncertainties. Treat repeated secondary coverage as one line of evidence. Do not edit files. Do not dispatch nested workers." `
+  --model gemini-3.7-flash-high `
+  --output-format json `
+  --mode plan `
+  --json-schema $ResearcherSchema `
   --print-timeout 20m
 ```
 
@@ -158,6 +190,7 @@ The synthesizer merges findings across all researcher outputs and constructs a c
 
 ### Synthesizer dispatch
 
+#### Bash
 ```bash
 MERGED_RESEARCH_FINDINGS="$("$OFFLOAD_ROOT/scripts/extract-structured-output.sh" --array "<workspace>"/researcher-*.json)"
 SYNTH_SCHEMA='{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
@@ -168,6 +201,21 @@ SYNTH_SCHEMA='{"type":"object","properties":{"claim_ledger":{"type":"array","ite
   --output-format json \
   --mode plan \
   --json-schema "$SYNTH_SCHEMA" \
+  --print-timeout 20m
+```
+
+#### PowerShell
+```powershell
+$ResearcherFiles = Get-ChildItem -Path "<workspace>/researcher-*.json" | Select-Object -ExpandProperty FullName
+$MergedResearchFindings = & "$OffloadRoot/scripts/extract-structured-output.ps1" --array @ResearcherFiles
+$SynthSchema = '{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
+
+& "$RunAgyJson" --output "<workspace>/synthesizer.json" --error "<workspace>/synthesizer.err" -- `
+  -p "Question: <question>. Profile: <standard|deep>. Deep trigger: <trigger-or-none>. Researcher findings: $MergedResearchFindings. Build a claim ledger. Discard unsupported incidental claims. Keep decision-relevant gaps as unresolved. Draft a proposed answer referencing claim IDs. Do not edit files. Do not dispatch nested workers." `
+  --model gemini-3.7-flash-high `
+  --output-format json `
+  --mode plan `
+  --json-schema $SynthSchema `
   --print-timeout 20m
 ```
 
@@ -220,6 +268,7 @@ The auditor opens each URL cited in the proposed answer and checks:
 
 ### Auditor dispatch
 
+#### Bash
 ```bash
 PROPOSED_ANSWER="$(jq -r '.structured_output.proposed_answer' "<workspace>/synthesizer.json")"
 CLAIM_LEDGER="$(jq -c '.structured_output.claim_ledger' "<workspace>/synthesizer.json")"
@@ -231,6 +280,22 @@ AUDITOR_SCHEMA='{"type":"object","properties":{"citation_audits":{"type":"array"
   --output-format json \
   --mode plan \
   --json-schema "$AUDITOR_SCHEMA" \
+  --print-timeout 20m
+```
+
+#### PowerShell
+```powershell
+$SynthJson = Get-Content "<workspace>/synthesizer.json" -Raw | ConvertFrom-Json
+$ProposedAnswer = $SynthJson.structured_output.proposed_answer
+$ClaimLedger = $SynthJson.structured_output.claim_ledger | ConvertTo-Json -Compress -Depth 10
+$AuditorSchema = '{"type":"object","properties":{"citation_audits":{"type":"array","items":{"type":"object","properties":{"citation_url":{"type":"string"},"claim_id":{"type":"string"},"resolves":{"type":"boolean"},"support_verdict":{"type":"string","enum":["supports","partially_supports","refutes","unsupported"]},"source_classification":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"independence_notes":{"type":"string"},"date_fitness":{"type":"string"},"notes":{"type":"string"}},"required":["citation_url","claim_id","resolves","support_verdict","source_classification"]}},"final_status":{"type":"string","enum":["pass","revise","incomplete"]},"claims_to_remove":{"type":"array","items":{"type":"string"}},"claims_to_narrow":{"type":"array","items":{"type":"string"}},"claims_unresolved":{"type":"array","items":{"type":"string"}}},"required":["citation_audits","final_status"]}'
+
+& "$RunAgyJson" --output "<workspace>/auditor.json" --error "<workspace>/auditor.err" -- `
+  -p "Audit every citation in the proposed synthesis against live sources. Proposed answer: $ProposedAnswer. Claim ledger: $ClaimLedger. Verify each citation URL, check whether it directly supports the claim, classify primary vs derivative, and evaluate date fitness. Do not edit files. Do not dispatch nested workers." `
+  --model gemini-3.7-flash-high `
+  --output-format json `
+  --mode plan `
+  --json-schema $AuditorSchema `
   --print-timeout 20m
 ```
 
@@ -252,10 +317,11 @@ Read `structured_output` from the auditor JSON response to extract `citation_aud
 
 At the conclusion of the research run:
 
-1. **Assemble provenance.** Validate and generate `provenance.json` using `scripts/collect-provenance.sh`:
+1. **Assemble provenance.** Validate and generate `provenance.json` using the matching provenance helper:
 
+   #### Bash
    ```bash
-   ./scripts/collect-provenance.sh \
+   "$OFFLOAD_ROOT/scripts/collect-provenance.sh" \
      --run-id "<run-id>" \
      --request-summary "<request-summary>" \
      --selected-mode "web-research" \
@@ -273,11 +339,37 @@ At the conclusion of the research run:
      --output "<workspace>/provenance.json"
    ```
 
-2. **Save final result.** Write the Markdown synthesis or partial findings to `<workspace>/final.md`.
-3. **Run cleanup helper.** Execute `scripts/cleanup-research-workspace.sh`:
+   #### PowerShell
+   ```powershell
+   & "$OffloadRoot/scripts/collect-provenance.ps1" `
+     --run-id "<run-id>" `
+     --request-summary "<request-summary>" `
+     --selected-mode "web-research" `
+     --profile "<standard|deep>" `
+     --deep-trigger "<trigger-or-empty>" `
+     --start-time "<iso8601-start>" `
+     --end-time "<iso8601-end>" `
+     --duration-seconds "<seconds>" `
+     --scratch-path "<workspace>" `
+     --workers '<workers-json-array>' `
+     --final-citations '<citations-json-array>' `
+     --audit-verdicts '<verdicts-json-array>' `
+     --final-status "<success|partial>" `
+     --incomplete-stage-reasons '<reasons-json-array>' `
+     --output "<workspace>/provenance.json"
+   ```
 
+2. **Save final result.** Write the Markdown synthesis or partial findings to `<workspace>/final.md`.
+3. **Run cleanup helper.** Execute the matching cleanup helper:
+
+   #### Bash
    ```bash
-   ./scripts/cleanup-research-workspace.sh --workspace "<workspace>" --status "<success|partial>"
+   "$OFFLOAD_ROOT/scripts/cleanup-research-workspace.sh" --workspace "<workspace>" --status "<success|partial>"
+   ```
+
+   #### PowerShell
+   ```powershell
+   & "$OffloadRoot/scripts/cleanup-research-workspace.ps1" --workspace "<workspace>" --status "<success|partial>"
    ```
 
    - On `success`, the helper retains `final.md` and `provenance.json`, while deleting raw intermediate worker JSON files and the temporary repository snapshot.

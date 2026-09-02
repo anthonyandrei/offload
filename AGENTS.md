@@ -1,6 +1,6 @@
 # offload
 
-Agent-agnostic skill that delegates plan execution and research to headless `agy` subagent workers.
+Agent-agnostic skill that delegates plan execution and research to headless `agy` workers.
 
 ## Key decisions and architecture
 
@@ -14,6 +14,7 @@ Agent-agnostic skill that delegates plan execution and research to headless `agy
   5. Route external read-only questions to `web-research`.
   6. Route mixed local and external questions to `web-research` with a scoped snapshot.
   Single factual lookups stay local with the orchestrator.
+- **Shell-native helper families with platform parity**: Offload maintains two shell-native helper families: Bash 3.2+ for POSIX shells and PowerShell 7+ for PowerShell orchestrators. Orchestrators select the helper family for their current shell. Native workflows on Windows require only PowerShell 7+, Git, and `agy` without WSL, Git Bash, Python, or `jq`. Platform parity ensures equivalent workflow behavior, workspace isolation, provenance artifacts, and safety checks across supported shells.
 - **Worker roles, models, and modes**:
   - `scout` (`gemini-3.7-flash-low`, `--mode plan`): Discovers file paths for provisional tasks.
   - `gate-author` (`gemini-3.7-flash-high`, `accept-edits`): Generates automated test files from acceptance criteria.
@@ -21,9 +22,8 @@ Agent-agnostic skill that delegates plan execution and research to headless `agy
   - `reviewer` (`gemini-3.7-flash-high`, `--mode plan`): Evaluates git diffs adversarially against criteria.
   - `researcher` (`gemini-3.7-flash-high`, `--mode plan`): Collects structured findings for bounded questions within assigned scopes.
   - `synthesizer` and `auditor` (`gemini-3.7-flash-high`): Synthesizes claim ledgers and audits citation veracity for web research. A live smoke comparison retained Flash for every role because the proposed Pro split did not complete its mandatory synthesis stage.
-- **Corrected worker guarantees**: `--mode plan` is a behavioral hint, not a write barrier; direct testing showed plan-mode workers can write files. `--add-dir` grants directory access without confining writes. Security and containment rely on filesystem isolation (disposable workspaces with scoped file snapshots for research) and mechanical verification (clean git working trees, `comm -23` ownership diffs, frozen path diffs, and test gates for execution).
-- **Verification over claims**: Worker JSON status (`SUCCESS`/`ERROR`) is not trusted alone. Implementers are verified via mechanical git ownership diffs, frozen paths, and gate commands. Reviewers are verified via verbatim diff quote matching. Research findings are verified against the live repository with read-only orchestrator commands after scope validation, with direct checks on high-priority claims and sampling on lower-priority claims.
+- **Corrected worker guarantees**: `--mode plan` is a behavioral hint, not a write barrier; direct testing showed plan-mode workers can write files. `--add-dir` grants directory access without confining writes. Security and containment rely on filesystem isolation (disposable workspaces with scoped file snapshots for research) and mechanical verification (clean git working trees, execution scope checks, frozen path diffs, and test gates for execution).
+- **Verification over claims**: Worker JSON status (`SUCCESS`/`ERROR`) is not trusted alone. Implementers are verified via mechanical execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen paths, and gate commands. Reviewers are verified via verbatim diff quote matching. Research findings are verified against the live repository with read-only orchestrator commands after scope validation, with direct checks on high-priority claims and sampling on lower-priority claims.
 - **Preconditions**: Writing workflows require a clean git repository. Research workflows operate in isolated disposable workspaces.
-- **Offer, not gate**: For implementation splits of 3+ gated tasks or multi-angle audit fan-outs, the orchestrator offers offloading once per session; a negative response settles the decision for that session.
-- **Optional hook (Claude Code only)**: `hooks/offload-ask.sh` intercepts `ExitPlanMode` to offer execution offload deterministically.
+- **Proactive offer contract**: For implementation splits of 3+ gated tasks or multi-angle audit fan-outs, the orchestrator offers offloading once per session; a negative response settles the decision for that session. Offload uses a host-independent, model-readable proactive offer contract in context files (`AGENTS.md` or `CLAUDE.md`) rather than vendor-specific lifecycle hooks.
 - **Installation**: Tracked public repo (`github.com/anthonyandrei/offload`), installed via `skillshare install anthonyandrei/offload --track` as `_offload`. Manual installation copies the entire skill directory.

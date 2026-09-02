@@ -2,11 +2,16 @@
 
 Dispatches `agy` workers to implement file and code changes across independent gated tasks.
 
-## Preconditions
+## Preconditions and helper selection
+
+Select the helper family matching your current host shell:
+
+- **POSIX shells (Bash 3.2+)**: Use `scripts/run-agy-json.sh` and `scripts/check-execution-scope.sh`. Requires Git, `agy`, `jq`, and Python 3.
+- **PowerShell (PowerShell 7+)**: Use `scripts/run-agy-json.ps1` and `scripts/check-execution-scope.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 Check these before dispatching writing tasks:
 
-1. **`agy` is available.** Verify `agy` on `PATH` or at `~/.local/bin/agy`.
+1. **`agy` is available.** Verify `agy` via `run-agy-json` or ensure `agy` is on `PATH`, user-local bin, or `AGY_BIN`.
 2. **Target is a git repository.** Run `git rev-parse --is-inside-work-tree`.
 3. **Working tree is clean.** Run `git status --porcelain`. A clean tree is required to track edits, isolate changes, and roll back failed tasks.
 
@@ -19,7 +24,7 @@ Check these before dispatching writing tasks:
 | implementer | 3 | `gemini-3.7-flash-high` | `accept-edits` | Implement the task within owned files. |
 | reviewer | 4 | `gemini-3.7-flash-high` | `plan` | Evaluate git diff against criteria for diff-gated tasks. |
 
-`--mode plan` provides a behavioral hint, not a write barrier. `--add-dir` grants directory access without confining writes. Protection relies on a clean git working tree, mechanical diff comparisons, frozen path checks, and test gates.
+`--mode plan` provides a behavioral hint, not a write barrier. `--add-dir` grants directory access without confining writes. Protection relies on a clean git working tree, mechanical execution scope checks, frozen path checks, and test gates.
 
 ## Step 1: Split and scout
 
@@ -36,19 +41,40 @@ Assign each task exactly one gate:
 
 ### Scout
 
-For provisional writing tasks, dispatch scouts in parallel:
+For provisional writing tasks, dispatch scouts in parallel using the matching launcher helper:
 
+#### Bash
 ```bash
-AGY=$(command -v agy || echo "$HOME/.local/bin/agy")
+OFFLOAD_ROOT="<path to installed _offload skill>"
 SCOUT_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
-"$AGY" -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." \
+"$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --output "<scratch dir>/offload/<slug>.scout.json" \
+  --error "<scratch dir>/offload/<slug>.scout.err" \
+  -- \
+  -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." \
   --model gemini-3.7-flash-low \
   --output-format json \
   --mode plan \
   --json-schema "$SCOUT_SCHEMA" \
   --add-dir "<repo root>" \
-  --print-timeout 20m \
-  > "<scratch dir>/offload/<slug>.scout.json" 2> "<scratch dir>/offload/<slug>.scout.err"
+  --print-timeout 20m
+```
+
+#### PowerShell
+```powershell
+$OffloadRoot = "<path to installed _offload skill>"
+$ScoutSchema = '{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
+& "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --output "<scratch dir>/offload/<slug>.scout.json" `
+  --error "<scratch dir>/offload/<slug>.scout.err" `
+  -- `
+  -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." `
+  --model gemini-3.7-flash-low `
+  --output-format json `
+  --mode plan `
+  --json-schema $ScoutSchema `
+  --add-dir "<repo root>" `
+  --print-timeout 20m
 ```
 
 Read `structured_output` from the JSON response to extract the file list.
@@ -67,20 +93,38 @@ Machine-gated tasks only. Skip for diff-gated tasks.
 
 Dispatch one gate-author per machine-gated task in parallel:
 
+#### Bash
 ```bash
-"$AGY" -p "<criteria>. Write this test at <exact path>. Do not touch any other file. Do not dispatch nested workers." \
+"$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --output "<scratch dir>/offload/<slug>.gate.json" \
+  --error "<scratch dir>/offload/<slug>.gate.err" \
+  -- \
+  -p "<criteria>. Write this test at <exact path>. Do not touch any other file. Do not dispatch nested workers." \
   --model gemini-3.7-flash-high \
   --output-format json \
   --add-dir "<repo root>" \
   --mode accept-edits \
-  --print-timeout 20m \
-  > "<scratch dir>/offload/<slug>.gate.json" 2> "<scratch dir>/offload/<slug>.gate.err"
+  --print-timeout 20m
+```
+
+#### PowerShell
+```powershell
+& "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --output "<scratch dir>/offload/<slug>.gate.json" `
+  --error "<scratch dir>/offload/<slug>.gate.err" `
+  -- `
+  -p "<criteria>. Write this test at <exact path>. Do not touch any other file. Do not dispatch nested workers." `
+  --model gemini-3.7-flash-high `
+  --output-format json `
+  --add-dir "<repo root>" `
+  --mode accept-edits `
+  --print-timeout 20m
 ```
 
 Verify each created gate:
 
-1. **File existence.** Confirm the test file exists at the exact specified path.
-2. **Red check.** Run the gate command against the untouched tree. Require a non-zero exit code, unless the task is marked behavior-preserving where 0 is expected.
+1. **File existence.** Confirm the test file exists at the exact specified path (`[ -f "<exact path>" ]` in Bash or `Test-Path "<exact path>"` in PowerShell).
+2. **Red check.** Run the gate command against the untouched tree (`<gate cmd>` in Bash or `& <gate cmd>` in PowerShell). Require a non-zero exit code, unless the task is marked behavior-preserving where 0 is expected.
 3. **Read the test.** Read the test source to confirm assertions match the requirements.
 4. **Freeze and commit.** Stage and commit gate files (`git add <gate file>` and `git commit -m "offload: freeze gates"`) to establish a clean baseline.
 
@@ -88,14 +132,32 @@ Verify each created gate:
 
 Run from a clean git working tree. Dispatch implementers in parallel:
 
+#### Bash
 ```bash
-"$AGY" -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." \
+"$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --output "<scratch dir>/offload/<slug>.json" \
+  --error "<scratch dir>/offload/<slug>.err" \
+  -- \
+  -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." \
   --model gemini-3.7-flash-high \
   --output-format json \
   --add-dir "<repo root>" \
   --mode accept-edits \
-  --print-timeout 20m \
-  > "<scratch dir>/offload/<slug>.json" 2> "<scratch dir>/offload/<slug>.err"
+  --print-timeout 20m
+```
+
+#### PowerShell
+```powershell
+& "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --output "<scratch dir>/offload/<slug>.json" `
+  --error "<scratch dir>/offload/<slug>.err" `
+  -- `
+  -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." `
+  --model gemini-3.7-flash-high `
+  --output-format json `
+  --add-dir "<repo root>" `
+  --mode accept-edits `
+  --print-timeout 20m
 ```
 
 The prompt must specify owned files, frozen paths, the gate command, and prohibitions against touching unassigned files or dispatching nested workers.
@@ -112,46 +174,76 @@ Read worker JSON responses:
 
 Verify every worker reporting `SUCCESS`:
 
-1. **Ownership verification.** Compare modified paths against assigned paths mechanically:
+1. **Execution scope check.** Verify modified files against assigned owned and frozen paths using the execution scope check helper:
 
+   #### Bash
    ```bash
-   { git diff --name-only; git status --porcelain | awk '{print $2}'; } | sort -u > touched.txt
-   printf '%s\n' "${OWNED[@]}" | sort -u > owned.txt
-   comm -23 touched.txt owned.txt
+   "$OFFLOAD_ROOT/scripts/check-execution-scope.sh" \
+     --owned "<owned path 1>" \
+     --owned "<owned path 2>" \
+     --frozen "<frozen path 1>" \
+     --frozen "<frozen path 2>"
    ```
 
-   Any path listed by `comm -23` represents an ownership violation. Report violations regardless of gate results.
-
-2. **Frozen paths check.** Verify frozen files remain unmodified:
-
-   ```bash
-   git diff --quiet -- <frozen paths>; echo $?
+   #### PowerShell
+   ```powershell
+   & "$OffloadRoot/scripts/check-execution-scope.ps1" `
+     --owned "<owned path 1>" `
+     --owned "<owned path 2>" `
+     --frozen "<frozen path 1>" `
+     --frozen "<frozen path 2>"
    ```
 
-   A non-zero exit indicates a frozen path violation.
+   Any violation printed by the helper represents an unowned modification or a frozen path violation. The helper exits nonzero when violations exist. Report violations regardless of gate results.
 
-3. **Gate execution.**
+2. **Gate execution.**
    - Machine gate: Run the frozen gate command and check the exit code (0 required).
+     - Bash: `<gate cmd>`
+     - PowerShell: `& <gate cmd>`
    - Diff gate: Dispatch an adversarial reviewer worker to inspect the diff:
 
-   ```bash
-   REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
-   "$AGY" -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" \
-     --model gemini-3.7-flash-high \
-     --output-format json \
-     --mode plan \
-     --json-schema "$REVIEW_SCHEMA" \
-     --add-dir "<repo root>" \
-     --print-timeout 20m \
-     > "<scratch dir>/offload/<slug>.review.json" 2> "<scratch dir>/offload/<slug>.review.err"
-   ```
+     #### Bash
+     ```bash
+     REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
+     "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+       --output "<scratch dir>/offload/<slug>.review.json" \
+       --error "<scratch dir>/offload/<slug>.review.err" \
+       -- \
+       -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" \
+       --model gemini-3.7-flash-high \
+       --output-format json \
+       --mode plan \
+       --json-schema "$REVIEW_SCHEMA" \
+       --add-dir "<repo root>" \
+       --print-timeout 20m
+     ```
 
-   Read `structured_output` from the JSON response to extract criteria verdicts and quotes.
+     #### PowerShell
+     ```powershell
+     $ReviewSchema = '{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
+     & "$OffloadRoot/scripts/run-agy-json.ps1" `
+       --output "<scratch dir>/offload/<slug>.review.json" `
+       --error "<scratch dir>/offload/<slug>.review.err" `
+       -- `
+       -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" `
+       --model gemini-3.7-flash-high `
+       --output-format json `
+       --mode plan `
+       --json-schema $ReviewSchema `
+       --add-dir "<repo root>" `
+       --print-timeout 20m
+     ```
 
-   For each `pass` verdict, grep the quoted line against the actual diff. If all quotes match verbatim, accept the verdict (`agy+grep`). If any quote fails to match, any criterion fails, or the reviewer hedges, inspect the diff directly (`agy→orchestrator`).
+     Read `structured_output` from the JSON response to extract criteria verdicts and quotes.
+
+     For each `pass` verdict, verify the quoted line against the actual diff:
+     - Bash: `git diff | grep -F -- "<quote>"`
+     - PowerShell: `(git diff) | Select-String -SimpleMatch "<quote>"`
+
+     If all quotes match verbatim, accept the verdict (`agy+grep`). If any quote fails to match, any criterion fails, or the reviewer hedges, inspect the diff directly (`agy→orchestrator`).
 
 ## Step 6: Retry and fallback
 
-- **Implementer failure.** If a gate fails or an ownership violation occurs, redispatch that worker once with the specific failure output. If the second run fails, halt that task.
+- **Implementer failure.** If a gate fails or an execution scope violation occurs, redispatch that worker once with the specific failure output. If the second run fails, halt that task.
 - **Scout or gate-author failure.** Retry once with the concrete error. If the retry fails, complete that step directly as the orchestrator (`orchestrator (fallback)`).
 - **Reviewer failure.** If reviewer output is unparsable or fails validation, inspect the diff directly as the orchestrator (`agy→orchestrator`).

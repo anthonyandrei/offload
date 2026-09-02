@@ -2,6 +2,13 @@
 
 Conducts bounded local repository investigations, audits, and invariant checks using isolated workspaces and read-only orchestrator verification.
 
+## Preconditions and helper selection
+
+Select the helper family matching your current host shell:
+
+- **POSIX shells (Bash 3.2+)**: Use `scripts/make-research-workspace.sh`, `scripts/run-agy-json.sh`, and `scripts/cleanup-research-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
+- **PowerShell (PowerShell 7+)**: Use `scripts/make-research-workspace.ps1`, `scripts/run-agy-json.ps1`, and `scripts/cleanup-research-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+
 ## Assignment requirements
 
 Every repository research assignment must define four fields:
@@ -13,33 +20,62 @@ Every repository research assignment must define four fields:
 
 Open-ended research without a bounded question, defined scope, and evidence expectations is out of scope.
 
-## Filesystem isolation
+## Filesystem isolation and workspace creation
 
-Do not point workers directly at the live repository. `--mode plan` is a behavioral hint, not a write barrier. Direct testing demonstrated that plan-mode workers can write files.
+Do not point workers directly at the live repository. `--mode plan` is a behavioral hint, not a write barrier. Direct testing demonstrated that plan-mode workers can write files. Similarly, `--add-dir` grants directory access without confining worker writes.
 
-Isolate every research run:
+Isolate every research run in a disposable workspace:
 
-1. Create a disposable workspace outside the repository.
-2. Copy only the declared scope paths into a snapshot directory in the workspace (for example, `workspace/snapshot/`).
-3. Launch the worker with its working directory set to the workspace and `--add-dir` pointing at the snapshot directory.
-4. The live repository remains untouched by worker processes.
+#### Bash
+```bash
+OFFLOAD_ROOT="<path to installed _offload skill>"
+WORKSPACE=$("$OFFLOAD_ROOT/scripts/make-research-workspace.sh" --source-repo "$PWD" --path "<scope path 1>" --path "<scope path 2>")
+```
+
+#### PowerShell
+```powershell
+$OffloadRoot = "<path to installed _offload skill>"
+$Workspace = (& "$OffloadRoot/scripts/make-research-workspace.ps1" --source-repo (Get-Location).Path --path "<scope path 1>" --path "<scope path 2>").Trim()
+```
+
+The workspace helper creates a unique temporary directory, writes the `.offload-research-workspace` marker, and copies only declared scope paths into `<workspace>/repo/`. Launch the worker with its working directory set to the workspace and `--add-dir` pointing at `<workspace>/repo`. The live repository remains untouched by worker processes.
 
 ## Worker dispatch
 
-Dispatch researchers in parallel using `gemini-3.7-flash-high` with a structured schema:
+Dispatch researchers in parallel using `gemini-3.7-flash-high` with a structured schema and the matching launcher helper:
 
+#### Bash
 ```bash
-AGY=$(command -v agy || echo "$HOME/.local/bin/agy")
 RESEARCH_SCHEMA='{"type":"object","properties":{"lane_id":{"type":"string"},"lane_kind":{"type":"string","enum":["research","audit"]},"question":{"type":"string"},"overall_status":{"type":"string","enum":["complete","inconclusive","blocked"]},"uncertainty":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"finding":{"type":"string"},"priority":{"type":"string","enum":["high","medium","low"]},"status":{"type":"string","enum":["confirmed","refuted","inconclusive"]},"evidence_locations":{"type":"array","items":{"type":"string"}},"evidence_commands":{"type":"array","items":{"type":"string"}}},"required":["finding","priority","status","evidence_locations"]}}},"required":["lane_id","lane_kind","question","overall_status","uncertainty","findings"]}'
 
-"$AGY" -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." \
+"$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --output "$WORKSPACE/<slug>.research.json" \
+  --error "$WORKSPACE/<slug>.research.err" \
+  -- \
+  -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." \
   --model gemini-3.7-flash-high \
   --output-format json \
   --mode plan \
   --json-schema "$RESEARCH_SCHEMA" \
-  --add-dir "<snapshot dir>" \
-  --print-timeout 20m \
-  > "<workspace>/<slug>.research.json" 2> "<workspace>/<slug>.research.err"
+  --add-dir "$WORKSPACE/repo" \
+  --print-timeout 20m
+```
+
+#### PowerShell
+```powershell
+$ResearchSchema = '{"type":"object","properties":{"lane_id":{"type":"string"},"lane_kind":{"type":"string","enum":["research","audit"]},"question":{"type":"string"},"overall_status":{"type":"string","enum":["complete","inconclusive","blocked"]},"uncertainty":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"finding":{"type":"string"},"priority":{"type":"string","enum":["high","medium","low"]},"status":{"type":"string","enum":["confirmed","refuted","inconclusive"]},"evidence_locations":{"type":"array","items":{"type":"string"}},"evidence_commands":{"type":"array","items":{"type":"string"}}},"required":["finding","priority","status","evidence_locations"]}}},"required":["lane_id","lane_kind","question","overall_status","uncertainty","findings"]}'
+
+& "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --output "$Workspace/<slug>.research.json" `
+  --error "$Workspace/<slug>.research.err" `
+  -- `
+  -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." `
+  --model gemini-3.7-flash-high `
+  --output-format json `
+  --mode plan `
+  --json-schema $ResearchSchema `
+  --add-dir "$Workspace/repo" `
+  --print-timeout 20m
 ```
 
 Read `structured_output` from the JSON response to extract validated findings.
@@ -62,4 +98,14 @@ Never accept a worker's research findings on trust alone. Run this verification 
 
 ## Cleanup
 
-After verification completes, delete the temporary workspace and snapshot directory.
+After verification completes, delete the temporary workspace and snapshot directory using the matching cleanup helper:
+
+#### Bash
+```bash
+"$OFFLOAD_ROOT/scripts/cleanup-research-workspace.sh" --workspace "$WORKSPACE" --status success
+```
+
+#### PowerShell
+```powershell
+& "$OffloadRoot/scripts/cleanup-research-workspace.ps1" --workspace "$Workspace" --status success
+```
