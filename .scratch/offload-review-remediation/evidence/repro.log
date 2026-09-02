@@ -1,0 +1,13 @@
+b.txt
+parallel_worker_A_exit=1
+a.txt
+parallel_worker_B_exit=1
+committed_frozen_change_exit=0
+plain_diff_line_count=0
+actual_changes=M  a.txt; ?? new.txt
+[{"finding":"must reach synthesizer"}]
+direct_extractor_capture_is_null=True
+native_extractor_capture_is_null=False
+cleanup_exit=0
+routing_outcomes_retained=False
+cleanup_workspace=C:\Users\antho\AppData\Local\Temp\offload-research-1efd6d8ee4cd44ec84e557f101930ecb

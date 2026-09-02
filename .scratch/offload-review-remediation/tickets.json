@@ -1,0 +1,505 @@
+{
+  "schema_version": 1,
+  "status": "published",
+  "source_revision": "cfc9f4e",
+  "date": "2026-09-03",
+  "tickets": [
+    {
+      "id": "01",
+      "slug": "execute-model-routing-tests",
+      "title": "Execute every PowerShell model-routing test group",
+      "priority": "P2",
+      "findings": [
+        "F-09"
+      ],
+      "blocked": [],
+      "problem": "Fifty bare script blocks in tests/test_model_routing.ps1 create ScriptBlock objects without running their assertions. The existing green result covers only the invoked portions.",
+      "files": [
+        "tests/test_model_routing.ps1"
+      ],
+      "refs": [
+        "tests/test_model_routing.ps1:366"
+      ],
+      "deliverable": "Invoke the dormant groups and make their failures propagate to the test command. Keep the existing test intent and isolate each fixture as needed.",
+      "accept": [
+        "Every one of the 50 groups listed in the audit's uninvoked-test-blocks.json executes rather than printing its source.",
+        "A deliberate assertion failure in a representative formerly dormant group makes a disposable copy of the suite exit nonzero.",
+        "The ordinary suite exits zero after the exercised behavior is verified. Any newly exposed production defect is documented as a blocker instead of weakening or skipping its assertion.",
+        "Test output distinguishes executed assertions from script text; the existing invoked assertions still run."
+      ],
+      "verify": "Run pwsh -NoProfile -File tests/test_model_routing.ps1, plus the deliberate-failure check in a disposable copy. No live AGY call is needed.",
+      "limits": "This ticket repairs test execution. Do not change model defaults, retry limits, or production behavior merely to turn the suite green.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/3",
+      "github_number": 3
+    },
+    {
+      "id": "02",
+      "slug": "capture-powershell-research-output",
+      "title": "Make documented PowerShell research handoffs return usable values",
+      "priority": "P1",
+      "findings": [
+        "F-01"
+      ],
+      "blocked": [],
+      "problem": "The workspace and extraction helpers write to Console.Out, while the mode examples capture the PowerShell pipeline. Workspace.Trim() fails on null, and merged researcher evidence can silently become null.",
+      "files": [
+        "scripts/make-research-workspace.ps1",
+        "scripts/extract-structured-output.ps1",
+        "modes/repo-research.md",
+        "modes/web-research.md",
+        "tests/test_research_helpers.ps1"
+      ],
+      "refs": [
+        "scripts/make-research-workspace.ps1:170",
+        "scripts/extract-structured-output.ps1:77",
+        "modes/repo-research.md:40",
+        "modes/web-research.md:211"
+      ],
+      "deliverable": "Make the helpers emit their result through the PowerShell pipeline and keep diagnostics on the error channel. Test the exact documented in-process assignments and native pwsh -File invocation.",
+      "accept": [
+        "The documented workspace assignment returns one nonempty existing workspace path and .Trim() succeeds.",
+        "The documented extraction assignment for two valid researcher envelopes returns nonempty JSON containing both findings.",
+        "Both direct & invocation and native pwsh -File invocation return the same semantic payload without diagnostic text mixed into JSON.",
+        "Invalid input still fails with the intended exit/error contract, and the mode examples match the tested commands."
+      ],
+      "verify": "Add workflow-shaped cases to tests/test_research_helpers.ps1 using disposable workspaces and fixture envelopes, then run that suite.",
+      "limits": "Keep the Windows workflow native to PowerShell 7. Do not add Bash, jq, or Python dependencies.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/4",
+      "github_number": 4
+    },
+    {
+      "id": "03",
+      "slug": "verify-baseline-relative-scope",
+      "title": "Check committed and working-tree edits against a fixed baseline",
+      "priority": "P1",
+      "findings": [
+        "F-03",
+        "F-06"
+      ],
+      "blocked": [],
+      "problem": "The scope helpers trust git status. A worker can commit a frozen or unowned edit and pass with a clean status. Bash also returns success when the git status command in process substitution fails.",
+      "files": [
+        "scripts/check-execution-scope.ps1",
+        "scripts/check-execution-scope.sh",
+        "tests/test_execution_scope.ps1",
+        "tests/test_execution_scope.sh"
+      ],
+      "refs": [
+        "scripts/check-execution-scope.ps1:145",
+        "scripts/check-execution-scope.sh:138"
+      ],
+      "deliverable": "Expand the paired helper contract with an explicit immutable baseline revision. Compute the complete final delta against that revision and compare frozen contents with the baseline. Preserve the old call form only until ticket 05 migrates callers.",
+      "accept": [
+        "A committed unowned edit and a committed frozen edit both produce nonzero results even when git status is clean.",
+        "Owned-only committed, staged, unstaged, and new-file changes pass; unowned or frozen changes in each applicable state fail.",
+        "Renames and deletions check all affected paths, with existing path normalization and NUL-safe filename handling preserved.",
+        "Missing or invalid supplied baselines fail; the helper never silently substitutes current HEAD for a supplied baseline.",
+        "A mocked git status failure with exit 73, and failures of any other Git query used for verification, produce nonzero helper results.",
+        "Both shell families expose equivalent baseline semantics and diagnostics."
+      ],
+      "verify": "Extend and run both execution-scope suites with temporary Git repositories and controlled Git failure mocks. Check final content relative to the captured baseline, not a worker-reported revision.",
+      "limits": "This is the expand stage. Temporary compatibility is not sufficient to close F-03; ticket 05 must require the baseline in every execution workflow. Worktrees and baseline checks are not an OS write sandbox.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/5",
+      "github_number": 5
+    },
+    {
+      "id": "04",
+      "slug": "add-isolated-execution-workspaces",
+      "title": "Add a verified lifecycle for isolated execution worktrees",
+      "priority": "P1",
+      "findings": [
+        "F-02"
+      ],
+      "blocked": [
+        "03"
+      ],
+      "problem": "Per-worker ownership cannot be checked reliably while multiple writers share one working tree. The execution workflow needs a small, tested mechanism for creating isolated candidates and importing only their verified changes.",
+      "files": [
+        "scripts/",
+        "tests/",
+        "docs/adr/"
+      ],
+      "refs": [
+        "modes/execution.md:136",
+        "modes/execution.md:178"
+      ],
+      "deliverable": "Add paired shell-native execution-workspace helpers with a narrow create, verify/export, integrate, and cleanup contract. Store an orchestrator-owned manifest outside the worker checkout with task identity, absolute paths, baseline revision, and owned/frozen paths. Keep this beside the current workflow until ticket 05.",
+      "accept": [
+        "Two workers starting from the same baseline can independently edit a.txt and b.txt, and each scope check passes against only its own candidate.",
+        "An unowned or frozen change in either candidate blocks export/integration, including when the worker has committed it.",
+        "Export captures committed and uncommitted final changes and records a content digest; integration consumes only that verified artifact.",
+        "Integration into a disposable integration checkout preflights the whole change, detects conflicts, and retains candidates on failure without partially publishing changes to the caller checkout.",
+        "Creation and cleanup only operate on manifest-owned paths; no existing caller checkout or unrelated worktree is reset, cleaned, or removed.",
+        "The paired helpers pass equivalent disposable-repository cases and add no Windows dependency beyond PowerShell 7 and Git."
+      ],
+      "verify": "Add focused lifecycle suites for both shells using fake workers. Exercise two sibling tasks, a scope violation, an integration conflict, and cleanup ownership guards.",
+      "limits": "This is an additive workspace capability. Keep its interface small enough for ticket 05 to use directly. Do not build a general scheduler or change the model policy. Record the worktree decision in a short ADR.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/6",
+      "github_number": 6
+    },
+    {
+      "id": "05",
+      "slug": "migrate-execution-to-isolated-workers",
+      "title": "Run execution stages through isolated workspaces and retire shared-tree dispatch",
+      "priority": "P1",
+      "findings": [
+        "F-02",
+        "F-03"
+      ],
+      "blocked": [
+        "03",
+        "04"
+      ],
+      "problem": "Adding baseline and workspace helpers does not fix the existing instructions. Gate authors still write before an untouched baseline is established, and implementers still share the caller's tree.",
+      "files": [
+        "modes/execution.md",
+        "SKILL.md",
+        "README.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CONTEXT.md",
+        "scripts/check-execution-scope.ps1",
+        "scripts/check-execution-scope.sh",
+        "tests/test_workflow_static.ps1",
+        "tests/"
+      ],
+      "refs": [
+        "modes/execution.md:90",
+        "modes/execution.md:132",
+        "modes/execution.md:136",
+        "modes/execution.md:178"
+      ],
+      "deliverable": "Migrate gate-author and implementer dispatch to ticket 04's lifecycle. Verify gate authors against the original baseline before importing approved tests into an integration checkout. Freeze that gate baseline before creating implementer worktrees. Retire no-baseline scope calls and shared-tree writing examples.",
+      "accept": [
+        "The documented Bash and PowerShell machine-gated flow completes with two disjoint fake implementers and imports both verified changes without sibling scope failures.",
+        "A gate author that commits an unowned source edit is rejected before its output can become the implementation baseline.",
+        "Implementers receive the approved frozen gates and an externally recorded baseline; committed gate edits are rejected.",
+        "Overlapping assignments run serially from the newly accepted baseline, and all accepted deltas undergo scope and gate verification before publication to the caller.",
+        "Retries retain the original verification baseline for that writing stage; a failed attempt never becomes an implicitly trusted baseline.",
+        "Quota handoff records still-running candidates and artifacts immediately without waiting for sibling completion; normal cleanup waits for workers to stop.",
+        "All execution-mode examples supply a baseline and isolated working directory, and the scope helpers reject omitted baselines after migration.",
+        "A final combined gate check runs before publishing the integrated result; conflicts or failed gates leave the caller's existing work intact."
+      ],
+      "verify": "Run executable workflow cases with fake AGY workers for both shell families, the scope suites, and relevant static checks. Inspect current architecture pointers for agreement with the migrated mode.",
+      "limits": "This ticket is the migrate and contract stage for one execution mode. Use the helpers from ticket 04 rather than adding another orchestration framework. Diff-review completeness and acceptance remain tickets 06 and 07.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/7",
+      "github_number": 7
+    },
+    {
+      "id": "06",
+      "slug": "review-complete-change-artifacts",
+      "title": "Review one complete change artifact against the execution baseline",
+      "priority": "P1",
+      "findings": [
+        "F-04"
+      ],
+      "blocked": [
+        "05"
+      ],
+      "problem": "Bare git diff omits staged changes and new files. Reviewers and quote matching can agree on an incomplete diff and still miss part of a task.",
+      "files": [
+        "modes/execution.md",
+        "scripts/",
+        "tests/"
+      ],
+      "refs": [
+        "modes/execution.md:216",
+        "modes/execution.md:232",
+        "modes/execution.md:242"
+      ],
+      "deliverable": "Produce one immutable review artifact from each verified candidate and its recorded baseline, then pass the identical artifact to the reviewer and quote verifier. Reuse the delta export from ticket 04 where possible.",
+      "accept": [
+        "A fixture containing a committed edit, staged edit, unstaged edit, and new file exposes every final change to review.",
+        "Deletion and rename information is present, and binary changes are explicitly identified for direct review instead of silently omitted.",
+        "The reviewer prompt reads the recorded artifact rather than running an independent bare git diff.",
+        "Quote verification uses the exact artifact bytes or their verified digest; modifying the candidate after artifact creation cannot silently change the evidence being accepted.",
+        "Git or artifact-generation failures prevent review acceptance, and both shells produce equivalent review coverage."
+      ],
+      "verify": "Add focused artifact-generation tests and execute the documented reviewer handoff with a fake reviewer. Compare the artifact's path/content coverage with the baseline delta.",
+      "limits": "This ticket guarantees complete evidence. Ticket 07 adds exhaustive criterion coverage; do not treat successful quote lookup alone as sufficient acceptance.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/8",
+      "github_number": 8
+    },
+    {
+      "id": "07",
+      "slug": "require-complete-reviewer-verdicts",
+      "title": "Require one valid reviewer verdict for every requested criterion",
+      "priority": "P1",
+      "findings": [
+        "F-05"
+      ],
+      "blocked": [
+        "06"
+      ],
+      "problem": "The reviewer schema accepts an empty criteria array, and the workflow accepts when all returned quotes match. Empty or partial responses can therefore pass without addressing the task.",
+      "files": [
+        "modes/execution.md",
+        "scripts/",
+        "tests/"
+      ],
+      "refs": [
+        "modes/execution.md:210",
+        "modes/execution.md:246"
+      ],
+      "deliverable": "Assign stable IDs to requested criteria and add a mechanical coverage check in both shell workflows before accepting any reviewer response.",
+      "accept": [
+        "Empty output is rejected when criteria were requested.",
+        "Missing, duplicate, and unknown criterion IDs are rejected, even when every returned quote exists in the artifact.",
+        "Each requested criterion has exactly one verdict; fail or hedge prevents automated acceptance.",
+        "Every pass has a literal matching evidence line from ticket 06's artifact, with matching performed on data rather than interpolated shell code.",
+        "A complete all-pass response with valid evidence is accepted, and malformed or incomplete responses route to direct orchestrator review."
+      ],
+      "verify": "Use fixed criterion sets and fake reviewer envelopes for empty, partial, duplicate, unknown, failed, hedged, forged-quote, and complete outputs. Exercise both documented shell flows.",
+      "limits": "A minimum array length alone does not establish coverage. Preserve the existing direct-review fallback and bounded retry policy.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/9",
+      "github_number": 9
+    },
+    {
+      "id": "08",
+      "slug": "require-complete-citation-audits",
+      "title": "Require audit coverage for every claim and citation pair",
+      "priority": "P1",
+      "findings": [
+        "F-05"
+      ],
+      "blocked": [],
+      "problem": "The auditor schema accepts an empty citation_audits array with final_status pass. The workflow does not compare returned audits with the synthesis claim ledger.",
+      "files": [
+        "modes/web-research.md",
+        "scripts/",
+        "tests/test_research_modes.sh",
+        "tests/test_workflow_static.ps1",
+        "tests/"
+      ],
+      "refs": [
+        "modes/web-research.md:292",
+        "modes/web-research.md:306"
+      ],
+      "deliverable": "Derive the required claim_id and URL pairs from the ledger and validate exact audit coverage and verdict consistency before accepting the synthesis.",
+      "accept": [
+        "A nonempty required pair set rejects empty or partial citation_audits even when final_status is pass.",
+        "Duplicate and unknown claim/citation pairs are rejected; two citations for one claim require separate coverage.",
+        "Every required pair has one supported verdict before automated acceptance, and failed or unresolved entries cannot coexist with an accepted overall pass.",
+        "A ledger with no auditable pairs follows an explicit documented branch and cannot bypass citations required by the research assignment.",
+        "Complete valid coverage passes in both shell workflows; invalid responses follow the existing bounded revision or orchestrator fallback path."
+      ],
+      "verify": "Run fixture-based audit acceptance tests for empty, partial, duplicate, unknown, contradictory, and complete results. Use synthetic ledger data and no live browsing.",
+      "limits": "Do not change what constitutes a trustworthy source in this ticket. This fix checks coverage and internal consistency of the required audit.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/10",
+      "github_number": 10
+    },
+    {
+      "id": "09",
+      "slug": "close-launcher-failure-lifetime",
+      "title": "Prevent orphaned workers when PowerShell output setup fails",
+      "priority": "P2",
+      "findings": [
+        "F-07"
+      ],
+      "blocked": [
+        "01"
+      ],
+      "problem": "The PowerShell launcher starts AGY before opening output streams. If stream creation fails, the child escapes cleanup and continues running after the launcher exits.",
+      "files": [
+        "scripts/run-agy-json.ps1",
+        "tests/test_model_routing.ps1"
+      ],
+      "refs": [
+        "scripts/run-agy-json.ps1:408",
+        "scripts/run-agy-json.ps1:413"
+      ],
+      "deliverable": "Validate destinations and open owned resources before starting the child. Put every post-start operation under a cleanup path that terminates and waits for the child on launcher failure and disposes streams.",
+      "accept": [
+        "Identical output/error paths fail before a fake worker starts.",
+        "Locked or invalid output destinations fail without starting a worker.",
+        "A controlled exception after launch causes the child to stop before the launcher returns; no completion marker appears afterward.",
+        "Streams are disposed on success, launch failure, and post-launch failure, so the output files can be reopened.",
+        "Successful launch output, error capture, process metadata, exit codes, and explicit quota handoff behavior remain consistent with their existing contracts."
+      ],
+      "verify": "Use the now-executed PowerShell suite and disposable fake workers that write delayed markers. Do not consume live AGY quota.",
+      "limits": "The blocker establishes that routing test groups actually execute. If new cases belong in a separate focused suite, keep that suite explicitly invoked.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/11",
+      "github_number": 11
+    },
+    {
+      "id": "10",
+      "slug": "avoid-following-cleanup-links",
+      "title": "Keep PowerShell cleanup inside the marked workspace",
+      "priority": "P2",
+      "findings": [
+        "F-08"
+      ],
+      "blocked": [],
+      "problem": "Cleanup checks top-level links but recursively enumerates files under ordinary directories. A nested junction lets attribute changes reach a sibling directory outside the workspace.",
+      "files": [
+        "scripts/cleanup-research-workspace.ps1",
+        "tests/test_research_helpers.ps1"
+      ],
+      "refs": [
+        "scripts/cleanup-research-workspace.ps1:122"
+      ],
+      "deliverable": "Traverse entries without following reparse points at any depth. Remove the link itself, and only clear file attributes within the verified workspace traversal.",
+      "accept": [
+        "A nested junction to a controlled sibling fixture is removed without changing the target's file content, existence, or read-only attributes.",
+        "Ordinary read-only workspace files are removed on success, and retained report/provenance files remain intact.",
+        "Top-level and nested links use the same no-follow rule.",
+        "Marker validation, Git-root rejection, and other protected-path checks still fail safely.",
+        "Tests resolve and verify every destructive fixture path inside a dedicated temporary test root before cleanup; no external or user-owned directory is used."
+      ],
+      "verify": "Add and run controlled junction fixtures in tests/test_research_helpers.ps1 on Windows. Use existing-target links for the confirmed reproduction; record platform limitations rather than inventing unsupported coverage.",
+      "limits": "The separate dangling-link allegation was not verified in the audit and is not a required reproduction. Preserve failure retention behavior.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/12",
+      "github_number": 12
+    },
+    {
+      "id": "11",
+      "slug": "align-routing-provenance-examples",
+      "title": "Make routing provenance examples match both validators",
+      "priority": "P2",
+      "findings": [
+        "F-11"
+      ],
+      "blocked": [],
+      "problem": "The instructions attach an individual attempt as worker.routing, but both provenance validators require a schema_version and attempts container.",
+      "files": [
+        "SKILL.md",
+        "modes/web-research.md",
+        "tests/test_routing_provenance.ps1",
+        "tests/test_research_modes.sh",
+        "tests/"
+      ],
+      "refs": [
+        "SKILL.md:143",
+        "modes/web-research.md:325",
+        "scripts/collect-provenance.ps1:214"
+      ],
+      "deliverable": "Use the existing validator contract, worker.routing = {schema_version: 1, attempts: [...]}. Add a complete reusable fixture and reference it from the shared instructions and web mode.",
+      "accept": [
+        "The exact documented worker object passes both provenance helpers and preserves all recorded attempt fields.",
+        "A two-attempt example retains both attempts under one stable worker identity.",
+        "The previously documented bare-attempt shape is rejected by both test paths.",
+        "The fixture is the source of the complete example or is mechanically checked against it, so documentation and validation cannot drift silently.",
+        "The root router remains under 500 lines and links to detail instead of duplicating the full record schema."
+      ],
+      "verify": "Run the PowerShell routing-provenance suite and a Bash case using the same fixture through collect-provenance.sh. Compare parsed results.",
+      "limits": "Keep the existing schema version and model policy. This ticket does not make optional embedding mandatory; retention is ticket 14.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/13",
+      "github_number": 13
+    },
+    {
+      "id": "12",
+      "slug": "preserve-per-attempt-artifacts",
+      "title": "Give every worker attempt distinct evidence paths",
+      "priority": "P2",
+      "findings": [
+        "F-13"
+      ],
+      "blocked": [],
+      "problem": "Retry and revision examples reuse synthesizer.json and auditor.json. The launchers truncate those destinations, so attempt 1's routing record can point to attempt 2's output.",
+      "files": [
+        "SKILL.md",
+        "modes/execution.md",
+        "modes/repo-research.md",
+        "modes/web-research.md",
+        "tests/"
+      ],
+      "refs": [
+        "modes/web-research.md:200",
+        "modes/web-research.md:279",
+        "modes/web-research.md:307"
+      ],
+      "deliverable": "Keep worker_id stable and use attempt-specific output, error, and process-artifact paths throughout dispatch/retry examples. Record an explicit accepted attempt for downstream stages.",
+      "accept": [
+        "Initial and retry dispatch for the same worker use distinct artifact paths containing their attempt numbers.",
+        "A fake second dispatch leaves the first output/error artifacts byte-for-byte intact.",
+        "Both attempt records point to their own artifacts and retain the same worker_id.",
+        "Downstream synthesis, audit, and report examples consume the explicitly selected attempt rather than whichever file was most recently overwritten.",
+        "All three modes follow the convention, and maximum two attempts plus existing retry classification remain unchanged."
+      ],
+      "verify": "Execute two fake attempts using each shell's documented naming convention, compare first-attempt hashes, and validate the resulting routing record. No launcher auto-renaming is required.",
+      "limits": "This ticket changes orchestration filenames, not model selection or retry count. Coordinate edits to execution.md with tickets 05 through 07 instead of applying concurrent edits to that file.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/14",
+      "github_number": 14
+    },
+    {
+      "id": "13",
+      "slug": "merge-only-verified-research-attempts",
+      "title": "Continue synthesis from verified successful research angles",
+      "priority": "P2",
+      "findings": [
+        "F-12"
+      ],
+      "blocked": [
+        "02",
+        "12"
+      ],
+      "problem": "The synthesis snippets glob every researcher JSON file. A failed envelope stops extraction even when two successful independent angles satisfy the documented partial-success policy.",
+      "files": [
+        "modes/web-research.md",
+        "tests/test_research_helpers.ps1",
+        "tests/test_research_modes.sh"
+      ],
+      "refs": [
+        "modes/web-research.md:197",
+        "modes/web-research.md:210",
+        "modes/web-research.md:316"
+      ],
+      "deliverable": "Build the extraction input list from the verified selected attempts, then check independent surviving research angles before synthesis. Retain failed and superseded files as diagnostics.",
+      "accept": [
+        "Two verified successful independent angles plus one exhausted ERROR worker produce merged evidence from the two successful angles.",
+        "A failed attempt followed by a verified retry contributes only the retry's findings.",
+        "Completed but unverified results never enter synthesis.",
+        "Two successful attempts for the same assignment do not count as two independent angles.",
+        "Fewer than two surviving independent angles takes the documented fallback instead of dispatching synthesis.",
+        "Both Bash and PowerShell snippets pass explicit selected file arrays and avoid globs that include failed or superseded envelopes."
+      ],
+      "verify": "Run fake researcher fixtures through the actual extraction helper in each shell, including a successful PowerShell pipeline capture from ticket 02.",
+      "limits": "Keep the existing independent-angle threshold and recovery policy. Do not silently drop failing files from provenance.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/15",
+      "github_number": 15
+    },
+    {
+      "id": "14",
+      "slug": "retain-routing-history-after-cleanup",
+      "title": "Preserve routing history and explain pruned evidence after success",
+      "priority": "P2",
+      "findings": [
+        "F-10"
+      ],
+      "blocked": [
+        "10",
+        "11",
+        "12"
+      ],
+      "problem": "Success cleanup deletes routing-outcomes.json despite the shared requirement to maintain it. Optional web provenance embedding does not protect repository-research runs or explain deleted evidence paths.",
+      "files": [
+        "scripts/cleanup-research-workspace.ps1",
+        "scripts/cleanup-research-workspace.sh",
+        "SKILL.md",
+        "modes/repo-research.md",
+        "modes/web-research.md",
+        "tests/test_research_helpers.ps1",
+        "tests/test_research_modes.sh"
+      ],
+      "refs": [
+        "scripts/cleanup-research-workspace.ps1:111",
+        "scripts/cleanup-research-workspace.sh:130",
+        "SKILL.md:120"
+      ],
+      "deliverable": "Preserve routing-outcomes.json on success. Before deleting raw artifacts, write and retain an evidence disposition manifest with each referenced relative path, existence before cleanup, content hash for existing regular files, and retained or pruned status. Keep raw-file pruning as the default success policy.",
+      "accept": [
+        "Success cleanup preserves final.md, provenance.json when present, the workspace marker, routing-outcomes.json, and the evidence disposition manifest.",
+        "Both attempts and their verification verdicts remain readable after cleanup in repository and web research fixtures.",
+        "Every evidence path in the retained routing record has a disposition entry; missing inputs are explicitly marked missing instead of reported as pruned or verified.",
+        "Evidence paths cannot authorize reads, hashing, attribute changes, or deletion outside the workspace or through a reparse point; external/link paths receive an explicit uninspected entry.",
+        "An invalid routing record or failure to write the disposition manifest stops success cleanup before raw artifacts are removed.",
+        "Failure/interruption retention remains unchanged, and repeating successful cleanup preserves the original manifest information rather than reclassifying pruned files as missing.",
+        "Both shell families produce the same retention and disposition behavior."
+      ],
+      "verify": "Run paired cleanup fixtures containing successful and failed attempts, absent optional provenance, missing evidence, and an out-of-workspace evidence reference. Verify surviving records and disposal metadata after success and after a repeated cleanup.",
+      "limits": "Use a separate disposition manifest so the routing schema need not change. It records provenance of cleanup, not a claim that pruned content remains available. Do not retain complete repository snapshots by default.",
+      "github_url": "https://github.com/anthonyandrei/offload/issues/16",
+      "github_number": 16
+    }
+  ]
+}

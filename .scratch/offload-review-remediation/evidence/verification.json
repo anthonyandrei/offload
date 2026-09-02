@@ -1,0 +1,129 @@
+{
+  "reviewed_commit": "cfc9f4e",
+  "verification_method": "Every worker claim inspected against live source. Runtime reproductions for accepted failure modes where practical. No claims accepted from worker status alone.",
+  "workers": [
+    {
+      "worker_id": "execution",
+      "finding_decisions": [
+        {
+          "index": 1,
+          "status": "accepted",
+          "finding": "F-02"
+        },
+        {
+          "index": 2,
+          "status": "accepted",
+          "finding": "F-03"
+        },
+        {
+          "index": 3,
+          "status": "not_adopted",
+          "reason": "Retry rollback is not inherently required; retaining partial work can be correct."
+        },
+        {
+          "index": 4,
+          "status": "accepted",
+          "finding": "F-04"
+        },
+        {
+          "index": 5,
+          "status": "narrowed",
+          "finding": "F-03",
+          "reason": "Ordinary uncommitted stray changes conflict with clean-tree precondition; immutable baseline and gate-author checks still needed."
+        },
+        {
+          "index": 6,
+          "status": "not_adopted",
+          "reason": "No requirement that orchestrator commit final changes; lack of commit is not independently a defect."
+        }
+      ]
+    },
+    {
+      "worker_id": "helpers",
+      "finding_decisions": [
+        {
+          "index": 1,
+          "status": "accepted",
+          "finding": "F-06",
+          "reason": "Reproduced with controlled failing git-status mock; suggested index.lock command not relied on."
+        },
+        {
+          "index": 2,
+          "status": "unverified",
+          "reason": "Follow-up disposable dangling-junction test was rejected by automatic approval policy. No confirmed failure included."
+        },
+        {
+          "index": 3,
+          "status": "accepted",
+          "finding": "F-08",
+          "reason": "Reproduced external readonly attribute mutation; did not observe external file deletion."
+        },
+        {
+          "index": 4,
+          "status": "accepted",
+          "finding": "F-07",
+          "reason": "Reproduced child completion after output-open failure using fake worker."
+        },
+        {
+          "index": 5,
+          "status": "lower_impact_observation",
+          "reason": "Source confirms whitespace override falls back; not promoted to main defect list."
+        },
+        {
+          "index": 6,
+          "status": "coverage_observation",
+          "reason": "No dedicated Bash routing-provenance tests found; not itself proof of another runtime defect."
+        }
+      ]
+    },
+    {
+      "worker_id": "research",
+      "finding_decisions": [
+        {
+          "index": 1,
+          "status": "refuted",
+          "reason": "Actual auditor command uses backticks and parses without errors."
+        },
+        {
+          "index": 2,
+          "status": "not_adopted",
+          "reason": "Scalar splat behavior reproduced, but one surviving evidence angle does not meet supported synthesis preconditions."
+        },
+        {
+          "index": 3,
+          "status": "accepted_narrowed",
+          "finding": "F-10",
+          "reason": "Required routing history deletion confirmed; raw scratch deletion on success is intentional."
+        },
+        {
+          "index": 4,
+          "status": "accepted",
+          "finding": "F-12"
+        },
+        {
+          "index": 5,
+          "status": "accepted",
+          "finding": "F-11"
+        },
+        {
+          "index": 6,
+          "status": "accepted",
+          "finding": "F-13"
+        }
+      ]
+    }
+  ],
+  "orchestrator_findings": [
+    "F-01",
+    "F-05",
+    "F-09"
+  ],
+  "final_findings_count": 13,
+  "tests": {
+    "entry_points": 9,
+    "all_exit_zero": true,
+    "powershell_assertions_reported": 492,
+    "uninvoked_powershell_blocks": 50
+  },
+  "source_edits": false
+}

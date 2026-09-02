@@ -1,0 +1,86 @@
+[
+  {
+    "id": "01",
+    "number": 3,
+    "url": "https://github.com/anthonyandrei/offload/issues/3",
+    "title": "Execute every PowerShell model-routing test group"
+  },
+  {
+    "id": "02",
+    "number": 4,
+    "url": "https://github.com/anthonyandrei/offload/issues/4",
+    "title": "Make documented PowerShell research handoffs return usable values"
+  },
+  {
+    "id": "03",
+    "number": 5,
+    "url": "https://github.com/anthonyandrei/offload/issues/5",
+    "title": "Check committed and working-tree edits against a fixed baseline"
+  },
+  {
+    "id": "04",
+    "number": 6,
+    "url": "https://github.com/anthonyandrei/offload/issues/6",
+    "title": "Add a verified lifecycle for isolated execution worktrees"
+  },
+  {
+    "id": "05",
+    "number": 7,
+    "url": "https://github.com/anthonyandrei/offload/issues/7",
+    "title": "Run execution stages through isolated workspaces and retire shared-tree dispatch"
+  },
+  {
+    "id": "06",
+    "number": 8,
+    "url": "https://github.com/anthonyandrei/offload/issues/8",
+    "title": "Review one complete change artifact against the execution baseline"
+  },
+  {
+    "id": "07",
+    "number": 9,
+    "url": "https://github.com/anthonyandrei/offload/issues/9",
+    "title": "Require one valid reviewer verdict for every requested criterion"
+  },
+  {
+    "id": "08",
+    "number": 10,
+    "url": "https://github.com/anthonyandrei/offload/issues/10",
+    "title": "Require audit coverage for every claim and citation pair"
+  },
+  {
+    "id": "09",
+    "number": 11,
+    "url": "https://github.com/anthonyandrei/offload/issues/11",
+    "title": "Prevent orphaned workers when PowerShell output setup fails"
+  },
+  {
+    "id": "10",
+    "number": 12,
+    "url": "https://github.com/anthonyandrei/offload/issues/12",
+    "title": "Keep PowerShell cleanup inside the marked workspace"
+  },
+  {
+    "id": "11",
+    "number": 13,
+    "url": "https://github.com/anthonyandrei/offload/issues/13",
+    "title": "Make routing provenance examples match both validators"
+  },
+  {
+    "id": "12",
+    "number": 14,
+    "url": "https://github.com/anthonyandrei/offload/issues/14",
+    "title": "Give every worker attempt distinct evidence paths"
+  },
+  {
+    "id": "13",
+    "number": 15,
+    "url": "https://github.com/anthonyandrei/offload/issues/15",
+    "title": "Continue synthesis from verified successful research angles"
+  },
+  {
+    "id": "14",
+    "number": 16,
+    "url": "https://github.com/anthonyandrei/offload/issues/16",
+    "title": "Preserve routing history and explain pruned evidence after success"
+  }
+]

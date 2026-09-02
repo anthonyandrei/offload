@@ -1,0 +1,8 @@
+empty_citation_audit_schema_valid=True
+empty_criteria_schema_valid=True
+web_powershell_blocks=3 parse_errors=0
+ERROR: structured_output property missing in file: C:\Users\antho\AppData\Local\Temp\offload-audit-d919ed4019894033906315ba97d92b66\merge-repro\researcher-3.json
+merge_two_good_one_failed_exit=2
+Error: routing missing required schema_version
+documented_attempt_routing_exit=1
+container_routing_exit=0

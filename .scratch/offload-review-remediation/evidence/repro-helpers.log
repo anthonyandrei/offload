@@ -1,0 +1,19 @@
+outside_workspace_readonly_before=True
+ParentContainsErrorRecordException: D:\dreiOS\Projects\offload\scripts\cleanup-research-workspace.ps1:128
+Line |
+ 128 |                  [System.IO.Directory]::Delete($entry, $true)
+     |                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Exception calling "Delete" with "2" argument(s): "Access to the path 'nested-link' is denied."
+junction_cleanup_exit=1
+outside_workspace_file_exists=True
+outside_workspace_readonly_after=False
+ParentContainsErrorRecordException: D:\dreiOS\Projects\offload\scripts\run-agy-json.ps1:414
+Line |
+ 414 |  $errFs = [System.IO.File]::Create($resolvedErrorPath)
+     |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Exception calling "Create" with "1" argument(s): "The process cannot access the file
+     | 'C:\Users\antho\AppData\Local\Temp\offload-audit-d919ed4019894033906315ba97d92b66\helper-repros\same.log'
+     | because it is being used by another process."
+same_output_error_launcher_exit=1
+worker_finished_at_launcher_exit=False
+worker_finished_after_launcher_exit=True
