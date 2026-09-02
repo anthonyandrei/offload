@@ -35,3 +35,19 @@ _Avoid_: Diff check, ownership check
 **Proactive offer contract**:
 The host-independent rule that defines when an orchestrator offers offloading, how often it asks, and how it handles the answer.
 _Avoid_: Hook, Claude hook
+
+**Model routing**:
+The policy that selects a Gemini model and reasoning effort for an offload worker assignment. It uses role defaults and explicit escalation rules, prioritizing verified task success, then elapsed time and quota use.
+_Avoid_: Mode routing, unrestricted model selection
+
+**Role default**:
+The model and reasoning effort assigned to an offload role unless a documented escalation rule applies.
+_Avoid_: Best model, permanent model assignment
+
+**Model policy**:
+The shared source of permitted model assignments and routing constraints, read and validated by both shell-native helper families for every offload mode.
+_Avoid_: Per-mode model list, launcher default
+
+**Model promotion**:
+A change to an offload role default justified by repeated local runs on representative tasks with the same inputs and verification gates. ADR 0005 records a one-time exception for the initial 3.8 Flash baseline migration, which requires an integration smoke test.
+_Avoid_: Version upgrade, benchmark ranking
