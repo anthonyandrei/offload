@@ -68,7 +68,7 @@ $ResearchSchema = '{"type":"object","properties":{"lane_id":{"type":"string"},"l
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --output "$Workspace/<slug>.research.json" `
   --error "$Workspace/<slug>.research.err" `
-  -- `
+  '--' `
   -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." `
   --model gemini-3.7-flash-high `
   --output-format json `

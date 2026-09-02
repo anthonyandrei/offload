@@ -24,6 +24,10 @@ _Avoid_: Identical implementation
 An offload workflow that runs in a supported host shell without WSL, Git Bash, or another compatibility layer.
 _Avoid_: Cross-platform workflow
 
+**Launcher delimiter**:
+The literal `--` argument that separates launcher options from worker arguments. PowerShell callers write `'--'` so the command parser passes the delimiter to the helper. Arguments after it retain their order and individual values.
+_Avoid_: Optional separator, inferred worker boundary
+
 **Execution scope check**:
 The mechanical comparison of repository changes against a worker's owned and frozen paths.
 _Avoid_: Diff check, ownership check

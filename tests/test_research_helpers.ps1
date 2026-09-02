@@ -59,6 +59,13 @@ function Assert-NotEqual($actual, $expected, [string]$name) {
     }
 }
 
+function Assert-StringArrayEqual([string[]]$actual, [string[]]$expected, [string]$name) {
+    Assert-Equal $actual.Count $expected.Count "${name}: argument count"
+    for ($i = 0; $i -lt $expected.Count; $i++) {
+        Assert-Equal $actual[$i] $expected[$i] "${name}: argument $i"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Public Process Runner
 # ---------------------------------------------------------------------------
@@ -135,10 +142,25 @@ try {
 
     $fakeAgyPs = Join-Path $fakeBin 'fake_agy.ps1'
     @'
-param([Parameter(ValueFromRemainingArguments)]$ArgsList)
+param(
+    [Alias('p')]
+    [string]$ShortP,
+    [Parameter(ValueFromRemainingArguments)]
+    [string[]]$ArgsList
+)
 
 if ($env:FAKE_AGY_ARGS) {
-    [System.IO.File]::WriteAllText($env:FAKE_AGY_ARGS, ($ArgsList -join " "), [System.Text.Encoding]::UTF8)
+    $capturedArgs = @()
+    if ($PSBoundParameters.ContainsKey('ShortP')) {
+        $capturedArgs += '-p'
+        $capturedArgs += $ShortP
+    }
+    $capturedArgs += @($ArgsList | ForEach-Object { [string]$_ })
+    [System.IO.File]::WriteAllText(
+        $env:FAKE_AGY_ARGS,
+        (ConvertTo-Json -InputObject $capturedArgs -Compress),
+        [System.Text.Encoding]::UTF8
+    )
 }
 
 if ($env:FAKE_AGY_EXIT) {
@@ -198,11 +220,99 @@ exit 0
     $errData = (Get-Content -LiteralPath $runErr -Raw).Trim()
     Assert-Equal $errData 'fake stderr' "run-agy-json: error file captured worker stderr"
     Assert-Equal $res.Stdout.Trim() "" "run-agy-json: helper emits no worker stdout to its own stdout"
-    $forwarded = Get-Content -LiteralPath $argsCapture -Raw
-    Assert-True ($forwarded -match '--prompt test prompt') "run-agy-json: forwarded worker argument with space preserved"
-    Assert-True ($forwarded -match '--output-format json') "run-agy-json: forwarded worker flag intact"
+    $forwarded = @(Get-Content -LiteralPath $argsCapture -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
+    Assert-StringArrayEqual $forwarded @('--prompt', 'test prompt', '--output-format', 'json') "run-agy-json: preserves forwarded argument boundaries"
 
-    # 1.2 Launcher creates parent directories automatically
+    # 1.2 PowerShell command expressions use the quoted delimiter and preserve spaces
+    $commandRoot = Join-Path $TmpRoot 'command expression paths'
+    [System.IO.Directory]::CreateDirectory($commandRoot) | Out-Null
+    $commandOut = Join-Path $commandRoot 'worker output.json'
+    $commandErr = Join-Path $commandRoot 'worker error.log'
+    $commandArgs = Join-Path $commandRoot 'worker arguments.json'
+    $forwardedPath = Join-Path $commandRoot 'forwarded value.txt'
+    $commandEnv = @{
+        'AGY_BIN' = $fakeAgyPs
+        'FAKE_AGY_ARGS' = $commandArgs
+        'RUN_AGY_JSON' = (Join-Path $ScriptsDir 'run-agy-json.ps1')
+        'RUN_OUTPUT' = $commandOut
+        'RUN_ERROR' = $commandErr
+        'WORKER_PROMPT' = 'prompt with several words'
+        'FORWARDED_PATH' = $forwardedPath
+    }
+    $commandExpression = "& `$env:RUN_AGY_JSON --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR '--' -p `$env:WORKER_PROMPT --path `$env:FORWARDED_PATH; exit `$LASTEXITCODE"
+    $resCommand = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-Command', $commandExpression
+    ) -Environment $commandEnv
+
+    Assert-Equal $resCommand.ExitCode 0 "run-agy-json: command expression exits 0"
+    Assert-True (Test-Path -LiteralPath $commandOut) "run-agy-json: command expression creates output path containing spaces"
+    Assert-True (Test-Path -LiteralPath $commandErr) "run-agy-json: command expression creates error path containing spaces"
+    $commandOutData = Get-Content -LiteralPath $commandOut -Raw | ConvertFrom-Json
+    Assert-True ($commandOutData.structured_output.ok -eq $true) "run-agy-json: command expression captures worker stdout"
+    Assert-Equal (Get-Content -LiteralPath $commandErr -Raw).Trim() 'fake stderr' "run-agy-json: command expression captures worker stderr separately"
+    $commandForwarded = @(Get-Content -LiteralPath $commandArgs -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
+    Assert-StringArrayEqual $commandForwarded @('-p', 'prompt with several words', '--path', $forwardedPath) "run-agy-json: command expression preserves ordered worker arguments"
+
+    # 1.3 PowerShell command expressions propagate non-zero worker exits
+    $exitOut = Join-Path $commandRoot 'nonzero worker output.json'
+    $exitErr = Join-Path $commandRoot 'nonzero worker error.log'
+    $exitArgs = Join-Path $commandRoot 'nonzero worker arguments.json'
+    $exitEnv = @{
+        'AGY_BIN' = $fakeAgyPs
+        'FAKE_AGY_ARGS' = $exitArgs
+        'FAKE_AGY_EXIT' = '37'
+        'RUN_AGY_JSON' = (Join-Path $ScriptsDir 'run-agy-json.ps1')
+        'RUN_OUTPUT' = $exitOut
+        'RUN_ERROR' = $exitErr
+        'WORKER_PROMPT' = 'nonzero prompt with spaces'
+        'FORWARDED_PATH' = (Join-Path $commandRoot 'nonzero forwarded path.txt')
+    }
+    $resCommandExit = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-Command', $commandExpression
+    ) -Environment $exitEnv
+
+    Assert-Equal $resCommandExit.ExitCode 37 "run-agy-json: command expression propagates non-zero worker exit"
+    Assert-Equal (Get-Content -LiteralPath $exitErr -Raw).Trim() 'fake stderr' "run-agy-json: non-zero command expression preserves worker stderr"
+
+    # 1.4 Command expressions reject a bare delimiter before launching a worker
+    $bareArgs = Join-Path $commandRoot 'bare delimiter arguments.json'
+    $bareEnv = @{
+        'AGY_BIN' = $fakeAgyPs
+        'FAKE_AGY_ARGS' = $bareArgs
+        'RUN_AGY_JSON' = (Join-Path $ScriptsDir 'run-agy-json.ps1')
+        'RUN_OUTPUT' = (Join-Path $commandRoot 'bare delimiter output.json')
+        'RUN_ERROR' = (Join-Path $commandRoot 'bare delimiter error.log')
+        'WORKER_PROMPT' = 'bare delimiter prompt'
+        'FORWARDED_PATH' = (Join-Path $commandRoot 'bare delimiter path.txt')
+    }
+    $bareExpression = "& `$env:RUN_AGY_JSON --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR -- -p `$env:WORKER_PROMPT; exit `$LASTEXITCODE"
+    $resBare = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-Command', $bareExpression
+    ) -Environment $bareEnv
+
+    Assert-True ($resBare.ExitCode -ne 0) "run-agy-json: command expression rejects bare delimiter"
+    Assert-False (Test-Path -LiteralPath $bareArgs) "run-agy-json: bare delimiter does not launch worker"
+
+    # 1.5 Command expressions reject an omitted delimiter before launching a worker
+    $omittedArgs = Join-Path $commandRoot 'omitted delimiter arguments.json'
+    $omittedEnv = @{
+        'AGY_BIN' = $fakeAgyPs
+        'FAKE_AGY_ARGS' = $omittedArgs
+        'RUN_AGY_JSON' = (Join-Path $ScriptsDir 'run-agy-json.ps1')
+        'RUN_OUTPUT' = (Join-Path $commandRoot 'omitted delimiter output.json')
+        'RUN_ERROR' = (Join-Path $commandRoot 'omitted delimiter error.log')
+        'WORKER_PROMPT' = 'omitted delimiter prompt'
+        'FORWARDED_PATH' = (Join-Path $commandRoot 'omitted delimiter path.txt')
+    }
+    $omittedExpression = "& `$env:RUN_AGY_JSON --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR -p `$env:WORKER_PROMPT; exit `$LASTEXITCODE"
+    $resOmitted = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-Command', $omittedExpression
+    ) -Environment $omittedEnv
+
+    Assert-True ($resOmitted.ExitCode -ne 0) "run-agy-json: command expression rejects omitted delimiter"
+    Assert-False (Test-Path -LiteralPath $omittedArgs) "run-agy-json: omitted delimiter does not launch worker"
+
+    # 1.6 Launcher creates parent directories automatically
     $nestedOut = Join-Path $TmpRoot 'nested/sub1/out.json'
     $nestedErr = Join-Path $TmpRoot 'nested/sub2/err.log'
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
@@ -215,7 +325,7 @@ exit 0
     Assert-True (Test-Path -LiteralPath $nestedOut) "run-agy-json: nested output file exists"
     Assert-True (Test-Path -LiteralPath $nestedErr) "run-agy-json: nested error file exists"
 
-    # 1.3 Worker exit code propagation
+    # 1.7 Worker exit code propagation
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
         '--output', (Join-Path $TmpRoot 'code.json'),
         '--error', (Join-Path $TmpRoot 'code.err'),
@@ -227,7 +337,7 @@ exit 0
     })
     Assert-Equal $res.ExitCode 42 "run-agy-json: propagates non-zero exit code 42"
 
-    # 1.4 Rejection of --output and --output=<val> in forwarded arguments
+    # 1.8 Rejection of --output and --output=<val> in forwarded arguments
     $resReject1 = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
         '--output', (Join-Path $TmpRoot 'rej1.json'),
         '--error', (Join-Path $TmpRoot 'rej1.err'),
@@ -244,7 +354,7 @@ exit 0
     ) -Environment $envRun
     Assert-True ($resReject2.ExitCode -ne 0) "run-agy-json: rejects forbidden --output=value in worker arguments"
 
-    # 1.5 AGY_BIN precedence over PATH
+    # 1.9 AGY_BIN precedence over PATH
     $customAgyDir = Join-Path $TmpRoot 'custom-agy-bin'
     [System.IO.Directory]::CreateDirectory($customAgyDir) | Out-Null
     $customAgyPs = Join-Path $customAgyDir 'custom_agy.ps1'
@@ -278,7 +388,7 @@ exit 0
     $customJson = Get-Content -LiteralPath $customOut -Raw | ConvertFrom-Json
     Assert-True ($customJson.structured_output.from_custom -eq $true) "run-agy-json: AGY_BIN took precedence over PATH"
 
-    # 1.6 Invalid explicit AGY_BIN fails immediately without fallback
+    # 1.10 Invalid explicit AGY_BIN fails immediately without fallback
     $invalidOut = Join-Path $TmpRoot 'invalid-bin.json'
     $invalidErr = Join-Path $TmpRoot 'invalid-bin.err'
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(

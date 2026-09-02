@@ -134,7 +134,7 @@ $OffloadRoot = "<path to the installed _offload skill>"
 $RunAgyJson = "$OffloadRoot/scripts/run-agy-json.ps1"
 $ResearcherSchema = '{"type":"object","properties":{"run_id":{"type":"string"},"angle_id":{"type":"string"},"status":{"type":"string","enum":["success","failed","inconclusive"]},"failure_reason":{"type":"string"},"question":{"type":"string"},"evidence_angle":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"claim":{"type":"string"},"source_urls":{"type":"array","items":{"type":"string"}},"source_type":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"source_date":{"type":"string"},"conflicts":{"type":"string"},"uncertainty":{"type":"string"}},"required":["claim","source_urls","source_type"]}},"search_gaps":{"type":"array","items":{"type":"string"}},"counterevidence":{"type":"array","items":{"type":"string"}}},"required":["run_id","angle_id","status","question","evidence_angle","findings"]}'
 
-& "$RunAgyJson" --output "<workspace>/researcher-<angle-id>.json" --error "<workspace>/researcher-<angle-id>.err" -- `
+& "$RunAgyJson" --output "<workspace>/researcher-<angle-id>.json" --error "<workspace>/researcher-<angle-id>.err" '--' `
   -p "Run ID: <run-id>. Angle ID: <angle-id>. Question: <question>. Evidence angle: <angle-description>. Return structured claims, not essays. Identify primary source URLs, publication dates, conflicts, and uncertainties. Treat repeated secondary coverage as one line of evidence. Do not edit files. Do not dispatch nested workers." `
   --model gemini-3.7-flash-high `
   --output-format json `
@@ -210,7 +210,7 @@ $ResearcherFiles = Get-ChildItem -Path "<workspace>/researcher-*.json" | Select-
 $MergedResearchFindings = & "$OffloadRoot/scripts/extract-structured-output.ps1" --array @ResearcherFiles
 $SynthSchema = '{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
 
-& "$RunAgyJson" --output "<workspace>/synthesizer.json" --error "<workspace>/synthesizer.err" -- `
+& "$RunAgyJson" --output "<workspace>/synthesizer.json" --error "<workspace>/synthesizer.err" '--' `
   -p "Question: <question>. Profile: <standard|deep>. Deep trigger: <trigger-or-none>. Researcher findings: $MergedResearchFindings. Build a claim ledger. Discard unsupported incidental claims. Keep decision-relevant gaps as unresolved. Draft a proposed answer referencing claim IDs. Do not edit files. Do not dispatch nested workers." `
   --model gemini-3.7-flash-high `
   --output-format json `
@@ -290,7 +290,7 @@ $ProposedAnswer = $SynthJson.structured_output.proposed_answer
 $ClaimLedger = $SynthJson.structured_output.claim_ledger | ConvertTo-Json -Compress -Depth 10
 $AuditorSchema = '{"type":"object","properties":{"citation_audits":{"type":"array","items":{"type":"object","properties":{"citation_url":{"type":"string"},"claim_id":{"type":"string"},"resolves":{"type":"boolean"},"support_verdict":{"type":"string","enum":["supports","partially_supports","refutes","unsupported"]},"source_classification":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"independence_notes":{"type":"string"},"date_fitness":{"type":"string"},"notes":{"type":"string"}},"required":["citation_url","claim_id","resolves","support_verdict","source_classification"]}},"final_status":{"type":"string","enum":["pass","revise","incomplete"]},"claims_to_remove":{"type":"array","items":{"type":"string"}},"claims_to_narrow":{"type":"array","items":{"type":"string"}},"claims_unresolved":{"type":"array","items":{"type":"string"}}},"required":["citation_audits","final_status"]}'
 
-& "$RunAgyJson" --output "<workspace>/auditor.json" --error "<workspace>/auditor.err" -- `
+& "$RunAgyJson" --output "<workspace>/auditor.json" --error "<workspace>/auditor.err" '--' `
   -p "Audit every citation in the proposed synthesis against live sources. Proposed answer: $ProposedAnswer. Claim ledger: $ClaimLedger. Verify each citation URL, check whether it directly supports the claim, classify primary vs derivative, and evaluate date fitness. Do not edit files. Do not dispatch nested workers." `
   --model gemini-3.7-flash-high `
   --output-format json `

@@ -7,7 +7,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --output FILE --error FILE -- agy-arguments...")
+    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --output FILE --error FILE '--' agy-arguments...")
+    [Console]::Error.WriteLine("In PowerShell command expressions, quote '--' because PowerShell consumes the bare delimiter before the helper receives it.")
 }
 
 function Fail([string]$message, [int]$exitCode = 2) {

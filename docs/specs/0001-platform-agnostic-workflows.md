@@ -123,6 +123,8 @@ On any rejection or copy failure, the helper must remove the workspace it create
 - Required `--error <file>`.
 - Required `--` delimiter followed by one or more `agy` arguments.
 
+PowerShell command expressions must quote the delimiter as `'--'`. Bare `--` is consumed by PowerShell before the script receives its arguments. The literal delimiter remains required by both helpers. See [the issue #2 fix plan](0002-powershell-launcher-delimiter.md) for the accepted command-parser regression coverage.
+
 Both helpers must:
 
 - Reject `--output` and `--output=<value>` inside the forwarded `agy` arguments.

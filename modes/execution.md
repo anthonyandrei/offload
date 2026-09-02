@@ -67,7 +67,7 @@ $ScoutSchema = '{"type":"object","properties":{"files":{"type":"array","items":{
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --output "<scratch dir>/offload/<slug>.scout.json" `
   --error "<scratch dir>/offload/<slug>.scout.err" `
-  -- `
+  '--' `
   -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." `
   --model gemini-3.7-flash-low `
   --output-format json `
@@ -112,7 +112,7 @@ Dispatch one gate-author per machine-gated task in parallel:
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --output "<scratch dir>/offload/<slug>.gate.json" `
   --error "<scratch dir>/offload/<slug>.gate.err" `
-  -- `
+  '--' `
   -p "<criteria>. Write this test at <exact path>. Do not touch any other file. Do not dispatch nested workers." `
   --model gemini-3.7-flash-high `
   --output-format json `
@@ -151,7 +151,7 @@ Run from a clean git working tree. Dispatch implementers in parallel:
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --output "<scratch dir>/offload/<slug>.json" `
   --error "<scratch dir>/offload/<slug>.err" `
-  -- `
+  '--' `
   -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." `
   --model gemini-3.7-flash-high `
   --output-format json `
@@ -224,7 +224,7 @@ Verify every worker reporting `SUCCESS`:
      & "$OffloadRoot/scripts/run-agy-json.ps1" `
        --output "<scratch dir>/offload/<slug>.review.json" `
        --error "<scratch dir>/offload/<slug>.review.err" `
-       -- `
+       '--' `
        -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" `
        --model gemini-3.7-flash-high `
        --output-format json `
