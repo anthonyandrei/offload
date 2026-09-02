@@ -9,6 +9,8 @@ Select the helper family matching your current host shell:
 - **POSIX shells (Bash 3.2+)**: Use `scripts/make-research-workspace.sh`, `scripts/run-agy-json.sh`, and `scripts/cleanup-research-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
 - **PowerShell (PowerShell 7+)**: Use `scripts/make-research-workspace.ps1`, `scripts/run-agy-json.ps1`, and `scripts/cleanup-research-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
+Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. Researchers route through `model-policy.json` (`gemini-3.8-flash-high` default). Do not pass `--model` or `--effort` directly.
+
 ## Assignment requirements
 
 Every repository research assignment must define four fields:
@@ -42,18 +44,18 @@ The workspace helper creates a unique temporary directory, writes the `.offload-
 
 ## Worker dispatch
 
-Dispatch researchers in parallel using `gemini-3.7-flash-high` with a structured schema and the matching launcher helper:
+Dispatch researchers in parallel using role `researcher` with a structured schema and the matching launcher helper. The launcher resolves `gemini-3.8-flash-high` from `model-policy.json`:
 
 #### Bash
 ```bash
 RESEARCH_SCHEMA='{"type":"object","properties":{"lane_id":{"type":"string"},"lane_kind":{"type":"string","enum":["research","audit"]},"question":{"type":"string"},"overall_status":{"type":"string","enum":["complete","inconclusive","blocked"]},"uncertainty":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"finding":{"type":"string"},"priority":{"type":"string","enum":["high","medium","low"]},"status":{"type":"string","enum":["confirmed","refuted","inconclusive"]},"evidence_locations":{"type":"array","items":{"type":"string"}},"evidence_commands":{"type":"array","items":{"type":"string"}}},"required":["finding","priority","status","evidence_locations"]}}},"required":["lane_id","lane_kind","question","overall_status","uncertainty","findings"]}'
 
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --role researcher \
   --output "$WORKSPACE/<slug>.research.json" \
   --error "$WORKSPACE/<slug>.research.err" \
   -- \
   -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." \
-  --model gemini-3.7-flash-high \
   --output-format json \
   --mode plan \
   --json-schema "$RESEARCH_SCHEMA" \
@@ -66,11 +68,11 @@ RESEARCH_SCHEMA='{"type":"object","properties":{"lane_id":{"type":"string"},"lan
 $ResearchSchema = '{"type":"object","properties":{"lane_id":{"type":"string"},"lane_kind":{"type":"string","enum":["research","audit"]},"question":{"type":"string"},"overall_status":{"type":"string","enum":["complete","inconclusive","blocked"]},"uncertainty":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"finding":{"type":"string"},"priority":{"type":"string","enum":["high","medium","low"]},"status":{"type":"string","enum":["confirmed","refuted","inconclusive"]},"evidence_locations":{"type":"array","items":{"type":"string"}},"evidence_commands":{"type":"array","items":{"type":"string"}}},"required":["finding","priority","status","evidence_locations"]}}},"required":["lane_id","lane_kind","question","overall_status","uncertainty","findings"]}'
 
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --role researcher `
   --output "$Workspace/<slug>.research.json" `
   --error "$Workspace/<slug>.research.err" `
   '--' `
   -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." `
-  --model gemini-3.7-flash-high `
   --output-format json `
   --mode plan `
   --json-schema $ResearchSchema `
@@ -91,10 +93,15 @@ Never accept a worker's research findings on trust alone. Run this verification 
 5. **Mark unsupported claims as unverified.** If a finding lacks concrete evidence, cites out-of-scope files, references unsafe commands, or fails manual checking, classify it as `UNVERIFIED` (provenance `agy+unverified`).
 6. **Record sample counts and provenance.** Note priority adjustments, the exact sample verified, and individual finding provenance in the final report.
 
-## Retry and fallback
+## Retry, recovery, and fallback
 
-- **Worker failure.** If a worker crashes, times out, or produces unparsable output, redispatch once with the concrete error.
+Follow the shared recovery, retry accounting, and failure handling rules in [`SKILL.md`](../SKILL.md):
+
+- **Stable worker IDs and retry ceiling.** Assign a stable `worker_id` to each investigation lane. Attempt 1 is initial dispatch; attempt 2 is its only permitted retry. Maximum two attempts total per assignment.
+- **Outcome tracking.** Record each attempt and verification outcome in `routing-outcomes.json`.
+- **Operational failure.** If a worker crashes, times out, or produces unparsable output, redispatch once using `--route default`. No model escalation for operational failure.
 - **Orchestrator fallback.** If the second attempt fails or findings remain inconclusive, complete the investigation directly as the orchestrator (`orchestrator (fallback)`).
+- **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.
 
 ## Cleanup
 

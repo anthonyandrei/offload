@@ -14,15 +14,18 @@ Check these before dispatching writing tasks:
 1. **`agy` is available.** Verify `agy` via `run-agy-json` or ensure `agy` is on `PATH`, user-local bin, or `AGY_BIN`.
 2. **Target is a git repository.** Run `git rev-parse --is-inside-work-tree`.
 3. **Working tree is clean.** Run `git status --porcelain`. A clean tree is required to track edits, isolate changes, and roll back failed tasks.
+4. **Model policy and preflight check.** Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching the first worker. All workers route through `model-policy.json`.
 
 ## Roles and models
 
-| Role | Wave | Model | Mode | Job |
-|---|---|---|---|---|
-| scout | 1 | `gemini-3.7-flash-low` | `plan` | Report repository-relative file paths a task touches. |
-| gate-author | 2 | `gemini-3.7-flash-high` | `accept-edits` | Author an executable test file from acceptance criteria. |
-| implementer | 3 | `gemini-3.7-flash-high` | `accept-edits` | Implement the task within owned files. |
-| reviewer | 4 | `gemini-3.7-flash-high` | `plan` | Evaluate git diff against criteria for diff-gated tasks. |
+Workers are dispatched by role using `run-agy-json` with `--role <role>`. The launcher resolves models dynamically from `model-policy.json`. Do not pass `--model` or `--effort` directly. Refer to [`SKILL.md`](../SKILL.md) for the shared model routing, preflight, and recovery contract.
+
+| Role | Wave | Default model | Effort | Mode | Job |
+|---|---|---|---|---|---|
+| scout | 1 | `gemini-3.8-flash-low` | low | `plan` | Report repository-relative file paths a task touches. |
+| gate-author | 2 | `gemini-3.8-flash-high` | high | `accept-edits` | Author an executable test file from acceptance criteria. |
+| implementer | 3 | `gemini-3.8-flash-high` | high | `accept-edits` | Implement the task within owned files. |
+| reviewer | 4 | `gemini-3.8-flash-high` | high | `plan` | Evaluate git diff against criteria for diff-gated tasks. |
 
 `--mode plan` provides a behavioral hint, not a write barrier. `--add-dir` grants directory access without confining writes. Protection relies on a clean git working tree, mechanical execution scope checks, frozen path checks, and test gates.
 
@@ -41,18 +44,18 @@ Assign each task exactly one gate:
 
 ### Scout
 
-For provisional writing tasks, dispatch scouts in parallel using the matching launcher helper:
+For provisional writing tasks, dispatch scouts in parallel using the matching launcher helper with `--role scout`:
 
 #### Bash
 ```bash
 OFFLOAD_ROOT="<path to installed _offload skill>"
 SCOUT_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "<scratch dir>/offload/<slug>.scout.json" \
   --error "<scratch dir>/offload/<slug>.scout.err" \
   -- \
   -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." \
-  --model gemini-3.7-flash-low \
   --output-format json \
   --mode plan \
   --json-schema "$SCOUT_SCHEMA" \
@@ -65,11 +68,11 @@ SCOUT_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"t
 $OffloadRoot = "<path to installed _offload skill>"
 $ScoutSchema = '{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --role scout `
   --output "<scratch dir>/offload/<slug>.scout.json" `
   --error "<scratch dir>/offload/<slug>.scout.err" `
   '--' `
   -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." `
-  --model gemini-3.7-flash-low `
   --output-format json `
   --mode plan `
   --json-schema $ScoutSchema `
@@ -91,16 +94,16 @@ Reconcile scout findings:
 
 Machine-gated tasks only. Skip for diff-gated tasks.
 
-Dispatch one gate-author per machine-gated task in parallel:
+Dispatch one gate-author per machine-gated task in parallel using `--role gate-author`:
 
 #### Bash
 ```bash
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --role gate-author \
   --output "<scratch dir>/offload/<slug>.gate.json" \
   --error "<scratch dir>/offload/<slug>.gate.err" \
   -- \
   -p "<criteria>. Write this test at <exact path>. Do not touch any other file. Do not dispatch nested workers." \
-  --model gemini-3.7-flash-high \
   --output-format json \
   --add-dir "<repo root>" \
   --mode accept-edits \
@@ -110,11 +113,11 @@ Dispatch one gate-author per machine-gated task in parallel:
 #### PowerShell
 ```powershell
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --role gate-author `
   --output "<scratch dir>/offload/<slug>.gate.json" `
   --error "<scratch dir>/offload/<slug>.gate.err" `
   '--' `
   -p "<criteria>. Write this test at <exact path>. Do not touch any other file. Do not dispatch nested workers." `
-  --model gemini-3.7-flash-high `
   --output-format json `
   --add-dir "<repo root>" `
   --mode accept-edits `
@@ -130,16 +133,16 @@ Verify each created gate:
 
 ## Step 3: Dispatch implementers
 
-Run from a clean git working tree. Dispatch implementers in parallel:
+Run from a clean git working tree. Dispatch implementers in parallel using `--role implementer`:
 
 #### Bash
 ```bash
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --role implementer \
   --output "<scratch dir>/offload/<slug>.json" \
   --error "<scratch dir>/offload/<slug>.err" \
   -- \
   -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." \
-  --model gemini-3.7-flash-high \
   --output-format json \
   --add-dir "<repo root>" \
   --mode accept-edits \
@@ -149,11 +152,11 @@ Run from a clean git working tree. Dispatch implementers in parallel:
 #### PowerShell
 ```powershell
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --role implementer `
   --output "<scratch dir>/offload/<slug>.json" `
   --error "<scratch dir>/offload/<slug>.err" `
   '--' `
   -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." `
-  --model gemini-3.7-flash-high `
   --output-format json `
   --add-dir "<repo root>" `
   --mode accept-edits `
@@ -164,11 +167,11 @@ The prompt must specify owned files, frozen paths, the gate command, and prohibi
 
 ## Step 4: Collect
 
-Read worker JSON responses:
+Read worker JSON responses and record outcomes in `routing-outcomes.json`:
 
 - `status: SUCCESS`: Worker completed execution. Proceed to verification in Step 5.
-- Non-zero exit code or unparsable output: Worker crashed. Retry once.
-- Timeout (no output written before timeout): Task was too large or slow.
+- Non-zero exit code or unparsable output: Worker crashed or encountered an operational failure. Record the attempt and follow Step 6.
+- Timeout (no output written before 20m timeout): Operational failure. Record the timeout and follow Step 6.
 
 ## Step 5: Verify
 
@@ -200,17 +203,17 @@ Verify every worker reporting `SUCCESS`:
    - Machine gate: Run the frozen gate command and check the exit code (0 required).
      - Bash: `<gate cmd>`
      - PowerShell: `& <gate cmd>`
-   - Diff gate: Dispatch an adversarial reviewer worker to inspect the diff:
+   - Diff gate: Dispatch an adversarial reviewer worker to inspect the diff using `--role reviewer`:
 
      #### Bash
      ```bash
      REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
      "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+       --role reviewer \
        --output "<scratch dir>/offload/<slug>.review.json" \
        --error "<scratch dir>/offload/<slug>.review.err" \
        -- \
        -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" \
-       --model gemini-3.7-flash-high \
        --output-format json \
        --mode plan \
        --json-schema "$REVIEW_SCHEMA" \
@@ -222,11 +225,11 @@ Verify every worker reporting `SUCCESS`:
      ```powershell
      $ReviewSchema = '{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
      & "$OffloadRoot/scripts/run-agy-json.ps1" `
+       --role reviewer `
        --output "<scratch dir>/offload/<slug>.review.json" `
        --error "<scratch dir>/offload/<slug>.review.err" `
        '--' `
        -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" `
-       --model gemini-3.7-flash-high `
        --output-format json `
        --mode plan `
        --json-schema $ReviewSchema `
@@ -242,8 +245,13 @@ Verify every worker reporting `SUCCESS`:
 
      If all quotes match verbatim, accept the verdict (`agy+grep`). If any quote fails to match, any criterion fails, or the reviewer hedges, inspect the diff directly (`agy→orchestrator`).
 
-## Step 6: Retry and fallback
+## Step 6: Retry, recovery, and fallback
 
-- **Implementer failure.** If a gate fails or an execution scope violation occurs, redispatch that worker once with the specific failure output. If the second run fails, halt that task.
-- **Scout or gate-author failure.** Retry once with the concrete error. If the retry fails, complete that step directly as the orchestrator (`orchestrator (fallback)`).
-- **Reviewer failure.** If reviewer output is unparsable or fails validation, inspect the diff directly as the orchestrator (`agy→orchestrator`).
+Follow the shared recovery, retry accounting, and failure handling rules in [`SKILL.md`](../SKILL.md):
+
+- **Stable worker IDs and retry ceiling.** Assign a stable `worker_id` to each logical task. Attempt 1 is initial dispatch; attempt 2 is its only possible retry. Maximum two attempts total per task.
+- **Outcome tracking.** Record each attempt and verification outcome in `routing-outcomes.json`.
+- **Implementer quality failure.** If a gate fails or an execution scope check violation occurs, this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output. Use `--route quality-retry` only if an evidence-backed escalation target is configured for `implementer` in `model-policy.json`; otherwise use `--route default`. If attempt 2 fails, halt that task.
+- **Scout or gate-author operational failure.** If a scout or gate-author crashes, times out, or produces unparsable output, retry once using `--route default`. If the retry fails, complete that step directly as the orchestrator (`orchestrator (fallback)`).
+- **Reviewer failure.** If reviewer output is unparsable or fails quote verification, inspect the diff directly as the orchestrator (`agy→orchestrator`).
+- **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.

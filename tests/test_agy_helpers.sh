@@ -35,6 +35,7 @@ run_output="$TMP_ROOT/run.json"
 run_error="$TMP_ROOT/run.err"
 launcher_stdout=$(FAKE_AGY_ARGS="$TMP_ROOT/agy.args" PATH="$fake_bin:$PATH" \
   "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$run_output" \
   --error "$run_error" \
   -- --prompt 'test prompt' --output-format json)
@@ -50,6 +51,7 @@ pass 'launcher redirects output and preserves supported worker arguments'
 spaced_args="$TMP_ROOT/spaced.args"
 FAKE_AGY_ARGS="$spaced_args" PATH="$fake_bin:$PATH" \
   "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$TMP_ROOT/spaced.json" \
   --error "$TMP_ROOT/spaced.err" \
   -- --prompt 'test prompt with spaces' --custom-flag 'val with spaces'
@@ -62,6 +64,7 @@ nested_output="$TMP_ROOT/nested/sub1/run.json"
 nested_error="$TMP_ROOT/nested/sub2/run.err"
 PATH="$fake_bin:$PATH" \
   "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$nested_output" \
   --error "$nested_error" \
   -- --prompt 'parent dir test'
@@ -73,6 +76,7 @@ pass 'launcher creates parent directories for output and error files'
 set +e
 FAKE_AGY_EXIT=42 PATH="$fake_bin:$PATH" \
   "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$TMP_ROOT/exit42.json" \
   --error "$TMP_ROOT/exit42.err" \
   -- --prompt 'fail test' 2>/dev/null
@@ -83,12 +87,14 @@ pass 'launcher propagates worker exit code'
 
 # Forbidden --output rejection (--output and --output=<val>)
 if PATH="$fake_bin:$PATH" "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$TMP_ROOT/rejected.json" \
   --error "$TMP_ROOT/rejected.err" \
   -- --output "$TMP_ROOT/worker-owned.json" 2>/dev/null; then
   fail 'launcher accepted the forbidden --output worker argument'
 fi
 if PATH="$fake_bin:$PATH" "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$TMP_ROOT/rejected2.json" \
   --error "$TMP_ROOT/rejected2.err" \
   -- --output=worker-owned.json 2>/dev/null; then
@@ -109,6 +115,7 @@ chmod +x "$custom_bin/custom-agy"
 custom_output="$TMP_ROOT/custom.json"
 AGY_BIN="$custom_bin/custom-agy" PATH="$fake_bin:$PATH" \
   "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$custom_output" \
   --error "$TMP_ROOT/custom.err" \
   -- --prompt 'custom agy'
@@ -120,6 +127,7 @@ invalid_output="$TMP_ROOT/invalid.json"
 set +e
 AGY_BIN="$TMP_ROOT/nonexistent-bin" PATH="$fake_bin:$PATH" \
   "$ROOT/scripts/run-agy-json.sh" \
+  --role scout \
   --output "$invalid_output" \
   --error "$TMP_ROOT/invalid.err" \
   -- --prompt 'test invalid' 2>/dev/null

@@ -77,18 +77,17 @@ Single factual lookups stay local with the orchestrator and are not offloaded.
 
 | Role | Mode | Default model | Job |
 |---|---|---|---|
-| scout | Execution | `gemini-3.7-flash-low` | Discovers repository-relative file paths touched by provisional tasks. |
-| gate-author | Execution | `gemini-3.7-flash-high` | Authors executable test files from acceptance criteria. |
-| implementer | Execution | `gemini-3.7-flash-high` | Modifies owned code files to satisfy gates. |
-| reviewer | Execution | `gemini-3.7-flash-high` | Evaluates diffs adversarially against criteria for diff-gated tasks. |
-| researcher | Research | `gemini-3.7-flash-high` | Collects structured findings for assigned evidence angles or bounded local scopes. |
-| synthesizer | Web research | `gemini-3.7-flash-high` | Builds claim ledgers, resolves conflicts, and drafts answers. |
-| auditor | Web research | `gemini-3.7-flash-high` | Independently verifies citation URLs and claims against live sources. |
+| scout | Execution | `gemini-3.8-flash-low` | Discovers repository-relative file paths touched by provisional tasks. |
+| gate-author | Execution | `gemini-3.8-flash-high` | Authors executable test files from acceptance criteria. |
+| implementer | Execution | `gemini-3.8-flash-high` | Modifies owned code files to satisfy gates. |
+| reviewer | Execution | `gemini-3.8-flash-high` | Evaluates diffs adversarially against criteria for diff-gated tasks. |
+| researcher | Research | `gemini-3.8-flash-high` | Collects structured findings for assigned evidence angles or bounded local scopes. |
+| synthesizer | Web research | `gemini-3.8-flash-high` | Builds claim ledgers, resolves conflicts, and drafts answers. |
+| auditor | Web research | `gemini-3.8-flash-high` | Independently verifies citation URLs and claims against live sources. |
 
-The live smoke comparison retained Flash for every role. The proposed Pro split did not complete
-its mandatory synthesis stage, while the all-Flash control completed synthesis and citation audit
-with four supported claims. The recorded comparison is in
-[`tests/live-smoke-comparison.md`](tests/live-smoke-comparison.md).
+Worker routing is governed by repository-root `model-policy.json`. Launchers accept `--role <role>` (and optional `--route default|quality-retry`) and resolve models dynamically. Callers must not supply `--model` or `--effort` flags.
+
+A historical live smoke comparison against Gemini 3.7 retained Flash for every role. The proposed Pro split did not complete its mandatory synthesis stage, while the all-Flash control completed synthesis and citation audit with four supported claims. The recorded comparison is in [`tests/live-smoke-comparison.md`](tests/live-smoke-comparison.md).
 
 ## Workflows
 
@@ -179,11 +178,17 @@ The script copies only declared paths into `<workspace>/repo/` and creates the `
 - **Public sources default.** Research workers query public web sources by default.
 - **Explicit authorization for private sources.** Accessing private, internal, or authenticated repositories and APIs requires explicit user authorization for that specific run. Never forward cookies, session tokens, browser profiles, or environment credentials implicitly.
 
-## Failure handling and partial results
+## Failure handling and recovery
 
+Follow the shared recovery rules in `SKILL.md`:
+
+- **Stable worker IDs and retry ceiling.** Each assignment retains a stable identifier across attempts. Attempt 1 is initial dispatch; attempt 2 is the only permitted retry (maximum two attempts per task).
+- **Quality versus operational failures.** Failing a machine gate, scope check, or citation audit is a quality failure; operational failures include crashes, timeouts (20m), and unparsable output. Operational failures retry with `--route default` (no model escalation). Quality failures retry with `--route quality-retry` only when an evidence-backed target is configured in `model-policy.json`.
+- **Immediate quota handoff.** If Gemini quota is exhausted, stop dispatching immediately and hand all unfinished work back to the calling orchestrator while preserving completed artifacts.
+- **Outcome tracking.** Every attempt and verification verdict is recorded in `routing-outcomes.json` in the scratch workspace. Web research provenance optionally records routing attempt data in `provenance.json`.
 - **Implementer failures.** If an implementer fails its gate or violates execution scope, retry once with the error output. If the retry fails, halt that task.
 - **Researcher failures.** If a researcher crashes or times out, retry once. If the retry fails, synthesis proceeds as long as at least two independent evidence angles remain. The final report explicitly names any omitted angle.
-- **Synthesis and audit failures.** Synthesis and citation audit are mandatory stages. If either stage crashes, times out, or fails to resolve citations, the run transitions to `partial` status.
+- **Synthesis and audit failures.** Synthesis and citation audit are mandatory stages. If either stage crashes, times out, or fails to resolve citations after its retry budget, the run transitions to `partial` status.
 - **Partial result contract.** A `partial` run returns verified claims and raw findings collected before the failure. It strictly withholds firm conclusions or recommendations, states the failed stage, and preserves all raw artifacts for debugging.
 
 ## Compact provenance and report contract
@@ -334,7 +339,7 @@ pwsh -File tests/test_execution_scope.ps1
 - **`--json-schema` outputs validated JSON in `structured_output`.** Parse `structured_output` rather than `response`.
 - **Use the bundled launcher helpers (`run-agy-json.sh` or `run-agy-json.ps1`) for worker calls.** They own result and error paths and reject the unsupported `agy --output` flag.
 - **Use structured output extractors (`extract-structured-output.sh` or `extract-structured-output.ps1`) between research stages.** They forward only validated `structured_output`, keeping verbose worker prose out of later prompts.
-- **Flash model effort is set in the model name.** Use `gemini-3.7-flash-low`, `gemini-3.7-flash-medium`, or `gemini-3.7-flash-high`. Do not pass `--effort` alongside these models.
+- **Model routing is governed by `model-policy.json`.** Launchers inject the policy-selected Gemini 3.8 Flash model (`gemini-3.8-flash-low` or `gemini-3.8-flash-high`) via `--role <role>`. Reasoning effort is encoded directly in the model ID; callers must not pass `--model` or `--effort`.
 - **`--mode plan` is a behavioral hint, not a write barrier.** Direct tests showed plan-mode workers can write files. `--add-dir` grants directory access without confining writes. Security relies on workspace isolation and mechanical verification.
 
 ## License

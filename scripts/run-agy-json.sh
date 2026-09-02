@@ -204,6 +204,8 @@ validation_err=$(jq -r '
           "role " + $rname + " must be an object"
         elif ($rval.default_model | is_gemini_model | not) then
           "role " + $rname + " has invalid default_model"
+        elif ($rval | has("quality_escalation") | not) then
+          "role " + $rname + " missing quality_escalation"
         elif ($rval.quality_escalation != null) then
           if ($rval.quality_escalation | type) != "object" then
             "role " + $rname + " quality_escalation must be null or an object"

@@ -139,6 +139,7 @@ python3 - << 'PYEOF' \
 import sys
 import json
 import os
+import re
 
 (
     val_file,
@@ -178,6 +179,117 @@ REQUIRED_FIELDS = [
     "final_status",
     "incomplete_stage_reasons"
 ]
+
+REQUIRED_ATTEMPT_FIELDS = [
+    "worker_id", "role", "mode", "attempt", "policy_revision",
+    "route", "model", "effort", "reason", "started_at",
+    "ended_at", "duration_seconds", "exit_code", "state",
+    "failure_class", "evidence_paths", "usage"
+]
+KNOWN_ROLES = {"scout", "gate-author", "implementer", "reviewer", "researcher", "synthesizer", "auditor"}
+KNOWN_MODES = {"execution", "repo-research", "web-research"}
+KNOWN_ROUTES = {"default", "quality-retry"}
+KNOWN_EFFORTS = {"low", "medium", "high"}
+KNOWN_STATES = {"running", "completed", "failed", "interrupted"}
+KNOWN_FAILURE_CLASSES = {"none", "quality", "timeout", "tool_error", "quota", "unknown"}
+KNOWN_VERIFICATION_STATUSES = {"pending", "passed", "failed", "not_performed"}
+GEMINI_MODEL_RE = re.compile(r"^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$")
+
+def validate_worker_routing(worker):
+    if not isinstance(worker, dict):
+        sys.stderr.write("Error: worker entry must be a JSON object\n")
+        sys.exit(1)
+    if "routing" not in worker or worker["routing"] is None:
+        return
+    routing = worker["routing"]
+    if not isinstance(routing, dict):
+        sys.stderr.write("Error: worker routing must be a JSON object\n")
+        sys.exit(1)
+    if "schema_version" not in routing or not isinstance(routing["schema_version"], int) or isinstance(routing["schema_version"], bool) or routing["schema_version"] != 1:
+        sys.stderr.write("Error: routing schema_version must be integer 1\n")
+        sys.exit(1)
+    if "attempts" not in routing or not isinstance(routing["attempts"], list):
+        sys.stderr.write("Error: routing attempts must be an array\n")
+        sys.exit(1)
+    if len(routing["attempts"]) > 2:
+        sys.stderr.write("Error: routing attempts cannot contain more than 2 attempts\n")
+        sys.exit(1)
+    seen_attempts = set()
+    for att in routing["attempts"]:
+        if not isinstance(att, dict):
+            sys.stderr.write("Error: routing attempt must be a JSON object\n")
+            sys.exit(1)
+        for req_field in REQUIRED_ATTEMPT_FIELDS:
+            if req_field not in att:
+                sys.stderr.write(f"Error: routing attempt missing required field: {req_field}\n")
+                sys.exit(1)
+        if "verification_status" not in att and "verification" not in att:
+            sys.stderr.write("Error: routing attempt missing verification_status or verification field\n")
+            sys.exit(1)
+        if not isinstance(att["worker_id"], str) or not att["worker_id"].strip():
+            sys.stderr.write("Error: attempt worker_id must be a non-empty string\n")
+            sys.exit(1)
+        if att["role"] not in KNOWN_ROLES:
+            sys.stderr.write(f"Error: attempt role must be one of: {', '.join(sorted(KNOWN_ROLES))}\n")
+            sys.exit(1)
+        if att["mode"] not in KNOWN_MODES:
+            sys.stderr.write(f"Error: attempt mode must be one of: {', '.join(sorted(KNOWN_MODES))}\n")
+            sys.exit(1)
+        if not isinstance(att["attempt"], int) or isinstance(att["attempt"], bool) or att["attempt"] not in (1, 2):
+            sys.stderr.write("Error: attempt number must be integer 1 or 2\n")
+            sys.exit(1)
+        if att["attempt"] in seen_attempts:
+            sys.stderr.write(f"Error: duplicate attempt number {att['attempt']} in routing attempts\n")
+            sys.exit(1)
+        seen_attempts.add(att["attempt"])
+        if not isinstance(att["policy_revision"], str) or not att["policy_revision"].strip():
+            sys.stderr.write("Error: attempt policy_revision must be a non-empty string\n")
+            sys.exit(1)
+        if att["route"] not in KNOWN_ROUTES:
+            sys.stderr.write("Error: attempt route must be 'default' or 'quality-retry'\n")
+            sys.exit(1)
+        if not isinstance(att["model"], str) or not GEMINI_MODEL_RE.match(att["model"]):
+            sys.stderr.write("Error: attempt model must be a Gemini model ID with effort suffix\n")
+            sys.exit(1)
+        if att["effort"] not in KNOWN_EFFORTS:
+            sys.stderr.write("Error: attempt effort must be 'low', 'medium', or 'high'\n")
+            sys.exit(1)
+        if not att["model"].endswith(f"-{att['effort']}"):
+            sys.stderr.write(f"Error: attempt effort '{att['effort']}' does not match model suffix in '{att['model']}'\n")
+            sys.exit(1)
+        if not isinstance(att["reason"], str) or not att["reason"].strip():
+            sys.stderr.write("Error: attempt reason must be a non-empty string\n")
+            sys.exit(1)
+        if not isinstance(att["started_at"], str) or not att["started_at"].strip():
+            sys.stderr.write("Error: attempt started_at must be a non-empty string timestamp\n")
+            sys.exit(1)
+        if att["ended_at"] is not None and (not isinstance(att["ended_at"], str) or not att["ended_at"].strip()):
+            sys.stderr.write("Error: attempt ended_at must be a non-empty string timestamp or null\n")
+            sys.exit(1)
+        if att["duration_seconds"] is not None:
+            if not isinstance(att["duration_seconds"], (int, float)) or isinstance(att["duration_seconds"], bool) or att["duration_seconds"] < 0:
+                sys.stderr.write("Error: attempt duration_seconds must be a non-negative number or null\n")
+                sys.exit(1)
+        if att["exit_code"] is not None:
+            if not isinstance(att["exit_code"], int) or isinstance(att["exit_code"], bool):
+                sys.stderr.write("Error: attempt exit_code must be an integer or null\n")
+                sys.exit(1)
+        if att["state"] not in KNOWN_STATES:
+            sys.stderr.write(f"Error: attempt state must be one of: {', '.join(sorted(KNOWN_STATES))}\n")
+            sys.exit(1)
+        if att["failure_class"] not in KNOWN_FAILURE_CLASSES:
+            sys.stderr.write(f"Error: attempt failure_class must be one of: {', '.join(sorted(KNOWN_FAILURE_CLASSES))}\n")
+            sys.exit(1)
+        v_val = att["verification_status"] if "verification_status" in att else att["verification"]
+        if v_val not in KNOWN_VERIFICATION_STATUSES:
+            sys.stderr.write(f"Error: attempt verification_status must be one of: {', '.join(sorted(KNOWN_VERIFICATION_STATUSES))}\n")
+            sys.exit(1)
+        if not isinstance(att["evidence_paths"], list) or not all(isinstance(p, str) for p in att["evidence_paths"]):
+            sys.stderr.write("Error: attempt evidence_paths must be an array of strings\n")
+            sys.exit(1)
+        if att["usage"] is not None and not isinstance(att["usage"], dict):
+            sys.stderr.write("Error: attempt usage must be null or a JSON object with explicit units\n")
+            sys.exit(1)
 
 def parse_json(raw, field_name, default_val):
     raw_str = raw.strip() if raw else ""
@@ -285,6 +397,9 @@ if data["final_status"] not in {"success", "partial", "failed"}:
     sys.exit(1)
 for field in ("workers", "repository_snapshot_paths", "final_citations", "audit_verdicts", "incomplete_stage_reasons"):
     require_list(data[field], field)
+
+for w in data["workers"]:
+    validate_worker_routing(w)
 
 output_json = json.dumps(data, indent=2)
 

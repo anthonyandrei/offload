@@ -45,7 +45,7 @@ done
 pass 'router stays short and points to every mode'
 
 if rg -n -i 'plan mode[^.]{0,80}(write barrier|prevents? writes?|cannot write)|--add-dir[^.]{0,80}(confine|sandbox|prevents? writes?)|plan-mode[^.]{0,80}(write barrier|prevents? writes?)' \
-  "$ROOT" -g '!tests/test_research_modes.sh' -g '!.scratch/**'; then
+  "$ROOT" -g '!tests/test_research_modes.sh' -g '!tests/test_workflow_static.ps1' -g '!.scratch/**'; then
   fail 'repository still claims plan mode or --add-dir prevents writes'
 fi
 pass 'stale plan-mode and --add-dir safety claims are absent'

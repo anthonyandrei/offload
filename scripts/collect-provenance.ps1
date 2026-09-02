@@ -196,6 +196,210 @@ function Test-Duration([System.Text.Json.Nodes.JsonNode]$durNode) {
     return $false
 }
 
+function Validate-WorkerRouting([System.Text.Json.Nodes.JsonNode]$workerNode) {
+    if ($workerNode -isnot [System.Text.Json.Nodes.JsonObject]) {
+        Fail "worker entry must be a JSON object"
+    }
+    $workerObj = $workerNode.AsObject()
+    if (-not $workerObj.ContainsKey("routing") -or $workerObj["routing"] -eq $null) {
+        return
+    }
+
+    $routingNode = $workerObj["routing"]
+    if ($routingNode -isnot [System.Text.Json.Nodes.JsonObject]) {
+        Fail "worker routing must be a JSON object"
+    }
+    $routingObj = $routingNode.AsObject()
+
+    if (-not $routingObj.ContainsKey("schema_version") -or $routingObj["schema_version"] -eq $null) {
+        Fail "routing missing required schema_version"
+    }
+    $svNode = $routingObj["schema_version"]
+    $svVal = 0
+    $svOk = $false
+    if ($svNode -is [System.Text.Json.Nodes.JsonValue]) {
+        try {
+            $elem = $svNode.GetValue[System.Text.Json.JsonElement]()
+            if ($elem.ValueKind -eq [System.Text.Json.JsonValueKind]::Number -and $elem.TryGetInt32([ref]$svVal)) {
+                $svOk = $true
+            }
+        } catch {}
+    }
+    if (-not $svOk -or $svVal -ne 1) {
+        Fail "routing schema_version must be integer 1"
+    }
+
+    if (-not $routingObj.ContainsKey("attempts") -or $routingObj["attempts"] -eq $null -or $routingObj["attempts"] -isnot [System.Text.Json.Nodes.JsonArray]) {
+        Fail "routing attempts must be an array"
+    }
+    $attemptsArr = $routingObj["attempts"].AsArray()
+    if ($attemptsArr.Count -gt 2) {
+        Fail "routing attempts cannot contain more than 2 attempts"
+    }
+
+    $knownRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
+    $knownModes = @('execution', 'repo-research', 'web-research')
+    $knownStates = @('running', 'completed', 'failed', 'interrupted')
+    $knownFailureClasses = @('none', 'quality', 'timeout', 'tool_error', 'quota', 'unknown')
+    $knownVerStatuses = @('pending', 'passed', 'failed', 'not_performed')
+    $geminiModelRegex = '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$'
+
+    $seenAttemptNumbers = [System.Collections.Generic.HashSet[int]]::new()
+
+    foreach ($attNode in $attemptsArr) {
+        if ($attNode -isnot [System.Text.Json.Nodes.JsonObject]) {
+            Fail "routing attempt must be a JSON object"
+        }
+        $attObj = $attNode.AsObject()
+
+        $requiredAttemptKeys = @(
+            'worker_id', 'role', 'mode', 'attempt', 'policy_revision',
+            'route', 'model', 'effort', 'reason', 'started_at',
+            'ended_at', 'duration_seconds', 'exit_code', 'state',
+            'failure_class', 'evidence_paths', 'usage'
+        )
+        foreach ($k in $requiredAttemptKeys) {
+            if (-not $attObj.ContainsKey($k)) {
+                Fail "routing attempt missing required field: $k"
+            }
+        }
+        if (-not $attObj.ContainsKey("verification_status") -and -not $attObj.ContainsKey("verification")) {
+            Fail "routing attempt missing verification_status or verification field"
+        }
+
+        $wid = Get-NodeString $attObj["worker_id"]
+        if ([string]::IsNullOrWhiteSpace($wid)) {
+            Fail "attempt worker_id must be a non-empty string"
+        }
+
+        $roleVal = Get-NodeString $attObj["role"]
+        if ($roleVal -notin $knownRoles) {
+            Fail "attempt role must be one of: $($knownRoles -join ', ')"
+        }
+
+        $modeVal = Get-NodeString $attObj["mode"]
+        if ($modeVal -notin $knownModes) {
+            Fail "attempt mode must be one of: $($knownModes -join ', ')"
+        }
+
+        $attNumNode = $attObj["attempt"]
+        $attNum = 0
+        $attNumOk = $false
+        if ($attNumNode -ne $null -and $attNumNode -is [System.Text.Json.Nodes.JsonValue]) {
+            try {
+                $elem = $attNumNode.GetValue[System.Text.Json.JsonElement]()
+                if ($elem.ValueKind -eq [System.Text.Json.JsonValueKind]::Number -and $elem.TryGetInt32([ref]$attNum)) {
+                    $attNumOk = $true
+                }
+            } catch {}
+        }
+        if (-not $attNumOk -or ($attNum -ne 1 -and $attNum -ne 2)) {
+            Fail "attempt number must be integer 1 or 2"
+        }
+        if ($seenAttemptNumbers.Contains($attNum)) {
+            Fail "duplicate attempt number $attNum in routing attempts"
+        }
+        $seenAttemptNumbers.Add($attNum) | Out-Null
+
+        $polRev = Get-NodeString $attObj["policy_revision"]
+        if ([string]::IsNullOrWhiteSpace($polRev)) {
+            Fail "attempt policy_revision must be a non-empty string"
+        }
+
+        $routeVal = Get-NodeString $attObj["route"]
+        if ($routeVal -notin @('default', 'quality-retry')) {
+            Fail "attempt route must be 'default' or 'quality-retry'"
+        }
+
+        $modelVal = Get-NodeString $attObj["model"]
+        if ($modelVal -eq $null -or $modelVal -notmatch $geminiModelRegex) {
+            Fail "attempt model must be a Gemini model ID with effort suffix (matching '$geminiModelRegex')"
+        }
+
+        $effortVal = Get-NodeString $attObj["effort"]
+        if ($effortVal -notin @('low', 'medium', 'high')) {
+            Fail "attempt effort must be 'low', 'medium', or 'high'"
+        }
+        if (-not $modelVal.EndsWith("-$effortVal")) {
+            Fail "attempt effort '$effortVal' does not match model suffix in '$modelVal'"
+        }
+
+        $reasonVal = Get-NodeString $attObj["reason"]
+        if ([string]::IsNullOrWhiteSpace($reasonVal)) {
+            Fail "attempt reason must be a non-empty string"
+        }
+
+        $startedVal = Get-NodeString $attObj["started_at"]
+        if ([string]::IsNullOrWhiteSpace($startedVal)) {
+            Fail "attempt started_at must be a non-empty string timestamp"
+        }
+
+        $endedNode = $attObj["ended_at"]
+        if ($endedNode -ne $null) {
+            $endedVal = Get-NodeString $endedNode
+            if ([string]::IsNullOrWhiteSpace($endedVal)) {
+                Fail "attempt ended_at must be a non-empty string timestamp or null"
+            }
+        }
+
+        $durNode = $attObj["duration_seconds"]
+        if ($durNode -ne $null) {
+            if (-not (Test-Duration $durNode)) {
+                Fail "attempt duration_seconds must be a non-negative number or null"
+            }
+        }
+
+        $ecNode = $attObj["exit_code"]
+        if ($ecNode -ne $null) {
+            $ecVal = 0
+            $ecOk = $false
+            if ($ecNode -is [System.Text.Json.Nodes.JsonValue]) {
+                try {
+                    $elem = $ecNode.GetValue[System.Text.Json.JsonElement]()
+                    if ($elem.ValueKind -eq [System.Text.Json.JsonValueKind]::Number -and $elem.TryGetInt32([ref]$ecVal)) {
+                        $ecOk = $true
+                    }
+                } catch {}
+            }
+            if (-not $ecOk) {
+                Fail "attempt exit_code must be an integer or null"
+            }
+        }
+
+        $stateVal = Get-NodeString $attObj["state"]
+        if ($stateVal -notin $knownStates) {
+            Fail "attempt state must be one of: $($knownStates -join ', ')"
+        }
+
+        $fcVal = Get-NodeString $attObj["failure_class"]
+        if ($fcVal -notin $knownFailureClasses) {
+            Fail "attempt failure_class must be one of: $($knownFailureClasses -join ', ')"
+        }
+
+        $vNode = if ($attObj.ContainsKey("verification_status")) { $attObj["verification_status"] } else { $attObj["verification"] }
+        $vVal = Get-NodeString $vNode
+        if ($vVal -notin $knownVerStatuses) {
+            Fail "attempt verification_status must be one of: $($knownVerStatuses -join ', ')"
+        }
+
+        $epNode = $attObj["evidence_paths"]
+        if ($epNode -eq $null -or $epNode -isnot [System.Text.Json.Nodes.JsonArray]) {
+            Fail "attempt evidence_paths must be an array"
+        }
+        foreach ($ep in $epNode.AsArray()) {
+            $epStr = Get-NodeString $ep
+            if ($epStr -eq $null) {
+                Fail "attempt evidence_paths elements must be strings"
+            }
+        }
+
+        $usageNode = $attObj["usage"]
+        if ($usageNode -ne $null -and $usageNode -isnot [System.Text.Json.Nodes.JsonObject]) {
+            Fail "attempt usage must be null or a JSON object with explicit units"
+        }
+    }
+}
+
 $requiredFields = @(
     'run_id', 'request_summary', 'selected_mode', 'profile', 'deep_trigger',
     'start_time', 'end_time', 'duration_seconds', 'scratch_path', 'workers',
@@ -336,6 +540,10 @@ foreach ($af in $arrayFields) {
     if ($recordObj[$af] -isnot [System.Text.Json.Nodes.JsonArray]) {
         Fail "provenance field $af must be an array"
     }
+}
+
+foreach ($w in $recordObj["workers"].AsArray()) {
+    Validate-WorkerRouting $w
 }
 
 $serializerOptions = [System.Text.Json.JsonSerializerOptions]::new()

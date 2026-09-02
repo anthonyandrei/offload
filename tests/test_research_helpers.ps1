@@ -205,6 +205,7 @@ exit 0
         'FAKE_AGY_ARGS' = $argsCapture
     }
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
+        '--role', 'scout',
         '--output', $runOut,
         '--error', $runErr,
         '--',
@@ -221,7 +222,7 @@ exit 0
     Assert-Equal $errData 'fake stderr' "run-agy-json: error file captured worker stderr"
     Assert-Equal $res.Stdout.Trim() "" "run-agy-json: helper emits no worker stdout to its own stdout"
     $forwarded = @(Get-Content -LiteralPath $argsCapture -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
-    Assert-StringArrayEqual $forwarded @('--prompt', 'test prompt', '--output-format', 'json') "run-agy-json: preserves forwarded argument boundaries"
+    Assert-StringArrayEqual $forwarded @('--model', 'gemini-3.8-flash-low', '--prompt', 'test prompt', '--output-format', 'json') "run-agy-json: preserves routed and forwarded argument boundaries"
 
     # 1.2 PowerShell command expressions use the quoted delimiter and preserve spaces
     $commandRoot = Join-Path $TmpRoot 'command expression paths'
@@ -239,7 +240,7 @@ exit 0
         'WORKER_PROMPT' = 'prompt with several words'
         'FORWARDED_PATH' = $forwardedPath
     }
-    $commandExpression = "& `$env:RUN_AGY_JSON --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR '--' -p `$env:WORKER_PROMPT --path `$env:FORWARDED_PATH; exit `$LASTEXITCODE"
+    $commandExpression = "& `$env:RUN_AGY_JSON --role scout --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR '--' -p `$env:WORKER_PROMPT --path `$env:FORWARDED_PATH; exit `$LASTEXITCODE"
     $resCommand = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
         '-NoProfile', '-NonInteractive', '-Command', $commandExpression
     ) -Environment $commandEnv
@@ -251,7 +252,7 @@ exit 0
     Assert-True ($commandOutData.structured_output.ok -eq $true) "run-agy-json: command expression captures worker stdout"
     Assert-Equal (Get-Content -LiteralPath $commandErr -Raw).Trim() 'fake stderr' "run-agy-json: command expression captures worker stderr separately"
     $commandForwarded = @(Get-Content -LiteralPath $commandArgs -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
-    Assert-StringArrayEqual $commandForwarded @('-p', 'prompt with several words', '--path', $forwardedPath) "run-agy-json: command expression preserves ordered worker arguments"
+    Assert-StringArrayEqual $commandForwarded @('-p', 'prompt with several words', '--model', 'gemini-3.8-flash-low', '--path', $forwardedPath) "run-agy-json: command expression preserves routed and forwarded arguments"
 
     # 1.3 PowerShell command expressions propagate non-zero worker exits
     $exitOut = Join-Path $commandRoot 'nonzero worker output.json'
@@ -285,7 +286,7 @@ exit 0
         'WORKER_PROMPT' = 'bare delimiter prompt'
         'FORWARDED_PATH' = (Join-Path $commandRoot 'bare delimiter path.txt')
     }
-    $bareExpression = "& `$env:RUN_AGY_JSON --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR -- -p `$env:WORKER_PROMPT; exit `$LASTEXITCODE"
+    $bareExpression = "& `$env:RUN_AGY_JSON --role scout --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR -- -p `$env:WORKER_PROMPT; exit `$LASTEXITCODE"
     $resBare = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
         '-NoProfile', '-NonInteractive', '-Command', $bareExpression
     ) -Environment $bareEnv
@@ -304,7 +305,7 @@ exit 0
         'WORKER_PROMPT' = 'omitted delimiter prompt'
         'FORWARDED_PATH' = (Join-Path $commandRoot 'omitted delimiter path.txt')
     }
-    $omittedExpression = "& `$env:RUN_AGY_JSON --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR -p `$env:WORKER_PROMPT; exit `$LASTEXITCODE"
+    $omittedExpression = "& `$env:RUN_AGY_JSON --role scout --output `$env:RUN_OUTPUT --error `$env:RUN_ERROR -p `$env:WORKER_PROMPT; exit `$LASTEXITCODE"
     $resOmitted = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
         '-NoProfile', '-NonInteractive', '-Command', $omittedExpression
     ) -Environment $omittedEnv
@@ -316,6 +317,7 @@ exit 0
     $nestedOut = Join-Path $TmpRoot 'nested/sub1/out.json'
     $nestedErr = Join-Path $TmpRoot 'nested/sub2/err.log'
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
+        '--role', 'scout',
         '--output', $nestedOut,
         '--error', $nestedErr,
         '--',
@@ -327,6 +329,7 @@ exit 0
 
     # 1.7 Worker exit code propagation
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
+        '--role', 'scout',
         '--output', (Join-Path $TmpRoot 'code.json'),
         '--error', (Join-Path $TmpRoot 'code.err'),
         '--',
@@ -339,6 +342,7 @@ exit 0
 
     # 1.8 Rejection of --output and --output=<val> in forwarded arguments
     $resReject1 = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
+        '--role', 'scout',
         '--output', (Join-Path $TmpRoot 'rej1.json'),
         '--error', (Join-Path $TmpRoot 'rej1.err'),
         '--',
@@ -347,6 +351,7 @@ exit 0
     Assert-True ($resReject1.ExitCode -ne 0) "run-agy-json: rejects forbidden --output in worker arguments"
 
     $resReject2 = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
+        '--role', 'scout',
         '--output', (Join-Path $TmpRoot 'rej2.json'),
         '--error', (Join-Path $TmpRoot 'rej2.err'),
         '--',
@@ -376,6 +381,7 @@ exit 0
     $customOut = Join-Path $TmpRoot 'custom.json'
     $customErr = Join-Path $TmpRoot 'custom.err'
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
+        '--role', 'scout',
         '--output', $customOut,
         '--error', $customErr,
         '--',
@@ -392,6 +398,7 @@ exit 0
     $invalidOut = Join-Path $TmpRoot 'invalid-bin.json'
     $invalidErr = Join-Path $TmpRoot 'invalid-bin.err'
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
+        '--role', 'scout',
         '--output', $invalidOut,
         '--error', $invalidErr,
         '--',
