@@ -301,11 +301,37 @@ $AuditorSchema = '{"type":"object","properties":{"citation_audits":{"type":"arra
 
 Read `structured_output` from the auditor JSON response to extract `citation_audits` and `final_status`.
 
-### Audit revision loop
+### Audit verification and acceptance rules
 
-- If the auditor returns `pass`, the synthesis is accepted. Label supported claims as `audited` in the final report.
-- If the auditor returns `revise`, the synthesizer may perform **one** revision pass to narrow or remove rejected claims (consuming the synthesizer's second attempt, attempt 2). The revised output undergoes one final audit (consuming the auditor's second attempt, attempt 2).
-- If the second audit fails, omit incidental unsupported claims or mark decision-relevant claims as unresolved. Do not enter open-ended revision loops.
+Before accepting the synthesis, mechanically validate audit coverage and verdict consistency:
+
+#### Bash
+```bash
+"$OFFLOAD_ROOT/scripts/check-citation-audit.sh" \
+  --ledger "<workspace>/synthesizer.json" \
+  --auditor "<workspace>/auditor.json"
+AUDIT_STATUS=$?
+```
+
+#### PowerShell
+```powershell
+& "$OffloadRoot/scripts/check-citation-audit.ps1" `
+  --ledger "<workspace>/synthesizer.json" `
+  --auditor "<workspace>/auditor.json"
+$AuditStatus = $LASTEXITCODE
+```
+
+Audit validation enforces mechanical acceptance contracts across both shells:
+1. **Required claim/citation pair coverage**: Every citation URL listed under each claim in the claim ledger forms a required `(claim_id, citation_url)` pair. Two citations for one claim require separate audit coverage.
+2. **Exact coverage**: A nonempty required pair set rejects empty or partial `citation_audits` even when `final_status` is `pass`. Duplicate and unknown claim/citation pairs are rejected.
+3. **Verdict consistency for automated acceptance**: Before automated acceptance (`exit 0`), every required pair must have `resolves: true` and `support_verdict: "supports"`. Failed entries (`resolves: false`, non-supporting verdicts `partially_supports`, `refutes`, `unsupported`) or unresolved entries (`claims_to_remove`, `claims_to_narrow`, `claims_unresolved`) cannot coexist with an accepted overall `pass`.
+4. **Ledger with no auditable pairs**: By default, research assignments require citations. A ledger with no auditable pairs cannot bypass citations required by the research assignment; automated acceptance is rejected. If an explicit documented assignment branch permits citation-free findings, `--allow-empty` must be explicitly specified and requires empty `citation_audits`.
+5. **Workflow branching**:
+   - `exit 0` (`pass`): Valid complete coverage with supported verdicts. The synthesis is accepted. Label supported claims as `audited` in the final report.
+   - `exit 1` (`revise`): Valid complete coverage where the auditor requested revision. The synthesizer may perform **one** revision pass to narrow or remove rejected claims (consuming the synthesizer's second attempt, attempt 2). The revised output undergoes one final audit (consuming the auditor's second attempt, attempt 2).
+   - `exit 2` (`invalid`): Malformed response, partial coverage, duplicate/unknown pairs, contradictory verdicts, or zero pairs when citations required. Triggers one bounded retry of the failing worker using `--route default` (if attempt 1) or falls back to direct orchestrator review or `partial` status.
+
+Do not enter open-ended revision loops. If the second audit fails or exhausts the retry budget, omit incidental unsupported claims or mark decision-relevant claims as unresolved and transition the run to `partial` status.
 
 ## Failure handling and partial results
 
