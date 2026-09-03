@@ -134,20 +134,64 @@ if "$ROOT/scripts/make-research-workspace.sh" --source-repo "$fixture" --path '/
 fi
 pass 'workspace creation rejects traversal and absolute paths'
 
-# Successful cleanup retention (final.md, provenance.json, and marker retained; other children removed)
+# Successful cleanup retention (final.md, provenance.json, routing outcomes, disposition, and marker retained)
 printf '%s\n' '{"run_id":"run-1","request_summary":"x","selected_mode":"web-research","profile":"standard","deep_trigger":null,"start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-01T00:00:01Z","duration_seconds":1,"scratch_path":"/tmp/run-1","workers":[],"repository_snapshot_paths":[],"final_citations":[],"audit_verdicts":[],"final_status":"success","incomplete_stage_reasons":[]}' > "$workspace/provenance.json"
+printf '%s\n' '{"schema_version":1,"attempts":[{"worker_id":"researcher-web-1","role":"researcher","mode":"web-research","attempt":1,"policy_revision":"2026-09-03.1","route":"default","model":"gemini-3.8-flash-high","effort":"high","reason":"Initial dispatch","started_at":"2026-09-03T00:00:00Z","ended_at":"2026-09-03T00:00:01Z","duration_seconds":1,"exit_code":1,"state":"failed","failure_class":"quality","verification_status":"failed","evidence_paths":["evidence/attempt1.json","missing.json","../outside.txt"],"usage":null},{"worker_id":"researcher-web-1","role":"researcher","mode":"web-research","attempt":2,"policy_revision":"2026-09-03.1","route":"default","model":"gemini-3.8-flash-high","effort":"high","reason":"Retry after verification failure","started_at":"2026-09-03T00:00:02Z","ended_at":"2026-09-03T00:00:03Z","duration_seconds":1,"exit_code":0,"state":"completed","failure_class":"none","verification_status":"passed","evidence_paths":["evidence/attempt2.json"],"usage":null}]}' > "$workspace/routing-outcomes.json"
 printf '%s\n' 'final result' > "$workspace/final.md"
+mkdir -p "$workspace/evidence"
+printf '%s\n' 'attempt one evidence' > "$workspace/evidence/attempt1.json"
+printf '%s\n' 'attempt two evidence' > "$workspace/evidence/attempt2.json"
+printf '%s\n' 'outside evidence' > "$TMP_ROOT/outside.txt"
 printf '%s\n' 'raw result' > "$workspace/raw-worker.json"
 mkdir -p "$workspace/repo/nested"
 printf '%s\n' 'nested data' > "$workspace/repo/nested/data.txt"
 "$ROOT/scripts/cleanup-research-workspace.sh" --workspace "$workspace" --status success
 [ -f "$workspace/provenance.json" ] || fail 'successful cleanup removed provenance'
 [ -f "$workspace/final.md" ] || fail 'successful cleanup removed final result'
+[ -f "$workspace/routing-outcomes.json" ] || fail 'successful cleanup removed routing outcomes'
+[ -f "$workspace/evidence-disposition.json" ] || fail 'successful cleanup removed evidence disposition'
 [ -f "$workspace/.offload-research-workspace" ] || fail 'successful cleanup removed workspace marker'
 [ "$(cat "$workspace/.offload-research-workspace")" = 'offload-research-workspace-v1' ] || fail 'successful cleanup corrupted workspace marker'
+[ "$(jq -r '.schema_version' "$workspace/evidence-disposition.json")" = '1' ] || fail 'disposition schema version is wrong'
+[ "$(jq '.entries | length' "$workspace/evidence-disposition.json")" = '4' ] || fail 'disposition does not cover every evidence path'
+[ -n "$(jq -r '.entries[] | [.path, .disposition] | @tsv' "$workspace/evidence-disposition.json")" ] || fail 'disposition entries are empty'
+[ "$(jq -r '.entries[] | select(.path == "evidence/attempt1.json") | .disposition' "$workspace/evidence-disposition.json")" = 'pruned' ] || fail 'existing evidence was not marked pruned'
+[ -n "$(jq -r '.entries[] | select(.path == "evidence/attempt1.json") | .sha256' "$workspace/evidence-disposition.json")" ] || fail 'existing evidence has no hash'
+[ "$(jq -r '.entries[] | select(.path == "missing.json") | .disposition' "$workspace/evidence-disposition.json")" = 'missing' ] || fail 'missing evidence was not marked missing'
+[ "$(jq -r '.entries[] | select(.path == "../outside.txt") | .disposition' "$workspace/evidence-disposition.json")" = 'uninspected' ] || fail 'outside evidence was not marked uninspected'
+[ "$(cat "$TMP_ROOT/outside.txt")" = 'outside evidence' ] || fail 'outside evidence was modified'
 [ ! -e "$workspace/raw-worker.json" ] || fail 'successful cleanup retained raw artifacts'
 [ ! -e "$workspace/repo" ] || fail 'successful cleanup retained repo snapshot directory'
-pass 'successful cleanup retains final output, provenance, and workspace marker'
+routing_before=$(cat "$workspace/routing-outcomes.json")
+disposition_before=$(cat "$workspace/evidence-disposition.json")
+"$ROOT/scripts/cleanup-research-workspace.sh" --workspace "$workspace" --status success
+[ "$(cat "$workspace/routing-outcomes.json")" = "$routing_before" ] || fail 'repeated success changed routing outcomes'
+[ "$(cat "$workspace/evidence-disposition.json")" = "$disposition_before" ] || fail 'repeated success changed evidence disposition'
+[ "$(jq '.attempts | length' "$workspace/routing-outcomes.json")" = '2' ] || fail 'routing outcomes did not retain both attempts'
+[ "$(jq -r '.attempts | sort_by(.attempt) | .[0].verification_status' "$workspace/routing-outcomes.json")" = 'failed' ] || fail 'routing outcomes lost first verification verdict'
+[ "$(jq -r '.attempts | sort_by(.attempt) | .[1].verification_status' "$workspace/routing-outcomes.json")" = 'passed' ] || fail 'routing outcomes lost retry verification verdict'
+pass 'successful cleanup retains outputs, routing outcomes, disposition, and workspace marker'
+
+# Invalid routing and disposition-write failures retain raw artifacts
+invalid_routing_workspace="$TMP_ROOT/invalid-routing-workspace"
+mkdir -p "$invalid_routing_workspace"
+printf '%s\n' 'offload-research-workspace-v1' > "$invalid_routing_workspace/.offload-research-workspace"
+printf '%s\n' '{"schema_version":1,"attempts":"invalid"}' > "$invalid_routing_workspace/routing-outcomes.json"
+printf '%s\n' 'raw invalid routing' > "$invalid_routing_workspace/raw-worker.json"
+if "$ROOT/scripts/cleanup-research-workspace.sh" --workspace "$invalid_routing_workspace" --status success >/dev/null 2>&1; then
+  fail 'cleanup accepted invalid routing record'
+fi
+[ -f "$invalid_routing_workspace/raw-worker.json" ] || fail 'invalid routing cleanup removed raw artifacts'
+
+manifest_failure_workspace="$TMP_ROOT/manifest-failure-workspace"
+mkdir -p "$manifest_failure_workspace/evidence-disposition.json"
+printf '%s\n' 'offload-research-workspace-v1' > "$manifest_failure_workspace/.offload-research-workspace"
+printf '%s\n' 'raw manifest failure' > "$manifest_failure_workspace/raw-worker.json"
+if "$ROOT/scripts/cleanup-research-workspace.sh" --workspace "$manifest_failure_workspace" --status success >/dev/null 2>&1; then
+  fail 'cleanup accepted manifest write failure'
+fi
+[ -f "$manifest_failure_workspace/raw-worker.json" ] || fail 'manifest write failure cleanup removed raw artifacts'
+pass 'invalid routing and disposition-write failures retain raw artifacts'
 
 # Partial and failed cleanup retention
 workspace_partial=$(

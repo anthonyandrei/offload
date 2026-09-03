@@ -754,6 +754,58 @@ exit 0
     Set-Content -LiteralPath (Join-Path $cleanSuccessWs '.offload-research-workspace') -Value "offload-research-workspace-v1`n" -NoNewline
     Set-Content -LiteralPath (Join-Path $cleanSuccessWs 'final.md') -Value "final report content"
     Set-Content -LiteralPath (Join-Path $cleanSuccessWs 'provenance.json') -Value "{}`n"
+    $routingRecord = [ordered]@{
+        schema_version = 1
+        attempts = @(
+            [ordered]@{
+                worker_id = 'researcher-repo-1'
+                role = 'researcher'
+                mode = 'repo-research'
+                attempt = 1
+                policy_revision = '2026-09-03.1'
+                route = 'default'
+                model = 'gemini-3.8-flash-high'
+                effort = 'high'
+                reason = 'Initial dispatch'
+                started_at = '2026-09-03T00:00:00Z'
+                ended_at = '2026-09-03T00:00:01Z'
+                duration_seconds = 1
+                exit_code = 1
+                state = 'failed'
+                failure_class = 'quality'
+                verification_status = 'failed'
+                evidence_paths = @('evidence/attempt1.json', 'missing.json', '../outside.txt')
+                usage = $null
+            }
+            [ordered]@{
+                worker_id = 'researcher-repo-1'
+                role = 'researcher'
+                mode = 'repo-research'
+                attempt = 2
+                policy_revision = '2026-09-03.1'
+                route = 'default'
+                model = 'gemini-3.8-flash-high'
+                effort = 'high'
+                reason = 'Retry after verification failure'
+                started_at = '2026-09-03T00:00:02Z'
+                ended_at = '2026-09-03T00:00:03Z'
+                duration_seconds = 1
+                exit_code = 0
+                state = 'completed'
+                failure_class = 'none'
+                verification_status = 'passed'
+                evidence_paths = @('evidence/attempt2.json')
+                usage = $null
+            }
+        )
+    }
+    $routingPath = Join-Path $cleanSuccessWs 'routing-outcomes.json'
+    $routingRecord | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $routingPath
+    [System.IO.Directory]::CreateDirectory((Join-Path $cleanSuccessWs 'evidence')) | Out-Null
+    Set-Content -LiteralPath (Join-Path $cleanSuccessWs 'evidence/attempt1.json') -Value 'attempt one evidence'
+    Set-Content -LiteralPath (Join-Path $cleanSuccessWs 'evidence/attempt2.json') -Value 'attempt two evidence'
+    $outsideEvidencePath = Join-Path $TmpRoot 'outside.txt'
+    Set-Content -LiteralPath $outsideEvidencePath -Value 'outside evidence'
     Set-Content -LiteralPath (Join-Path $cleanSuccessWs 'raw-worker.json') -Value "raw worker content"
     Set-Content -LiteralPath (Join-Path $cleanSuccessWs 'repo/sub/data.txt') -Value "data"
     Set-Content -LiteralPath (Join-Path $cleanSuccessWs 'temp.log') -Value "log"
@@ -766,11 +818,64 @@ exit 0
     Assert-True (Test-Path -LiteralPath (Join-Path $cleanSuccessWs '.offload-research-workspace')) "cleanup-research-workspace: success retains marker"
     Assert-True (Test-Path -LiteralPath (Join-Path $cleanSuccessWs 'final.md')) "cleanup-research-workspace: success retains final.md"
     Assert-True (Test-Path -LiteralPath (Join-Path $cleanSuccessWs 'provenance.json')) "cleanup-research-workspace: success retains provenance.json"
+    Assert-True (Test-Path -LiteralPath $routingPath) "cleanup-research-workspace: success retains routing outcomes"
+    $dispositionPath = Join-Path $cleanSuccessWs 'evidence-disposition.json'
+    Assert-True (Test-Path -LiteralPath $dispositionPath) "cleanup-research-workspace: success retains evidence disposition"
+    $disposition = Get-Content -LiteralPath $dispositionPath -Raw | ConvertFrom-Json
+    Assert-Equal $disposition.schema_version 1 "cleanup-research-workspace: disposition schema version"
+    Assert-Equal @($disposition.entries).Count 4 "cleanup-research-workspace: disposition covers every evidence path"
+    $attemptOneDisposition = @($disposition.entries | Where-Object path -eq 'evidence/attempt1.json')[0]
+    Assert-Equal $attemptOneDisposition.disposition 'pruned' "cleanup-research-workspace: existing evidence marked pruned"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($attemptOneDisposition.sha256)) "cleanup-research-workspace: existing evidence has hash"
+    $missingDisposition = @($disposition.entries | Where-Object path -eq 'missing.json')[0]
+    Assert-Equal $missingDisposition.disposition 'missing' "cleanup-research-workspace: missing evidence marked missing"
+    $outsideDisposition = @($disposition.entries | Where-Object path -eq '../outside.txt')[0]
+    Assert-Equal $outsideDisposition.disposition 'uninspected' "cleanup-research-workspace: outside evidence marked uninspected"
+    Assert-Equal (Get-Content -LiteralPath $outsideEvidencePath -Raw).Trim() 'outside evidence' "cleanup-research-workspace: outside evidence is untouched"
+    $routingBeforeRepeat = Get-Content -LiteralPath $routingPath -Raw
+    $dispositionBeforeRepeat = Get-Content -LiteralPath $dispositionPath -Raw
+    $resCleanSuccessRepeat = Invoke-Helper -ScriptName 'cleanup-research-workspace.ps1' -ArgumentList @(
+        '--workspace', $cleanSuccessWs,
+        '--status', 'success'
+    )
+    Assert-Equal $resCleanSuccessRepeat.ExitCode 0 "cleanup-research-workspace: repeated success exits 0"
+    Assert-Equal (Get-Content -LiteralPath $routingPath -Raw) $routingBeforeRepeat "cleanup-research-workspace: repeated success preserves routing outcomes"
+    Assert-Equal (Get-Content -LiteralPath $dispositionPath -Raw) $dispositionBeforeRepeat "cleanup-research-workspace: repeated success preserves disposition"
+    $survivingRouting = Get-Content -LiteralPath $routingPath -Raw | ConvertFrom-Json
+    $survivingAttempts = @($survivingRouting.attempts | Sort-Object attempt)
+    Assert-Equal $survivingAttempts.Count 2 "cleanup-research-workspace: routing record retains both attempts"
+    Assert-Equal $survivingAttempts[0].verification_status 'failed' "cleanup-research-workspace: routing record retains first verification verdict"
+    Assert-Equal $survivingAttempts[1].verification_status 'passed' "cleanup-research-workspace: routing record retains retry verification verdict"
     Assert-False (Test-Path -LiteralPath (Join-Path $cleanSuccessWs 'raw-worker.json')) "cleanup-research-workspace: success removes raw-worker.json"
     Assert-False (Test-Path -LiteralPath (Join-Path $cleanSuccessWs 'repo')) "cleanup-research-workspace: success removes repo directory"
     Assert-False (Test-Path -LiteralPath (Join-Path $cleanSuccessWs 'temp.log')) "cleanup-research-workspace: success removes temp files"
 
-    # 5.2 Nested and top-level junctions are removed without touching their target
+    # 5.2 Invalid routing and disposition-write failures retain raw artifacts
+    $invalidRoutingWs = Join-Path $TmpRoot 'clean-invalid-routing-ws'
+    [System.IO.Directory]::CreateDirectory($invalidRoutingWs) | Out-Null
+    Set-Content -LiteralPath (Join-Path $invalidRoutingWs '.offload-research-workspace') -Value "offload-research-workspace-v1`n" -NoNewline
+    Set-Content -LiteralPath (Join-Path $invalidRoutingWs 'routing-outcomes.json') -Value '{"schema_version":1,"attempts":"invalid"}'
+    Set-Content -LiteralPath (Join-Path $invalidRoutingWs 'raw-worker.json') -Value 'raw invalid routing'
+    $resInvalidRouting = Invoke-Helper -ScriptName 'cleanup-research-workspace.ps1' -ArgumentList @(
+        '--workspace', $invalidRoutingWs,
+        '--status', 'success'
+    )
+    Assert-True ($resInvalidRouting.ExitCode -ne 0) "cleanup-research-workspace: invalid routing record rejects success cleanup"
+    Assert-True (Test-Path -LiteralPath (Join-Path $invalidRoutingWs 'raw-worker.json')) "cleanup-research-workspace: invalid routing preserves raw artifacts"
+
+    $manifestFailureWs = Join-Path $TmpRoot 'clean-manifest-failure-ws'
+    [System.IO.Directory]::CreateDirectory($manifestFailureWs) | Out-Null
+    Set-Content -LiteralPath (Join-Path $manifestFailureWs '.offload-research-workspace') -Value "offload-research-workspace-v1`n" -NoNewline
+    [System.IO.Directory]::CreateDirectory((Join-Path $manifestFailureWs 'evidence-disposition.json')) | Out-Null
+    Set-Content -LiteralPath (Join-Path $manifestFailureWs 'raw-worker.json') -Value 'raw manifest failure'
+    $resManifestFailure = Invoke-Helper -ScriptName 'cleanup-research-workspace.ps1' -ArgumentList @(
+        '--workspace', $manifestFailureWs,
+        '--status', 'success'
+    )
+    Assert-True ($resManifestFailure.ExitCode -ne 0) "cleanup-research-workspace: manifest write failure rejects success cleanup"
+    Assert-True (Test-Path -LiteralPath (Join-Path $manifestFailureWs 'raw-worker.json')) "cleanup-research-workspace: manifest write failure preserves raw artifacts"
+
+    # 5.3 Nested and top-level junctions are removed without touching their target
     if ($IsWindows) {
         $cleanLinksWs = Assert-TestPathWithinRoot (Join-Path $TmpRoot 'clean-links-ws') "cleanup-research-workspace: workspace fixture is inside test root"
         $targetRoot = Assert-TestPathWithinRoot (Join-Path $TmpRoot 'junction-target') "cleanup-research-workspace: junction target is inside test root"

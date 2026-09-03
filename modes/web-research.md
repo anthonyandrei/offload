@@ -484,7 +484,7 @@ At the conclusion of the research run:
    & "$OffloadRoot/scripts/cleanup-research-workspace.ps1" --workspace "<workspace>" --status "<success|partial>"
    ```
 
-   - On `success`, the helper retains `final.md` and `provenance.json`, while deleting raw intermediate worker JSON files and the temporary repository snapshot.
+   - On `success`, the helper retains `final.md`, `provenance.json` when present, `routing-outcomes.json`, the workspace marker, and `evidence-disposition.json`. The disposition manifest records every evidence path from the routing record, its pre-cleanup existence, a SHA-256 hash for existing regular files, and a `retained`, `pruned`, `missing`, or safety-driven `uninspected` disposition. Raw intermediate worker JSON files and the temporary repository snapshot are still pruned by default.
    - On `partial` or failed status, the helper preserves all raw artifacts, worker logs, and repository snapshots for debugging.
 
 ## Research-then-implementation handoff

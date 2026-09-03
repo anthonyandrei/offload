@@ -247,7 +247,7 @@ After generating provenance, `cleanup-research-workspace` cleans the temporary w
 & ./scripts/cleanup-research-workspace.ps1 --workspace "$Workspace" --status success
 ```
 
-- On `success`, the helper removes intermediate worker files and snapshot directories while preserving `final.md` and `provenance.json`.
+- On `success`, the helper removes intermediate worker files and snapshot directories while preserving `final.md`, `provenance.json` when present, `routing-outcomes.json`, the workspace marker, and `evidence-disposition.json`. The disposition manifest records each routing evidence path, its pre-cleanup existence, a SHA-256 hash for existing regular files, and whether it was retained, pruned, missing, or left uninspected for safety.
 - On `partial` or failure, the helper retains all raw artifacts and logs.
 
 ### Shared report format

@@ -107,7 +107,7 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 
 ## Cleanup
 
-After verification completes, delete the temporary workspace and snapshot directory using the matching cleanup helper:
+After verification completes, clean the temporary workspace and snapshot directory using the matching cleanup helper. On success, it retains `final.md`, `provenance.json` when present, `routing-outcomes.json`, the workspace marker, and an `evidence-disposition.json` manifest. The manifest records every evidence path from the routing record, its pre-cleanup existence, a SHA-256 hash for existing regular files, and whether the path was retained, pruned, missing, or left uninspected for safety. Raw worker artifacts remain the default success-pruning policy. A partial or failed run retains all artifacts.
 
 #### Bash
 ```bash
