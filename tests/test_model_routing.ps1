@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # tests/test_model_routing.ps1
 # Self-contained acceptance test suite for Gemini model routing in run-agy-json.ps1.
 # Implements contracts specified in docs/specs/0003-gemini-model-routing.md.
@@ -363,7 +363,7 @@ exit 0
     }
 
     # 1.3 Equals forms: --role=<role> and --route=default
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-equals-form.json"
         $env = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -391,7 +391,7 @@ exit 0
     [System.IO.Directory]::CreateDirectory($cmdDir) | Out-Null
 
     # 2.1 Scout via command expression with quoted delimiter and spaces
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'scout-args.json'
         $cmdOut = Join-Path $cmdDir 'scout-out.json'
         $cmdErr = Join-Path $cmdDir 'scout-err.log'
@@ -416,7 +416,7 @@ exit 0
     }
 
     # 2.2 Implementer with explicit --route default via command expression
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'impl-args.json'
         $cmdOut = Join-Path $cmdDir 'impl-out.json'
         $cmdErr = Join-Path $cmdDir 'impl-err.log'
@@ -438,7 +438,7 @@ exit 0
     }
 
     # 2.3 Researcher identical default model across invocation modes
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'researcher-args.json'
         $cmdEnv = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -462,7 +462,7 @@ exit 0
     # =======================================================================
 
     # 3.1 Prompt text containing '--model' and '--effort'
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-prompt-with-model-strings.json"
         $env = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -484,7 +484,7 @@ exit 0
     }
 
     # 3.2 Prompt and path containing equals and option substrings
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-prompt-with-equals-strings.json"
         $env = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -508,7 +508,7 @@ exit 0
     }
 
     # 3.3 Command-expression preserving prompt with --model and --effort
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'cmd-prompt-strings-args.json'
         $cmdEnv = @{
             'AGY_BIN'        = $fakeAgyPs
@@ -533,7 +533,7 @@ exit 0
     # =======================================================================
 
     # 4.1 Caller --model separated form
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-reject-model.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -551,7 +551,7 @@ exit 0
     }
 
     # 4.2 Caller --model=value equals form
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-reject-model-equals.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -569,7 +569,7 @@ exit 0
     }
 
     # 4.3 Caller --effort separated form
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-reject-effort.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -587,7 +587,7 @@ exit 0
     }
 
     # 4.4 Caller --effort=value equals form
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-reject-effort-equals.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -605,7 +605,7 @@ exit 0
     }
 
     # 4.5 Caller --model rejection in command-expression
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'cmd-reject-model.json'
         $cmdEnv = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -622,7 +622,7 @@ exit 0
     }
 
     # 4.6 Caller --effort rejection in command-expression
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'cmd-reject-effort.json'
         $cmdEnv = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -643,7 +643,7 @@ exit 0
     # =======================================================================
 
     # 5.1 Missing --role option
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-reject-missing-role.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -659,7 +659,7 @@ exit 0
     }
 
     # 5.2 Missing --role in command-expression
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'cmd-missing-role.json'
         $cmdEnv = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -676,7 +676,7 @@ exit 0
     }
 
     # 5.3 Unknown role (separated form)
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-unknown-role.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -693,7 +693,7 @@ exit 0
     }
 
     # 5.4 Unknown role (equals form)
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-unknown-role-eq.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -709,7 +709,7 @@ exit 0
     }
 
     # 5.5 Unknown route (separated form)
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-unknown-route.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -727,7 +727,7 @@ exit 0
     }
 
     # 5.6 Unknown route (equals form)
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-unknown-route-eq.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -744,7 +744,7 @@ exit 0
     }
 
     # 5.7 Duplicate --role options
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-dup-role.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -762,7 +762,7 @@ exit 0
     }
 
     # 5.8 Duplicate --role options (equals form)
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-dup-role-eq.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -779,7 +779,7 @@ exit 0
     }
 
     # 5.9 Duplicate --route options
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-dup-route.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -798,7 +798,7 @@ exit 0
     }
 
     # 5.10 Duplicate --route options (equals form)
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-dup-route-eq.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -820,7 +820,7 @@ exit 0
     # =======================================================================
 
     # 6.1 scout with null quality_escalation on baseline policy
-    {
+    & {
         $argsCapture = Join-Path $TmpRoot "args-null-retry-scout.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
         $res = Invoke-Launcher -ArgumentList @(
@@ -838,7 +838,7 @@ exit 0
     }
 
     # 6.2 implementer with null quality_escalation in command-expression
-    {
+    & {
         $cmdArgs = Join-Path $cmdDir 'cmd-null-retry-impl.json'
         $cmdEnv = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -859,7 +859,7 @@ exit 0
     # =======================================================================
 
     # 7.1 Missing model-policy.json in fixture directory
-    {
+    & {
         $fixtureLauncher = New-PolicyFixture -FixtureName 'missing-policy'
         $argsCapture = Join-Path $TmpRoot "args-fixture-missing.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
@@ -877,7 +877,7 @@ exit 0
     }
 
     # 7.2 Malformed model-policy.json (invalid JSON syntax)
-    {
+    & {
         $fixtureLauncher = New-PolicyFixture -FixtureName 'malformed-policy' -PolicyJsonContent '{ "schema_version": 1, invalid json'
         $argsCapture = Join-Path $TmpRoot "args-fixture-malformed.json"
         $env = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsCapture }
@@ -895,7 +895,7 @@ exit 0
     }
 
     # 7.3 Unsupported schema_version (e.g. 2)
-    {
+    & {
         $badSchema = (Get-BaselinePolicyJson) -replace '"schema_version": 1', '"schema_version": 2'
         $fixtureLauncher = New-PolicyFixture -FixtureName 'bad-schema' -PolicyJsonContent $badSchema
         $argsCapture = Join-Path $TmpRoot "args-fixture-bad-schema.json"
@@ -913,7 +913,7 @@ exit 0
     }
 
     # 7.4 Empty policy_revision
-    {
+    & {
         $badRev = (Get-BaselinePolicyJson) -replace '"policy_revision": "2026-09-03.1"', '"policy_revision": ""'
         $fixtureLauncher = New-PolicyFixture -FixtureName 'empty-rev' -PolicyJsonContent $badRev
         $argsCapture = Join-Path $TmpRoot "args-fixture-empty-rev.json"
@@ -931,7 +931,7 @@ exit 0
     }
 
     # 7.5 Unsupported max_effort (not 'high')
-    {
+    & {
         $badEffort = (Get-BaselinePolicyJson) -replace '"max_effort": "high"', '"max_effort": "ultra"'
         $fixtureLauncher = New-PolicyFixture -FixtureName 'bad-effort' -PolicyJsonContent $badEffort
         $argsCapture = Join-Path $TmpRoot "args-fixture-bad-effort.json"
@@ -949,7 +949,7 @@ exit 0
     }
 
     # 7.6 Unsupported max_retries_per_worker (not 1)
-    {
+    & {
         $badRetries = (Get-BaselinePolicyJson) -replace '"max_retries_per_worker": 1', '"max_retries_per_worker": 2'
         $fixtureLauncher = New-PolicyFixture -FixtureName 'bad-retries' -PolicyJsonContent $badRetries
         $argsCapture = Join-Path $TmpRoot "args-fixture-bad-retries.json"
@@ -967,7 +967,7 @@ exit 0
     }
 
     # 7.7 Unsupported quota_action (not 'handoff')
-    {
+    & {
         $badQuota = (Get-BaselinePolicyJson) -replace '"quota_action": "handoff"', '"quota_action": "retry"'
         $fixtureLauncher = New-PolicyFixture -FixtureName 'bad-quota' -PolicyJsonContent $badQuota
         $argsCapture = Join-Path $TmpRoot "args-fixture-bad-quota.json"
@@ -985,7 +985,7 @@ exit 0
     }
 
     # 7.8 Missing required role in roles map (missing 'auditor')
-    {
+    & {
         $parsed = ConvertFrom-Json (Get-BaselinePolicyJson)
         $parsed.roles.PSObject.Properties.Remove('auditor')
         $missingRoleJson = ConvertTo-Json -InputObject $parsed -Depth 10
@@ -1005,7 +1005,7 @@ exit 0
     }
 
     # 7.9 Non-Gemini model ID in a role
-    {
+    & {
         $badModel = (Get-BaselinePolicyJson) -replace '"gemini-3.8-flash-low"', '"claude-3-5-sonnet-low"'
         $fixtureLauncher = New-PolicyFixture -FixtureName 'non-gemini' -PolicyJsonContent $badModel
         $argsCapture = Join-Path $TmpRoot "args-fixture-non-gemini.json"
@@ -1023,7 +1023,7 @@ exit 0
     }
 
     # 7.10 Invalid effort suffix in default_model (missing suffix or invalid suffix)
-    {
+    & {
         $badSuffix = (Get-BaselinePolicyJson) -replace '"gemini-3.8-flash-low"', '"gemini-3.8-flash-turbo"'
         $fixtureLauncher = New-PolicyFixture -FixtureName 'bad-suffix' -PolicyJsonContent $badSuffix
         $argsCapture = Join-Path $TmpRoot "args-fixture-bad-suffix.json"
@@ -1041,7 +1041,7 @@ exit 0
     }
 
     # 7.11 Escalation entry with missing evidence file
-    {
+    & {
         $escalationJson = @'
 {
   "schema_version": 1,
@@ -1082,7 +1082,7 @@ exit 0
     }
 
     # 7.12 Escalation entry with escaping evidence path
-    {
+    & {
         $escapingJson = @'
 {
   "schema_version": 1,
@@ -1123,7 +1123,7 @@ exit 0
     }
 
     # 7.13 Escalation entry where escalation model is identical to default model
-    {
+    & {
         $identicalJson = @'
 {
   "schema_version": 1,
@@ -1168,7 +1168,7 @@ exit 0
     # =======================================================================
     # 8. Fixture Policy with a Valid Evidence-Backed Escalation Target
     # =======================================================================
-    {
+    & {
         $validEscalationJson = @'
 {
   "schema_version": 1,
@@ -1254,7 +1254,7 @@ exit 0
     # =======================================================================
 
     # 9.1 Output capture separation
-    {
+    & {
         $runOut = Join-Path $TmpRoot 'contract-run.json'
         $runErr = Join-Path $TmpRoot 'contract-run.err'
         $argsCapture = Join-Path $TmpRoot 'contract-run.args'
@@ -1282,7 +1282,7 @@ exit 0
     }
 
     # 9.2 Parent directory creation
-    {
+    & {
         $nestedOut = Join-Path $TmpRoot 'nested/sub1/deep/run.json'
         $nestedErr = Join-Path $TmpRoot 'nested/sub2/deep/run.err'
         $res = Invoke-Launcher -ArgumentList @(
@@ -1299,7 +1299,7 @@ exit 0
     }
 
     # 9.3 Worker exit code propagation (exit code 42 via -File)
-    {
+    & {
         $res = Invoke-Launcher -ArgumentList @(
             '--role', 'implementer',
             '--output', (Join-Path $TmpRoot 'exit42.json'),
@@ -1315,7 +1315,7 @@ exit 0
     }
 
     # 9.4 Worker exit code propagation in command-expression (exit code 37)
-    {
+    & {
         $cmdEnv = @{
             'AGY_BIN'       = $fakeAgyPs
             'FAKE_AGY_EXIT' = '37'
@@ -1330,7 +1330,7 @@ exit 0
     }
 
     # 9.5 Bare delimiter rejection in command-expression
-    {
+    & {
         $bareArgs = Join-Path $cmdDir 'bare-delimiter-args.json'
         $bareEnv = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -1347,7 +1347,7 @@ exit 0
     }
 
     # 9.6 Omitted delimiter rejection in command-expression
-    {
+    & {
         $omittedArgs = Join-Path $cmdDir 'omitted-delimiter-args.json'
         $omittedEnv = @{
             'AGY_BIN'       = $fakeAgyPs
@@ -1364,7 +1364,7 @@ exit 0
     }
 
     # 9.7 Missing delimiter in -File invocation
-    {
+    & {
         $missingDelimArgs = Join-Path $TmpRoot 'missing-delim-args.json'
         $res = Invoke-Launcher -ArgumentList @(
             '--role', 'scout',
@@ -1378,7 +1378,7 @@ exit 0
     }
 
     # 9.8 Rejection of caller --output in worker arguments
-    {
+    & {
         $resRejOut1 = Invoke-Launcher -ArgumentList @(
             '--role', 'scout',
             '--output', (Join-Path $TmpRoot 'rej-out1.json'),
@@ -1391,7 +1391,7 @@ exit 0
     }
 
     # 9.9 Rejection of caller --output=value in worker arguments
-    {
+    & {
         $resRejOut2 = Invoke-Launcher -ArgumentList @(
             '--role', 'scout',
             '--output', (Join-Path $TmpRoot 'rej-out2.json'),
@@ -1404,7 +1404,7 @@ exit 0
     }
 
     # 9.10 AGY_BIN precedence over PATH
-    {
+    & {
         $customBin = Join-Path $TmpRoot 'custom-bin'
         [System.IO.Directory]::CreateDirectory($customBin) | Out-Null
         $customAgyPs = Join-Path $customBin 'custom_agy.ps1'
@@ -1437,7 +1437,7 @@ exit 0
     }
 
     # 9.11 Explicit AGY_BIN invalid failure without fallback
-    {
+    & {
         $invalidOut = Join-Path $TmpRoot 'invalid-bin-out.json'
         $resInvalid = Invoke-Launcher -ArgumentList @(
             '--role', 'scout',
