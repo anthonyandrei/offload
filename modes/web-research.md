@@ -149,7 +149,7 @@ If a researcher needs its one retry, preserve the same worker ID and dispatch to
 
 ## Stage 2: Synthesize claim ledger
 
-The synthesizer merges findings across all researcher outputs and constructs a claim ledger.
+The synthesizer merges findings across the verified selected researcher outputs and constructs a claim ledger.
 
 ### Synthesis rules
 
@@ -192,11 +192,44 @@ The synthesizer merges findings across all researcher outputs and constructs a c
 
 ### Synthesizer dispatch
 
-Dispatch the synthesizer using `--role synthesizer`:
+Before dispatching, select the inputs from the verified worker records. `WORKER_RECORDS` is an explicit JSON file containing the worker records after routing and verification. The selector follows each researcher's `accepted_attempt`, checks that the matching versioned routing attempt completed with `verification_status: "passed"`, checks the selected artifact's successful researcher envelope, and returns the surviving paths and distinct `angle_id` values. It does not delete or hide omitted artifacts; failed and superseded attempts remain available in the routing record and workspace for diagnostics.
+
+If fewer than two independent angles survive, take the documented partial-result fallback and do not dispatch a synthesizer. When the threshold is met, pass the returned paths as an explicit array to the extractor:
+
+#### Bash selection gate
+```bash
+RESEARCH_SELECTION_JSON="$("$OFFLOAD_ROOT/scripts/select-research-outputs.sh" \
+  --workers "$WORKER_RECORDS" \
+  --base-dir "<workspace>")"
+SURVIVING_ANGLE_COUNT="$(jq -r '.independent_angle_count' <<<"$RESEARCH_SELECTION_JSON")"
+if [ "$SURVIVING_ANGLE_COUNT" -lt 2 ]; then
+  printf 'Fewer than two verified independent research angles survived; use partial fallback.\n' >&2
+else
+  ACCEPTED_RESEARCH_OUTPUTS=()
+  while IFS= read -r selected_file; do
+    ACCEPTED_RESEARCH_OUTPUTS+=("$selected_file")
+  done < <(jq -r '.selected_files[]' <<<"$RESEARCH_SELECTION_JSON" | tr -d '\r')
+fi
+```
+
+#### PowerShell selection gate
+```powershell
+$ResearchSelectionJson = & "$OffloadRoot/scripts/select-research-outputs.ps1" `
+  --workers $WorkerRecords `
+  --base-dir "<workspace>"
+$ResearchSelection = $ResearchSelectionJson | ConvertFrom-Json
+$SurvivingAngleCount = [int]$ResearchSelection.independent_angle_count
+if ($SurvivingAngleCount -lt 2) {
+    [Console]::Error.WriteLine('Fewer than two verified independent research angles survived; use partial fallback.')
+} else {
+    $AcceptedResearcherFiles = @($ResearchSelection.selected_files)
+}
+```
+
+When the selection gate reaches the synthesis branch, dispatch the synthesizer using `--role synthesizer`:
 
 #### Bash
 ```bash
-ACCEPTED_RESEARCH_OUTPUTS=("<workspace>/researcher-<angle-id>.attempt<accepted-attempt>.json")
 MERGED_RESEARCH_FINDINGS="$("$OFFLOAD_ROOT/scripts/extract-structured-output.sh" --array "${ACCEPTED_RESEARCH_OUTPUTS[@]}")"
 SYNTH_SCHEMA='{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
 
@@ -210,7 +243,6 @@ SYNTH_SCHEMA='{"type":"object","properties":{"claim_ledger":{"type":"array","ite
 
 #### PowerShell
 ```powershell
-$AcceptedResearcherFiles = @("<workspace>/researcher-<angle-id>.attempt<accepted-attempt>.json")
 $MergedResearchFindings = & "$OffloadRoot/scripts/extract-structured-output.ps1" --array $AcceptedResearcherFiles
 $SynthSchema = '{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
 
@@ -350,7 +382,7 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 
 - **Stable worker IDs and retry ceiling.** Assign a stable `worker_id` to each assignment (researcher angle, synthesizer, auditor). Attempt 1 is initial dispatch; attempt 2 is its only permitted retry. Maximum two attempts total per assignment.
 - **Outcome tracking.** Record each attempt and verification outcome in `routing-outcomes.json`.
-- **Researcher failure.** If a researcher crashes, times out, or produces unparsable output, retry once with the error details using `--route default`. If the retry fails, synthesis proceeds as long as at least two independent evidence angles remain. The final report explicitly names any omitted angle.
+- **Researcher failure.** If a researcher crashes, times out, or produces unparsable output, retry once with the error details using `--route default`. The selection gate admits only the verified accepted attempt for each assignment. If a retry fails, synthesis proceeds as long as at least two distinct `angle_id` values remain; otherwise use the partial-result fallback. The final report explicitly names any omitted angle.
 - **Synthesis or audit failure.** Synthesis and citation audit are mandatory stages. The allowed synthesizer revision pass consumes the synthesizer's second attempt. The subsequent audit consumes the auditor's second attempt. If either stage crashes, times out, returns unparsable JSON, or fails to resolve citations after exhausting its 2-attempt budget, the run transitions to `partial` status.
 - **Partial result contract.** A `partial` run returns audited claims and raw findings collected up to the point of failure, but strictly withholds a firm synthesis or recommendation. State the failed stage explicitly and retain all raw artifacts for debugging.
 - **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.

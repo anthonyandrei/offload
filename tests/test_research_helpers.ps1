@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 # tests/test_research_helpers.ps1
-# Self-contained acceptance test suite for the five PowerShell 7 research helpers.
+# Self-contained acceptance test suite for the six PowerShell 7 research helpers.
 # Implements contracts specified in docs/specs/0001-platform-agnostic-workflows.md.
 # Strict constraints: PowerShell 7/.NET only, no Pester, Python, jq, Bash, or network.
 
@@ -500,6 +500,161 @@ exit 0
     # 2.6 Missing file rejection
     $resMissingFile = Invoke-Helper -ScriptName 'extract-structured-output.ps1' -ArgumentList @((Join-Path $TmpRoot 'nonexistent.json'))
     Assert-True ($resMissingFile.ExitCode -ne 0) "extract-structured-output: rejects non-existent input file"
+
+    # 2.7 Select only verified researcher attempts for synthesis
+    $selectionRoot = Join-Path $TmpRoot 'research-selection'
+    [System.IO.Directory]::CreateDirectory($selectionRoot) | Out-Null
+    $selectionScript = Join-Path $ScriptsDir 'select-research-outputs.ps1'
+
+    function Write-ResearchArtifact([string]$path, [string]$angleId, [string]$finding) {
+        (@{
+            response = "prose for $angleId"
+            structured_output = @{
+                run_id = 'selection-run'
+                angle_id = $angleId
+                status = 'success'
+                findings = @(@{ claim = $finding })
+            }
+        } | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $path -Encoding utf8
+    }
+
+    function New-ResearchWorker(
+        [string]$id,
+        [string]$output,
+        [int]$acceptedAttempt,
+        [object[]]$attempts,
+        [string]$status = 'completed'
+    ) {
+        return [ordered]@{
+            id = $id
+            role = 'researcher'
+            status = $status
+            output = $output
+            accepted_attempt = $acceptedAttempt
+            routing = [ordered]@{
+                schema_version = 1
+                attempts = @($attempts)
+            }
+        }
+    }
+
+    function New-ResearchAttempt(
+        [int]$attempt,
+        [string]$state,
+        [string]$verificationStatus,
+        [int]$exitCode,
+        [string]$output
+    ) {
+        return [ordered]@{
+            worker_id = 'placeholder'
+            role = 'researcher'
+            attempt = $attempt
+            state = $state
+            verification_status = $verificationStatus
+            exit_code = $exitCode
+            evidence_paths = @($output, "$output.err")
+        }
+    }
+
+    $officialOutput = Join-Path $selectionRoot 'official.json'
+    $independentOutput = Join-Path $selectionRoot 'independent.json'
+    $retryOldOutput = Join-Path $selectionRoot 'retry-old.json'
+    $retryNewOutput = Join-Path $selectionRoot 'retry-new.json'
+    $unverifiedOutput = Join-Path $selectionRoot 'unverified.json'
+    $exhaustedOutput = Join-Path $selectionRoot 'exhausted.json'
+    Write-ResearchArtifact $officialOutput 'official' 'official finding'
+    Write-ResearchArtifact $independentOutput 'independent' 'independent finding'
+    Write-ResearchArtifact $retryOldOutput 'retry-old' 'stale retry finding'
+    Write-ResearchArtifact $retryNewOutput 'retry-new' 'verified retry finding'
+    Write-ResearchArtifact $unverifiedOutput 'unverified' 'unverified finding'
+
+    $officialAttempt = New-ResearchAttempt 1 'completed' 'passed' 0 'official.json'
+    $officialAttempt.worker_id = 'researcher-official'
+    $independentAttempt = New-ResearchAttempt 1 'completed' 'passed' 0 'independent.json'
+    $independentAttempt.worker_id = 'researcher-independent'
+    $exhaustedAttempt = New-ResearchAttempt 1 'failed' 'failed' 1 'exhausted.json'
+    $exhaustedAttempt.worker_id = 'researcher-exhausted'
+    $retryAttempt1 = New-ResearchAttempt 1 'failed' 'failed' 1 'retry-old.json'
+    $retryAttempt1.worker_id = 'researcher-retry'
+    $retryAttempt2 = New-ResearchAttempt 2 'completed' 'passed' 0 'retry-new.json'
+    $retryAttempt2.worker_id = 'researcher-retry'
+    $unverifiedAttempt = New-ResearchAttempt 1 'completed' 'pending' 0 'unverified.json'
+    $unverifiedAttempt.worker_id = 'researcher-unverified'
+
+    $primaryManifest = [ordered]@{
+        workers = @(
+            (New-ResearchWorker 'researcher-official' 'official.json' 1 @($officialAttempt)),
+            (New-ResearchWorker 'researcher-independent' 'independent.json' 1 @($independentAttempt)),
+            (New-ResearchWorker 'researcher-exhausted' 'exhausted.json' 1 @($exhaustedAttempt) 'failed')
+        )
+    }
+    $primaryManifestPath = Join-Path $selectionRoot 'primary-routing.json'
+    ($primaryManifest | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $primaryManifestPath -Encoding utf8
+
+    $primarySelection = Invoke-Helper -ScriptName 'select-research-outputs.ps1' -ArgumentList @(
+        '--workers', $primaryManifestPath,
+        '--base-dir', $selectionRoot
+    )
+    Assert-Equal $primarySelection.ExitCode 0 "select-research-outputs: accepts two verified angles plus exhausted worker"
+    $primarySelectionJson = $primarySelection.Stdout | ConvertFrom-Json
+    Assert-Equal $primarySelectionJson.independent_angle_count 2 "select-research-outputs: counts two independent surviving angles"
+    Assert-StringArrayEqual ([string[]]$primarySelectionJson.selected_files) ([string[]]@($officialOutput, $independentOutput)) "select-research-outputs: returns only verified selected files"
+    Assert-True ($primarySelectionJson.omitted_workers.worker_id -contains 'researcher-exhausted') "select-research-outputs: retains exhausted worker as diagnostic"
+
+    $primaryFiles = @($primarySelectionJson.selected_files)
+    $primaryExtract = Invoke-Helper -ScriptName 'extract-structured-output.ps1' -ArgumentList (@('--array') + $primaryFiles)
+    Assert-Equal $primaryExtract.ExitCode 0 "select-research-outputs: explicit selected files extract successfully"
+    $primaryFindings = $primaryExtract.Stdout | ConvertFrom-Json
+    Assert-Equal $primaryFindings.Count 2 "select-research-outputs: synthesis input contains both surviving findings"
+    Assert-Equal $primaryFindings[0].findings[0].claim 'official finding' "select-research-outputs: preserves official finding"
+    Assert-Equal $primaryFindings[1].findings[0].claim 'independent finding' "select-research-outputs: preserves independent finding"
+
+    $retryWorker = New-ResearchWorker 'researcher-retry' 'retry-new.json' 2 @($retryAttempt1, $retryAttempt2)
+    $retryManifest = [ordered]@{ workers = @($retryWorker) }
+    $retryManifestPath = Join-Path $selectionRoot 'retry-routing.json'
+    ($retryManifest | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $retryManifestPath -Encoding utf8
+    $retrySelection = Invoke-Helper -ScriptName 'select-research-outputs.ps1' -ArgumentList @(
+        '--workers', $retryManifestPath,
+        '--base-dir', $selectionRoot
+    )
+    Assert-Equal $retrySelection.ExitCode 0 "select-research-outputs: accepts verified retry"
+    $retrySelectionJson = $retrySelection.Stdout | ConvertFrom-Json
+    Assert-StringArrayEqual ([string[]]$retrySelectionJson.selected_files) ([string[]]@($retryNewOutput)) "select-research-outputs: excludes failed attempt from retry selection"
+    $retryExtract = Invoke-Helper -ScriptName 'extract-structured-output.ps1' -ArgumentList @('--array', $retrySelectionJson.selected_files)
+    $retryFindings = $retryExtract.Stdout | ConvertFrom-Json
+    Assert-Equal $retryFindings[0].findings[0].claim 'verified retry finding' "select-research-outputs: retry synthesis input uses only retry findings"
+
+    $unverifiedWorker = New-ResearchWorker 'researcher-unverified' 'unverified.json' 1 @($unverifiedAttempt)
+    $unverifiedManifest = [ordered]@{ workers = @($unverifiedWorker) }
+    $unverifiedManifestPath = Join-Path $selectionRoot 'unverified-routing.json'
+    ($unverifiedManifest | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $unverifiedManifestPath -Encoding utf8
+    $unverifiedSelection = Invoke-Helper -ScriptName 'select-research-outputs.ps1' -ArgumentList @(
+        '--workers', $unverifiedManifestPath,
+        '--base-dir', $selectionRoot
+    )
+    Assert-Equal $unverifiedSelection.ExitCode 0 "select-research-outputs: handles completed but unverified result"
+    $unverifiedSelectionJson = $unverifiedSelection.Stdout | ConvertFrom-Json
+    Assert-Equal $unverifiedSelectionJson.independent_angle_count 0 "select-research-outputs: excludes completed but unverified result"
+    Assert-Equal $unverifiedSelectionJson.selected_files.Count 0 "select-research-outputs: emits no unverified synthesis input"
+
+    $duplicateAttempt1 = New-ResearchAttempt 1 'completed' 'passed' 0 'retry-old.json'
+    $duplicateAttempt1.worker_id = 'researcher-duplicate'
+    $duplicateAttempt2 = New-ResearchAttempt 2 'completed' 'passed' 0 'retry-new.json'
+    $duplicateAttempt2.worker_id = 'researcher-duplicate'
+    $duplicateWorker = New-ResearchWorker 'researcher-duplicate' 'retry-new.json' 2 @($duplicateAttempt1, $duplicateAttempt2)
+    $duplicateManifest = [ordered]@{ workers = @($duplicateWorker) }
+    $duplicateManifestPath = Join-Path $selectionRoot 'duplicate-routing.json'
+    ($duplicateManifest | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $duplicateManifestPath -Encoding utf8
+    $duplicateSelection = Invoke-Helper -ScriptName 'select-research-outputs.ps1' -ArgumentList @(
+        '--workers', $duplicateManifestPath,
+        '--base-dir', $selectionRoot
+    )
+    $duplicateSelectionJson = $duplicateSelection.Stdout | ConvertFrom-Json
+    Assert-Equal $duplicateSelectionJson.independent_angle_count 1 "select-research-outputs: counts one assignment as one angle"
+    Assert-Equal $duplicateSelectionJson.selected_files.Count 1 "select-research-outputs: selects one accepted attempt per assignment"
+
+    # Fewer than two surviving angles is a successful selection with a fallback decision, not a synthesis input.
+    Assert-True ($unverifiedSelectionJson.independent_angle_count -lt 2) "select-research-outputs: exposes fallback threshold when fewer than two angles survive"
 
     # =======================================================================
     # 3. make-research-workspace.ps1
