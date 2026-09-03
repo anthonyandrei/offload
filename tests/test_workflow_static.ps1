@@ -152,6 +152,10 @@ Assert-True ($execContent -match 'execution-workspace\.sh') "execution.md refere
 Assert-True ($execContent -match 'execution-workspace\.ps1') "execution.md references execution-workspace.ps1"
 Assert-True ($execContent -match 'check-execution-scope\.sh') "execution.md references check-execution-scope.sh"
 Assert-True ($execContent -match 'check-execution-scope\.ps1') "execution.md references check-execution-scope.ps1"
+Assert-True ($execContent -match 'check-review-verdict\.sh') "execution.md references check-review-verdict.sh"
+Assert-True ($execContent -match 'check-review-verdict\.ps1') "execution.md references check-review-verdict.ps1"
+Assert-True ($execContent -match 'criterion_id') "execution.md assigns stable reviewer criterion IDs"
+Assert-True ($execContent -match 'exactly one verdict object for every criterion') "execution.md requires exhaustive reviewer verdicts"
 
 # All check-execution-scope examples in execution.md must supply --baseline
 $execFencedMatches = [regex]::Matches($execContent, '```(?:bash|powershell)\r?\n((?:(?!```)[\s\S])*?)\r?\n```')
