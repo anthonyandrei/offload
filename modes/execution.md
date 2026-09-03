@@ -96,7 +96,7 @@ Reconcile scout findings:
 
 - If two writing tasks touch overlapping files, serialize them rather than running in parallel.
 - If a scout returned unexpected paths, adjust task boundaries before proceeding.
-- Write final prose acceptance criteria for each task.
+- Write final acceptance criteria for each task and assign each one a unique, stable `criterion_id` (for example, `C1`, `C2`). Save the resulting array as a JSON file in the run scratch directory so the reviewer and verifier consume the same set.
 
 ## Step 2: Author gates
 
@@ -291,13 +291,13 @@ Verify every worker reporting `SUCCESS`:
 
      #### Bash
      ```bash
-     REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
+     REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion_id":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion_id","verdict","quote"]}}},"required":["criteria"]}'
      "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
        --role reviewer \
         --output "<scratch dir>/offload/<slug>.attempt1.review.json" \
         --error "<scratch dir>/offload/<slug>.attempt1.review.err" \
        -- \
-        -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the artifact that proves it. Criteria: <criteria>" \
+        -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Return exactly one verdict object for every criterion in <criteria>, copying each criterion_id exactly. Decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one complete line verbatim from the artifact that proves it. Criteria: <criteria>" \
        --output-format json \
        --mode plan \
        --json-schema "$REVIEW_SCHEMA" \
@@ -308,13 +308,13 @@ Verify every worker reporting `SUCCESS`:
 
      #### PowerShell
      ```powershell
-     $ReviewSchema = '{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
+     $ReviewSchema = '{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion_id":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion_id","verdict","quote"]}}},"required":["criteria"]}'
      & "$OffloadRoot/scripts/run-agy-json.ps1" `
        --role reviewer `
         --output "<scratch dir>/offload/<slug>.attempt1.review.json" `
         --error "<scratch dir>/offload/<slug>.attempt1.review.err" `
        '--' `
-        -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the artifact that proves it. Criteria: <criteria>" `
+        -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Return exactly one verdict object for every criterion in <criteria>, copying each criterion_id exactly. Decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one complete line verbatim from the artifact that proves it. Criteria: <criteria>" `
        --output-format json `
        --mode plan `
 
@@ -326,12 +326,13 @@ Verify every worker reporting `SUCCESS`:
 
       Read `structured_output` from the JSON response to extract criteria verdicts and quotes.
 
-    For each `pass` verdict, first recheck the recorded digest, then verify the quoted line against the same artifact bytes:
+    First recheck the recorded digest. Then run the data-only coverage and evidence verifier with the criteria file, reviewer JSON, and the same artifact:
     - Bash digest: `test "sha256:$(sha256sum "<patch_file>" | awk '{print tolower($1)}')" = "<patch_digest>"`
     - PowerShell digest: `$actualDigest = "sha256:$((Get-FileHash -Algorithm SHA256 -LiteralPath "<patch_file>").Hash.ToLowerInvariant())"; if ($actualDigest -ne "<patch_digest>") { throw "review artifact digest mismatch" }`
-    - Bash quote: `grep -F -- "<quote>" "<patch_file>"`
-    - PowerShell quote: `Select-String -LiteralPath "<patch_file>" -SimpleMatch -Pattern "<quote>"`
-   If all quotes match verbatim, accept the verdict (`agy+grep`). If any quote fails to match, the digest fails, any criterion fails, or the reviewer hedges, inspect the recorded artifact directly (`agy→orchestrator`).
+    - Bash verifier: `"$OFFLOAD_ROOT/scripts/check-review-verdict.sh" --criteria "<criteria file>" --review "<review JSON>" --artifact "<patch_file>"`
+    - PowerShell verifier: `& "$OffloadRoot/scripts/check-review-verdict.ps1" --criteria "<criteria file>" --review "<review JSON>" --artifact "<patch_file>"`
+
+    The verifier performs exact criterion coverage and literal line matching from parsed data. Exit 0 accepts the reviewer result (`agy+grep`). Exit 1 means every criterion was covered but a fail or hedge requires direct orchestrator review. Exit 2 means malformed or incomplete coverage, duplicate or unknown IDs, a forged quote, or another verification error. For exit 1 or 2, inspect the recorded artifact directly (`agy→orchestrator`).
 
 3. **Integration of verified tasks.**
    - Disjoint tasks: Apply verified candidate patches sequentially via `execution-workspace integrate --manifest "<manifest>"`. The helper tests integration in a disposable scratch worktree before applying to the target.

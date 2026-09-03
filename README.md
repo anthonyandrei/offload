@@ -98,7 +98,7 @@ Used for code and file modifications across independent gated tasks.
 1. **Split and scout.** Break work into provisional tasks. Dispatch parallel scouts under `--mode plan` via `run-agy-json` with a JSON schema to identify touched files. If tasks overlap on files, serialize them.
 2. **Assign gates.** Every task receives exactly one gate:
    - **Machine gate.** An automated test command exiting 0 on success. A gate-author worker writes the test. The orchestrator runs a red check against the untouched tree to verify failure, reads the test code to confirm intent, and commits the test to freeze it.
-   - **Diff gate.** Plain-text criteria for tasks without test commands (such as documentation or configuration changes). A reviewer worker evaluates the diff adversarially, returning verbatim quotes from the diff for each passed criterion. The orchestrator checks quotes against the real diff.
+   - **Diff gate.** Plain-text criteria for tasks without test commands (such as documentation or configuration changes) receive stable IDs. A reviewer worker evaluates the immutable review artifact and returns exactly one verdict per ID. The orchestrator accepts only complete all-pass coverage whose evidence lines match the same artifact.
 3. **Dispatch implementers.** Dispatch implementers in parallel from a clean git tree with explicit owned files, frozen paths, and gate commands via `run-agy-json`.
 4. **Mechanical verification.**
    - Execution scope check: verify touched paths against assigned owned and frozen paths using `check-execution-scope`:
@@ -110,7 +110,7 @@ Used for code and file modifications across independent gated tasks.
      ```powershell
      & "$OffloadRoot/scripts/check-execution-scope.ps1" --owned src/render.py --frozen tests/test_render.py
      ```
-   - Gate command: run the machine test command or verify reviewer quotes verbatim against the recorded artifact after checking its digest.
+   - Gate command: run the machine test command or run `check-review-verdict` against the reviewer JSON, stable criteria file, and recorded artifact after checking its digest.
 
 ### Repository research workflow (`modes/repo-research.md`)
 
