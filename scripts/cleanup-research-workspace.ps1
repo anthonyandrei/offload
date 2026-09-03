@@ -103,6 +103,34 @@ if ($markerRaw.Trim() -ne 'offload-research-workspace-v1') {
     Fail "invalid workspace marker version: $canonicalWs"
 }
 
+function Remove-EntryWithoutFollowingReparsePoint([string]$entry) {
+    $attributes = [System.IO.File]::GetAttributes($entry)
+    $isDirectory = $attributes.HasFlag([System.IO.FileAttributes]::Directory)
+
+    if ($attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
+        # Delete the link itself. Do not enumerate or mutate its target.
+        if ($isDirectory) {
+            [System.IO.Directory]::Delete($entry, $false)
+        } else {
+            [System.IO.File]::Delete($entry)
+        }
+        return
+    }
+
+    if ($isDirectory) {
+        foreach ($child in [System.IO.Directory]::GetFileSystemEntries($entry)) {
+            Remove-EntryWithoutFollowingReparsePoint $child
+        }
+        [System.IO.Directory]::Delete($entry, $false)
+        return
+    }
+
+    if ($attributes.HasFlag([System.IO.FileAttributes]::ReadOnly)) {
+        [System.IO.File]::SetAttributes($entry, [System.IO.FileAttributes]::Normal)
+    }
+    [System.IO.File]::Delete($entry)
+}
+
 # Cleanup according to status
 if ($status -eq 'success') {
     $entries = [System.IO.Directory]::GetFileSystemEntries($canonicalWs)
@@ -112,28 +140,8 @@ if ($status -eq 'success') {
             continue
         }
 
-        # Safe removal without following links out of the workspace
-        if ([System.IO.Directory]::Exists($entry)) {
-            $attr = [System.IO.File]::GetAttributes($entry)
-            if ($attr.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
-                [System.IO.Directory]::Delete($entry, $false)
-            } else {
-                # Clear any read-only attributes
-                foreach ($file in [System.IO.Directory]::GetFiles($entry, "*", [System.IO.SearchOption]::AllDirectories)) {
-                    $fAttr = [System.IO.File]::GetAttributes($file)
-                    if ($fAttr.HasFlag([System.IO.FileAttributes]::ReadOnly)) {
-                        [System.IO.File]::SetAttributes($file, [System.IO.FileAttributes]::Normal)
-                    }
-                }
-                [System.IO.Directory]::Delete($entry, $true)
-            }
-        } elseif ([System.IO.File]::Exists($entry)) {
-            $fAttr = [System.IO.File]::GetAttributes($entry)
-            if ($fAttr.HasFlag([System.IO.FileAttributes]::ReadOnly)) {
-                [System.IO.File]::SetAttributes($entry, [System.IO.FileAttributes]::Normal)
-            }
-            [System.IO.File]::Delete($entry)
-        }
+        # Check every entry before descending so nested links are never followed.
+        Remove-EntryWithoutFollowingReparsePoint $entry
     }
 }
 

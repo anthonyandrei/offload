@@ -133,6 +133,14 @@ function Invoke-Helper {
 $TmpRoot = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "offload-test-$([System.Guid]::NewGuid().ToString('N'))")
 [System.IO.Directory]::CreateDirectory($TmpRoot) | Out-Null
 
+function Assert-TestPathWithinRoot([string]$path, [string]$name) {
+    $root = [System.IO.Path]::GetFullPath($TmpRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $candidate = [System.IO.Path]::GetFullPath($path)
+    $rootPrefix = $root + [System.IO.Path]::DirectorySeparatorChar
+    Assert-True ($candidate.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) $name "Resolved path '$candidate' is outside test root '$root'"
+    return $candidate
+}
+
 try {
     # -----------------------------------------------------------------------
     # Setup Fake agy Executable / Scripts
@@ -762,7 +770,43 @@ exit 0
     Assert-False (Test-Path -LiteralPath (Join-Path $cleanSuccessWs 'repo')) "cleanup-research-workspace: success removes repo directory"
     Assert-False (Test-Path -LiteralPath (Join-Path $cleanSuccessWs 'temp.log')) "cleanup-research-workspace: success removes temp files"
 
-    # 5.2 Partial cleanup retention
+    # 5.2 Nested and top-level junctions are removed without touching their target
+    if ($IsWindows) {
+        $cleanLinksWs = Assert-TestPathWithinRoot (Join-Path $TmpRoot 'clean-links-ws') "cleanup-research-workspace: workspace fixture is inside test root"
+        $targetRoot = Assert-TestPathWithinRoot (Join-Path $TmpRoot 'junction-target') "cleanup-research-workspace: junction target is inside test root"
+        [System.IO.Directory]::CreateDirectory((Join-Path $cleanLinksWs 'repo')) | Out-Null
+        [System.IO.Directory]::CreateDirectory((Join-Path $targetRoot 'payload')) | Out-Null
+        Set-Content -LiteralPath (Join-Path $cleanLinksWs '.offload-research-workspace') -Value "offload-research-workspace-v1`n" -NoNewline
+        $targetFile = Assert-TestPathWithinRoot (Join-Path $targetRoot 'payload/target.txt') "cleanup-research-workspace: target file fixture is inside test root"
+        Set-Content -LiteralPath $targetFile -Value 'target content'
+        [System.IO.File]::SetAttributes($targetFile, [System.IO.FileAttributes]::ReadOnly)
+        $workspaceReadOnlyFile = Assert-TestPathWithinRoot (Join-Path $cleanLinksWs 'workspace-readonly.txt') "cleanup-research-workspace: workspace file fixture is inside test root"
+        Set-Content -LiteralPath $workspaceReadOnlyFile -Value 'workspace content'
+        [System.IO.File]::SetAttributes($workspaceReadOnlyFile, [System.IO.FileAttributes]::ReadOnly)
+
+        $nestedLink = Assert-TestPathWithinRoot (Join-Path $cleanLinksWs 'repo/nested-target') "cleanup-research-workspace: nested junction fixture is inside test root"
+        $topLevelLink = Assert-TestPathWithinRoot (Join-Path $cleanLinksWs 'top-level-target') "cleanup-research-workspace: top-level junction fixture is inside test root"
+        New-Item -ItemType Junction -Path $nestedLink -Target $targetRoot | Out-Null
+        New-Item -ItemType Junction -Path $topLevelLink -Target $targetRoot | Out-Null
+
+        $resCleanLinks = Invoke-Helper -ScriptName 'cleanup-research-workspace.ps1' -ArgumentList @(
+            '--workspace', $cleanLinksWs,
+            '--status', 'success'
+        )
+
+        Assert-Equal $resCleanLinks.ExitCode 0 "cleanup-research-workspace: link-safe success exits 0"
+        Assert-False (Test-Path -LiteralPath $nestedLink) "cleanup-research-workspace: removes nested junction"
+        Assert-False (Test-Path -LiteralPath $topLevelLink) "cleanup-research-workspace: removes top-level junction"
+        Assert-False (Test-Path -LiteralPath $workspaceReadOnlyFile) "cleanup-research-workspace: removes ordinary read-only workspace file"
+        Assert-True (Test-Path -LiteralPath $targetRoot -PathType Container) "cleanup-research-workspace: preserves junction target directory"
+        Assert-True (Test-Path -LiteralPath $targetFile -PathType Leaf) "cleanup-research-workspace: preserves junction target file"
+        Assert-Equal (Get-Content -LiteralPath $targetFile -Raw).Trim() 'target content' "cleanup-research-workspace: preserves junction target content"
+        Assert-True ([System.IO.File]::GetAttributes($targetFile).HasFlag([System.IO.FileAttributes]::ReadOnly)) "cleanup-research-workspace: preserves junction target attributes"
+    } else {
+        [Console]::Out.WriteLine('skip - cleanup-research-workspace: junction no-follow fixture requires Windows')
+    }
+
+    # 5.3 Partial cleanup retention
     $cleanPartialWs = Join-Path $TmpRoot 'clean-partial-ws'
     [System.IO.Directory]::CreateDirectory((Join-Path $cleanPartialWs 'repo')) | Out-Null
     Set-Content -LiteralPath (Join-Path $cleanPartialWs '.offload-research-workspace') -Value "offload-research-workspace-v1`n" -NoNewline
@@ -777,7 +821,7 @@ exit 0
     Assert-True (Test-Path -LiteralPath (Join-Path $cleanPartialWs 'raw-worker.json')) "cleanup-research-workspace: partial retains raw files"
     Assert-True (Test-Path -LiteralPath (Join-Path $cleanPartialWs 'repo/file.txt')) "cleanup-research-workspace: partial retains repo directory"
 
-    # 5.3 Failed cleanup retention
+    # 5.4 Failed cleanup retention
     $cleanFailedWs = Join-Path $TmpRoot 'clean-failed-ws'
     [System.IO.Directory]::CreateDirectory($cleanFailedWs) | Out-Null
     Set-Content -LiteralPath (Join-Path $cleanFailedWs '.offload-research-workspace') -Value "offload-research-workspace-v1`n" -NoNewline
@@ -790,7 +834,7 @@ exit 0
     Assert-Equal $resCleanFailed.ExitCode 0 "cleanup-research-workspace: failed status exits 0"
     Assert-True (Test-Path -LiteralPath (Join-Path $cleanFailedWs 'raw-worker.json')) "cleanup-research-workspace: failed retains raw files"
 
-    # 5.4 Unmarked directory refusal
+    # 5.5 Unmarked directory refusal
     $unmarkedWs = Join-Path $TmpRoot 'unmarked-dir'
     [System.IO.Directory]::CreateDirectory($unmarkedWs) | Out-Null
     Set-Content -LiteralPath (Join-Path $unmarkedWs 'keep-safe.txt') -Value "safe"
@@ -801,7 +845,7 @@ exit 0
     Assert-True ($resUnmarked.ExitCode -ne 0) "cleanup-research-workspace: refuses unmarked directory"
     Assert-True (Test-Path -LiteralPath (Join-Path $unmarkedWs 'keep-safe.txt')) "cleanup-research-workspace: unmarked files remain untouched"
 
-    # 5.5 Invalid marker version refusal
+    # 5.6 Invalid marker version refusal
     $invalidMarkerWs = Join-Path $TmpRoot 'invalid-marker-dir'
     [System.IO.Directory]::CreateDirectory($invalidMarkerWs) | Out-Null
     Set-Content -LiteralPath (Join-Path $invalidMarkerWs '.offload-research-workspace') -Value "wrong-marker-version`n" -NoNewline
@@ -813,7 +857,7 @@ exit 0
     Assert-True ($resInvalidMarker.ExitCode -ne 0) "cleanup-research-workspace: refuses invalid marker version"
     Assert-True (Test-Path -LiteralPath (Join-Path $invalidMarkerWs 'keep-safe.txt')) "cleanup-research-workspace: invalid marker files remain untouched"
 
-    # 5.6 Filesystem root refusal
+    # 5.7 Filesystem root refusal
     $fsRoot = [System.IO.Path]::GetPathRoot((Get-Location).Path)
     $resRoot = Invoke-Helper -ScriptName 'cleanup-research-workspace.ps1' -ArgumentList @(
         '--workspace', $fsRoot,
@@ -821,14 +865,14 @@ exit 0
     )
     Assert-True ($resRoot.ExitCode -ne 0) "cleanup-research-workspace: refuses filesystem root"
 
-    # 5.7 Current working directory refusal
+    # 5.8 Current working directory refusal
     $resCurDir = Invoke-Helper -ScriptName 'cleanup-research-workspace.ps1' -ArgumentList @(
         '--workspace', '.',
         '--status', 'success'
     )
     Assert-True ($resCurDir.ExitCode -ne 0) "cleanup-research-workspace: refuses process current directory"
 
-    # 5.8 Home directory refusal
+    # 5.9 Home directory refusal
     $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $env:HOME }
     $resHome = Invoke-Helper -ScriptName 'cleanup-research-workspace.ps1' -ArgumentList @(
         '--workspace', $userHome,
@@ -836,7 +880,7 @@ exit 0
     )
     Assert-True ($resHome.ExitCode -ne 0) "cleanup-research-workspace: refuses user home directory"
 
-    # 5.9 Git worktree refusal
+    # 5.10 Git worktree refusal
     $gitWorktree = Join-Path $TmpRoot 'git-worktree-target'
     [System.IO.Directory]::CreateDirectory((Join-Path $gitWorktree '.git')) | Out-Null
     Set-Content -LiteralPath (Join-Path $gitWorktree '.offload-research-workspace') -Value "offload-research-workspace-v1`n" -NoNewline
