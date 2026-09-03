@@ -163,7 +163,21 @@ Assert-True ($execContent -match 'without waiting for sibling completion') "exec
 Assert-True ($execContent -match 'Final combined gate check') "execution.md documents final combined gate check"
 Assert-True ($execContent -match 'Wait for active worker processes to terminate before calling cleanup') "execution.md documents cleanup waits for active workers"
 
-# 10. Routing provenance fixture and documentation alignment (Issue #13)
+# 10. Attempt-specific artifacts and explicit accepted-attempt selection (Issue #14)
+$repoContent = Get-Content -LiteralPath $RepoMd -Raw
+foreach ($mode in @(
+    @{ Name = 'execution.md'; Content = $execContent; Retry = '<slug>\.attempt2' },
+    @{ Name = 'repo-research.md'; Content = $repoContent; Retry = '<slug>\.attempt2\.research' },
+    @{ Name = 'web-research.md'; Content = $webContent; Retry = 'researcher-<angle-id>\.attempt2' }
+)) {
+    Assert-True ($mode.Content -match 'attempt1') "$($mode.Name) uses attempt-specific initial artifact paths"
+    Assert-True ($mode.Content -match $mode.Retry) "$($mode.Name) documents distinct attempt 2 artifact paths"
+    Assert-True ($mode.Content -match 'accepted_attempt') "$($mode.Name) records an explicit accepted_attempt"
+}
+Assert-False ($webContent -match 'synthesizer\.json') "web-research.md does not reuse synthesizer.json"
+Assert-False ($webContent -match 'auditor\.json') "web-research.md does not reuse auditor.json"
+
+# 11. Routing provenance fixture and documentation alignment (Issue #13)
 $FixtureJson = Join-Path $RootDir 'tests/fixtures/routing-worker.json'
 Assert-True (Test-Path -LiteralPath $FixtureJson -PathType Leaf) "workflow-static: routing fixture exists"
 Assert-True ($skillContent -match 'tests/fixtures/routing-worker\.json') "SKILL.md links to routing fixture"

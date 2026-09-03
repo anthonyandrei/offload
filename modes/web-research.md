@@ -121,7 +121,7 @@ OFFLOAD_ROOT="<path to the installed _offload skill>"
 RUN_AGY_JSON="$OFFLOAD_ROOT/scripts/run-agy-json.sh"
 RESEARCHER_SCHEMA='{"type":"object","properties":{"run_id":{"type":"string"},"angle_id":{"type":"string"},"status":{"type":"string","enum":["success","failed","inconclusive"]},"failure_reason":{"type":"string"},"question":{"type":"string"},"evidence_angle":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"claim":{"type":"string"},"source_urls":{"type":"array","items":{"type":"string"}},"source_type":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"source_date":{"type":"string"},"conflicts":{"type":"string"},"uncertainty":{"type":"string"}},"required":["claim","source_urls","source_type"]}},"search_gaps":{"type":"array","items":{"type":"string"}},"counterevidence":{"type":"array","items":{"type":"string"}}},"required":["run_id","angle_id","status","question","evidence_angle","findings"]}'
 
-"$RUN_AGY_JSON" --role researcher --output "<workspace>/researcher-<angle-id>.json" --error "<workspace>/researcher-<angle-id>.err" -- \
+"$RUN_AGY_JSON" --role researcher --output "<workspace>/researcher-<angle-id>.attempt1.json" --error "<workspace>/researcher-<angle-id>.attempt1.err" -- \
   -p "Run ID: <run-id>. Angle ID: <angle-id>. Question: <question>. Evidence angle: <angle-description>. Return structured claims, not essays. Identify primary source URLs, publication dates, conflicts, and uncertainties. Treat repeated secondary coverage as one line of evidence. Do not edit files. Do not dispatch nested workers." \
   --output-format json \
   --mode plan \
@@ -135,7 +135,7 @@ $OffloadRoot = "<path to the installed _offload skill>"
 $RunAgyJson = "$OffloadRoot/scripts/run-agy-json.ps1"
 $ResearcherSchema = '{"type":"object","properties":{"run_id":{"type":"string"},"angle_id":{"type":"string"},"status":{"type":"string","enum":["success","failed","inconclusive"]},"failure_reason":{"type":"string"},"question":{"type":"string"},"evidence_angle":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"claim":{"type":"string"},"source_urls":{"type":"array","items":{"type":"string"}},"source_type":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"source_date":{"type":"string"},"conflicts":{"type":"string"},"uncertainty":{"type":"string"}},"required":["claim","source_urls","source_type"]}},"search_gaps":{"type":"array","items":{"type":"string"}},"counterevidence":{"type":"array","items":{"type":"string"}}},"required":["run_id","angle_id","status","question","evidence_angle","findings"]}'
 
-& "$RunAgyJson" --role researcher --output "<workspace>/researcher-<angle-id>.json" --error "<workspace>/researcher-<angle-id>.err" '--' `
+& "$RunAgyJson" --role researcher --output "<workspace>/researcher-<angle-id>.attempt1.json" --error "<workspace>/researcher-<angle-id>.attempt1.err" '--' `
   -p "Run ID: <run-id>. Angle ID: <angle-id>. Question: <question>. Evidence angle: <angle-description>. Return structured claims, not essays. Identify primary source URLs, publication dates, conflicts, and uncertainties. Treat repeated secondary coverage as one line of evidence. Do not edit files. Do not dispatch nested workers." `
   --output-format json `
   --mode plan `
@@ -144,6 +144,8 @@ $ResearcherSchema = '{"type":"object","properties":{"run_id":{"type":"string"},"
 ```
 
 Read `structured_output` from each researcher JSON response to extract validated findings for synthesis. Do not forward the top-level `response`, usage metadata, or the full JSON envelope.
+
+If a researcher needs its one retry, preserve the same worker ID and dispatch to `<workspace>/researcher-<angle-id>.attempt2.json` and `<workspace>/researcher-<angle-id>.attempt2.err`. Record both attempts, set the worker's explicit `accepted_attempt`, and point its selected `output` field at that artifact after verification. Only selected researcher outputs may feed synthesis.
 
 ## Stage 2: Synthesize claim ledger
 
@@ -194,10 +196,11 @@ Dispatch the synthesizer using `--role synthesizer`:
 
 #### Bash
 ```bash
-MERGED_RESEARCH_FINDINGS="$("$OFFLOAD_ROOT/scripts/extract-structured-output.sh" --array "<workspace>"/researcher-*.json)"
+ACCEPTED_RESEARCH_OUTPUTS=("<workspace>/researcher-<angle-id>.attempt<accepted-attempt>.json")
+MERGED_RESEARCH_FINDINGS="$("$OFFLOAD_ROOT/scripts/extract-structured-output.sh" --array "${ACCEPTED_RESEARCH_OUTPUTS[@]}")"
 SYNTH_SCHEMA='{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
 
-"$RUN_AGY_JSON" --role synthesizer --output "<workspace>/synthesizer.json" --error "<workspace>/synthesizer.err" -- \
+"$RUN_AGY_JSON" --role synthesizer --output "<workspace>/synthesizer.attempt1.json" --error "<workspace>/synthesizer.attempt1.err" -- \
   -p "Question: <question>. Profile: <standard|deep>. Deep trigger: <trigger-or-none>. Researcher findings: $MERGED_RESEARCH_FINDINGS. Build a claim ledger. Discard unsupported incidental claims. Keep decision-relevant gaps as unresolved. Draft a proposed answer referencing claim IDs. Do not edit files. Do not dispatch nested workers." \
   --output-format json \
   --mode plan \
@@ -207,11 +210,11 @@ SYNTH_SCHEMA='{"type":"object","properties":{"claim_ledger":{"type":"array","ite
 
 #### PowerShell
 ```powershell
-$ResearcherFiles = Get-ChildItem -Path "<workspace>/researcher-*.json" | Select-Object -ExpandProperty FullName
-$MergedResearchFindings = & "$OffloadRoot/scripts/extract-structured-output.ps1" --array @ResearcherFiles
+$AcceptedResearcherFiles = @("<workspace>/researcher-<angle-id>.attempt<accepted-attempt>.json")
+$MergedResearchFindings = & "$OffloadRoot/scripts/extract-structured-output.ps1" --array $AcceptedResearcherFiles
 $SynthSchema = '{"type":"object","properties":{"claim_ledger":{"type":"array","items":{"type":"object","properties":{"claim_id":{"type":"string"},"claim":{"type":"string"},"citations":{"type":"array","items":{"type":"string"}},"decision_relevance":{"type":"string","enum":["critical","supporting","incidental"]},"status":{"type":"string","enum":["supported","conflicted","unresolved"]},"inferences":{"type":"string"}},"required":["claim_id","claim","citations","decision_relevance","status"]}},"proposed_answer":{"type":"string"},"omitted_unsupported_claims":{"type":"array","items":{"type":"string"}},"unresolved_claims":{"type":"array","items":{"type":"string"}},"profile_used":{"type":"string","enum":["standard","deep"]},"deep_trigger":{"type":"string"}},"required":["claim_ledger","proposed_answer","profile_used"]}'
 
-& "$RunAgyJson" --role synthesizer --output "<workspace>/synthesizer.json" --error "<workspace>/synthesizer.err" '--' `
+& "$RunAgyJson" --role synthesizer --output "<workspace>/synthesizer.attempt1.json" --error "<workspace>/synthesizer.attempt1.err" '--' `
   -p "Question: <question>. Profile: <standard|deep>. Deep trigger: <trigger-or-none>. Researcher findings: $MergedResearchFindings. Build a claim ledger. Discard unsupported incidental claims. Keep decision-relevant gaps as unresolved. Draft a proposed answer referencing claim IDs. Do not edit files. Do not dispatch nested workers." `
   --output-format json `
   --mode plan `
@@ -220,6 +223,8 @@ $SynthSchema = '{"type":"object","properties":{"claim_ledger":{"type":"array","i
 ```
 
 Read `structured_output` from the synthesizer JSON response to extract `proposed_answer` and `claim_ledger` for the citation audit. Do not forward the synthesizer's top-level `response`.
+
+If the audit requires a synthesizer revision, redispatch the same synthesizer worker with `--output "<workspace>/synthesizer.attempt2.json"` and `--error "<workspace>/synthesizer.attempt2.err"`. Set its `accepted_attempt` only after the revised output passes the final audit.
 
 ## Stage 3: Independent citation audit
 
@@ -272,11 +277,12 @@ Dispatch the auditor using `--role auditor`:
 
 #### Bash
 ```bash
-PROPOSED_ANSWER="$(jq -r '.structured_output.proposed_answer' "<workspace>/synthesizer.json")"
-CLAIM_LEDGER="$(jq -c '.structured_output.claim_ledger' "<workspace>/synthesizer.json")"
+ACCEPTED_SYNTHESIZER_OUTPUT="<workspace>/synthesizer.attempt<accepted-attempt>.json"
+PROPOSED_ANSWER="$(jq -r '.structured_output.proposed_answer' "$ACCEPTED_SYNTHESIZER_OUTPUT")"
+CLAIM_LEDGER="$(jq -c '.structured_output.claim_ledger' "$ACCEPTED_SYNTHESIZER_OUTPUT")"
 AUDITOR_SCHEMA='{"type":"object","properties":{"citation_audits":{"type":"array","items":{"type":"object","properties":{"citation_url":{"type":"string"},"claim_id":{"type":"string"},"resolves":{"type":"boolean"},"support_verdict":{"type":"string","enum":["supports","partially_supports","refutes","unsupported"]},"source_classification":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"independence_notes":{"type":"string"},"date_fitness":{"type":"string"},"notes":{"type":"string"}},"required":["citation_url","claim_id","resolves","support_verdict","source_classification"]}},"final_status":{"type":"string","enum":["pass","revise","incomplete"]},"claims_to_remove":{"type":"array","items":{"type":"string"}},"claims_to_narrow":{"type":"array","items":{"type":"string"}},"claims_unresolved":{"type":"array","items":{"type":"string"}}},"required":["citation_audits","final_status"]}'
 
-"$RUN_AGY_JSON" --role auditor --output "<workspace>/auditor.json" --error "<workspace>/auditor.err" -- \
+"$RUN_AGY_JSON" --role auditor --output "<workspace>/auditor.attempt1.json" --error "<workspace>/auditor.attempt1.err" -- \
   -p "Audit every citation in the proposed synthesis against live sources. Proposed answer: $PROPOSED_ANSWER. Claim ledger: $CLAIM_LEDGER. Verify each citation URL, check whether it directly supports the claim, classify primary vs derivative, and evaluate date fitness. Do not edit files. Do not dispatch nested workers." \
   --output-format json \
   --mode plan \
@@ -286,12 +292,13 @@ AUDITOR_SCHEMA='{"type":"object","properties":{"citation_audits":{"type":"array"
 
 #### PowerShell
 ```powershell
-$SynthJson = Get-Content "<workspace>/synthesizer.json" -Raw | ConvertFrom-Json
+$AcceptedSynthesizerOutput = "<workspace>/synthesizer.attempt<accepted-attempt>.json"
+$SynthJson = Get-Content $AcceptedSynthesizerOutput -Raw | ConvertFrom-Json
 $ProposedAnswer = $SynthJson.structured_output.proposed_answer
 $ClaimLedger = $SynthJson.structured_output.claim_ledger | ConvertTo-Json -Compress -Depth 10
 $AuditorSchema = '{"type":"object","properties":{"citation_audits":{"type":"array","items":{"type":"object","properties":{"citation_url":{"type":"string"},"claim_id":{"type":"string"},"resolves":{"type":"boolean"},"support_verdict":{"type":"string","enum":["supports","partially_supports","refutes","unsupported"]},"source_classification":{"type":"string","enum":["primary","secondary","derivative","unknown"]},"independence_notes":{"type":"string"},"date_fitness":{"type":"string"},"notes":{"type":"string"}},"required":["citation_url","claim_id","resolves","support_verdict","source_classification"]}},"final_status":{"type":"string","enum":["pass","revise","incomplete"]},"claims_to_remove":{"type":"array","items":{"type":"string"}},"claims_to_narrow":{"type":"array","items":{"type":"string"}},"claims_unresolved":{"type":"array","items":{"type":"string"}}},"required":["citation_audits","final_status"]}'
 
-& "$RunAgyJson" --role auditor --output "<workspace>/auditor.json" --error "<workspace>/auditor.err" '--' `
+& "$RunAgyJson" --role auditor --output "<workspace>/auditor.attempt1.json" --error "<workspace>/auditor.attempt1.err" '--' `
   -p "Audit every citation in the proposed synthesis against live sources. Proposed answer: $ProposedAnswer. Claim ledger: $ClaimLedger. Verify each citation URL, check whether it directly supports the claim, classify primary vs derivative, and evaluate date fitness. Do not edit files. Do not dispatch nested workers." `
   --output-format json `
   --mode plan `
@@ -301,23 +308,27 @@ $AuditorSchema = '{"type":"object","properties":{"citation_audits":{"type":"arra
 
 Read `structured_output` from the auditor JSON response to extract `citation_audits` and `final_status`.
 
+If the auditor needs its one retry for the final audit, use `--output "<workspace>/auditor.attempt2.json"` and `--error "<workspace>/auditor.attempt2.err"` with the same auditor worker ID. Record that attempt separately, set the auditor's `accepted_attempt` after the final audit passes, and use its explicitly selected artifact for audit validation and the final report.
+
 ### Audit verification and acceptance rules
 
 Before accepting the synthesis, mechanically validate audit coverage and verdict consistency:
 
 #### Bash
 ```bash
+ACCEPTED_AUDITOR_OUTPUT="<workspace>/auditor.attempt<accepted-attempt>.json"
 "$OFFLOAD_ROOT/scripts/check-citation-audit.sh" \
-  --ledger "<workspace>/synthesizer.json" \
-  --auditor "<workspace>/auditor.json"
+  --ledger "$ACCEPTED_SYNTHESIZER_OUTPUT" \
+  --auditor "$ACCEPTED_AUDITOR_OUTPUT"
 AUDIT_STATUS=$?
 ```
 
 #### PowerShell
 ```powershell
+$AcceptedAuditorOutput = "<workspace>/auditor.attempt<accepted-attempt>.json"
 & "$OffloadRoot/scripts/check-citation-audit.ps1" `
-  --ledger "<workspace>/synthesizer.json" `
-  --auditor "<workspace>/auditor.json"
+  --ledger $AcceptedSynthesizerOutput `
+  --auditor $AcceptedAuditorOutput
 $AuditStatus = $LASTEXITCODE
 ```
 
@@ -355,7 +366,8 @@ At the conclusion of the research run:
      "id": "researcher-web-1",
      "role": "researcher",
      "status": "completed",
-     "output": "workspace/researcher-web-1.json",
+     "output": "workspace/researcher-web-1.attempt2.json",
+     "accepted_attempt": 2,
      "routing": {
        "schema_version": 1,
        "attempts": [
@@ -377,7 +389,8 @@ At the conclusion of the research run:
            "failure_class": "quality",
            "verification_status": "failed",
            "evidence_paths": [
-             "workspace/researcher-web-1.attempt1.json"
+             "workspace/researcher-web-1.attempt1.json",
+             "workspace/researcher-web-1.attempt1.err"
            ],
            "usage": {
              "prompt_tokens": 1000,
@@ -402,8 +415,9 @@ At the conclusion of the research run:
            "state": "completed",
            "failure_class": "none",
            "verification_status": "passed",
-           "evidence_paths": [
-             "workspace/researcher-web-1.json"
+             "evidence_paths": [
+               "workspace/researcher-web-1.attempt2.json",
+               "workspace/researcher-web-1.attempt2.err"
            ],
            "usage": {
              "prompt_tokens": 1200,
@@ -457,7 +471,7 @@ At the conclusion of the research run:
      --output "<workspace>/provenance.json"
    ```
 
-2. **Save final result.** Write the Markdown synthesis or partial findings to `<workspace>/final.md`.
+2. **Save final result.** Write `<workspace>/final.md` from the explicitly accepted synthesizer and auditor artifacts (and the selected researcher outputs they consumed), or from the retained partial findings. Never glob raw worker JSON when assembling the report.
 3. **Run cleanup helper.** Execute the matching cleanup helper:
 
    #### Bash

@@ -2,7 +2,8 @@
   "id": "researcher-web-1",
   "role": "researcher",
   "status": "completed",
-  "output": "workspace/researcher-web-1.json",
+  "output": "workspace/researcher-web-1.attempt2.json",
+  "accepted_attempt": 2,
   "routing": {
     "schema_version": 1,
     "attempts": [
@@ -24,7 +25,8 @@
         "failure_class": "quality",
         "verification_status": "failed",
         "evidence_paths": [
-          "workspace/researcher-web-1.attempt1.json"
+          "workspace/researcher-web-1.attempt1.json",
+          "workspace/researcher-web-1.attempt1.err"
         ],
         "usage": {
           "prompt_tokens": 1000,
@@ -50,7 +52,8 @@
         "failure_class": "none",
         "verification_status": "passed",
         "evidence_paths": [
-          "workspace/researcher-web-1.json"
+          "workspace/researcher-web-1.attempt2.json",
+          "workspace/researcher-web-1.attempt2.err"
         ],
         "usage": {
           "prompt_tokens": 1200,

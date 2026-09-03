@@ -58,8 +58,8 @@ git worktree add --detach "$SCOUT_WORKSPACE" "$BASELINE"
 SCOUT_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
   --role scout \
-  --output "<scratch dir>/offload/<slug>.scout.json" \
-  --error "<scratch dir>/offload/<slug>.scout.err" \
+  --output "<scratch dir>/offload/<slug>.attempt1.scout.json" \
+  --error "<scratch dir>/offload/<slug>.attempt1.scout.err" \
   -- \
   -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." \
   --output-format json \
@@ -77,8 +77,8 @@ git worktree add --detach $ScoutWorkspace $Baseline
 $ScoutSchema = '{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --role scout `
-  --output "<scratch dir>/offload/<slug>.scout.json" `
-  --error "<scratch dir>/offload/<slug>.scout.err" `
+  --output "<scratch dir>/offload/<slug>.attempt1.scout.json" `
+  --error "<scratch dir>/offload/<slug>.attempt1.scout.err" `
   '--' `
   -p "<task description>. List every repo-relative file path this task would need to read or change. Do not edit anything. Do not dispatch nested workers." `
   --output-format json `
@@ -117,8 +117,8 @@ GATE_WORKSPACE=$("$OFFLOAD_ROOT/scripts/execution-workspace.sh" create \
 
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
   --role gate-author \
-  --output "<scratch dir>/offload/<slug>.gate.json" \
-  --error "<scratch dir>/offload/<slug>.gate.err" \
+  --output "<scratch dir>/offload/<slug>.attempt1.gate.json" \
+  --error "<scratch dir>/offload/<slug>.attempt1.gate.err" \
   -- \
   -p "<criteria>. Write this test at <exact gate path>. Do not touch any other file. Do not dispatch nested workers." \
   --output-format json \
@@ -140,8 +140,8 @@ $GateWorkspace = (& "$OffloadRoot/scripts/execution-workspace.ps1" create `
 
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --role gate-author `
-  --output "<scratch dir>/offload/<slug>.gate.json" `
-  --error "<scratch dir>/offload/<slug>.gate.err" `
+  --output "<scratch dir>/offload/<slug>.attempt1.gate.json" `
+  --error "<scratch dir>/offload/<slug>.attempt1.gate.err" `
   '--' `
   -p "<criteria>. Write this test at <exact gate path>. Do not touch any other file. Do not dispatch nested workers." `
   --output-format json `
@@ -189,8 +189,8 @@ TASK_WORKSPACE=$("$OFFLOAD_ROOT/scripts/execution-workspace.sh" create \
 
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
   --role implementer \
-  --output "<scratch dir>/offload/<slug>.json" \
-  --error "<scratch dir>/offload/<slug>.err" \
+  --output "<scratch dir>/offload/<slug>.attempt1.json" \
+  --error "<scratch dir>/offload/<slug>.attempt1.err" \
   -- \
   -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." \
   --output-format json \
@@ -212,8 +212,8 @@ $TaskWorkspace = (& "$OffloadRoot/scripts/execution-workspace.ps1" create `
 
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --role implementer `
-  --output "<scratch dir>/offload/<slug>.json" `
-  --error "<scratch dir>/offload/<slug>.err" `
+  --output "<scratch dir>/offload/<slug>.attempt1.json" `
+  --error "<scratch dir>/offload/<slug>.attempt1.err" `
   '--' `
   -p "<task prompt>. Owned files: <owned paths>. Frozen paths: <frozen paths>. Gate command: <gate cmd>. Do not touch any other file. Do not dispatch nested workers." `
   --output-format json `
@@ -223,6 +223,8 @@ $TaskWorkspace = (& "$OffloadRoot/scripts/execution-workspace.ps1" create `
 ```
 
 The prompt must specify owned files, frozen paths (including approved frozen gates), the gate command, and prohibitions against touching unassigned files or dispatching nested workers.
+
+When an attempt fails verification, keep its evidence paths in the outcome record and redispatch the same `worker_id` with attempt 2 paths. Set `ATTEMPT=2` in Bash or `$Attempt = 2` in PowerShell, then use `<scratch dir>/offload/<slug>.attempt2.json` (or `<slug>.attempt2.<role>.json` for the role-suffixed scout, gate-author, and reviewer artifacts) for `--output`, with the matching `.err` path for `--error`. Record the verified attempt as `accepted_attempt` in the orchestrator's run state and use only that attempt's patch or review output for integration.
 
 ## Step 4: Collect
 
@@ -273,8 +275,8 @@ Verify every worker reporting `SUCCESS`:
      REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
      "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
        --role reviewer \
-       --output "<scratch dir>/offload/<slug>.review.json" \
-       --error "<scratch dir>/offload/<slug>.review.err" \
+        --output "<scratch dir>/offload/<slug>.attempt1.review.json" \
+        --error "<scratch dir>/offload/<slug>.attempt1.review.err" \
        -- \
        -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" \
        --output-format json \
@@ -289,8 +291,8 @@ Verify every worker reporting `SUCCESS`:
      $ReviewSchema = '{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion","verdict","quote"]}}},"required":["criteria"]}'
      & "$OffloadRoot/scripts/run-agy-json.ps1" `
        --role reviewer `
-       --output "<scratch dir>/offload/<slug>.review.json" `
-       --error "<scratch dir>/offload/<slug>.review.err" `
+        --output "<scratch dir>/offload/<slug>.attempt1.review.json" `
+        --error "<scratch dir>/offload/<slug>.attempt1.review.err" `
        '--' `
        -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" `
        --output-format json `
