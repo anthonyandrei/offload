@@ -34,6 +34,8 @@ for file in \
   scripts/cleanup-research-workspace.sh \
   scripts/run-agy-json.sh \
   scripts/extract-structured-output.sh \
+  scripts/select-research-outputs.sh \
+  scripts/select-research-outputs.ps1 \
   scripts/check-citation-audit.sh; do
   require_file "$file"
 done
@@ -68,6 +70,7 @@ for script in \
   scripts/cleanup-research-workspace.sh \
   scripts/run-agy-json.sh \
   scripts/extract-structured-output.sh \
+  scripts/select-research-outputs.sh \
   scripts/check-citation-audit.sh; do
   bash -n "$ROOT/$script" || fail "$script does not parse"
   [ -x "$ROOT/$script" ] || fail "$script is not executable"
@@ -76,6 +79,10 @@ pass 'research helpers parse and are executable'
 
 require_text modes/web-research.md 'run-agy-json.sh'
 require_text modes/web-research.md 'extract-structured-output.sh'
+require_text modes/web-research.md 'select-research-outputs.sh'
+require_text modes/web-research.md 'select-research-outputs.ps1'
+require_text modes/web-research.md 'independent_angle_count'
+require_text modes/web-research.md '.selected_files[]'
 require_text modes/web-research.md 'check-citation-audit.sh'
 require_text modes/web-research.md 'check-citation-audit.ps1'
 require_text modes/web-research.md 'Read `structured_output` from each researcher JSON response'
@@ -411,6 +418,62 @@ if "$ROOT/scripts/collect-provenance.sh" --run-id r1 --request-summary s --selec
   fail 'collect-provenance build mode accepted bare-attempt shape'
 fi
 pass 'collect-provenance rejects previously documented bare-attempt shape in validation and build mode'
+
+# Research synthesis selection tests (Issue #15)
+selection_dir="$TMP_ROOT/research-selection"
+mkdir -p "$selection_dir"
+printf '%s\n' '{"response":"official prose","structured_output":{"run_id":"selection-run","angle_id":"official","status":"success","findings":[{"claim":"official finding"}]}}' > "$selection_dir/official.json"
+printf '%s\n' '{"response":"independent prose","structured_output":{"run_id":"selection-run","angle_id":"independent","status":"success","findings":[{"claim":"independent finding"}]}}' > "$selection_dir/independent.json"
+printf '%s\n' '{"response":"stale prose","structured_output":{"run_id":"selection-run","angle_id":"retry-old","status":"success","findings":[{"claim":"stale retry finding"}]}}' > "$selection_dir/retry-old.json"
+printf '%s\n' '{"response":"verified prose","structured_output":{"run_id":"selection-run","angle_id":"retry-new","status":"success","findings":[{"claim":"verified retry finding"}]}}' > "$selection_dir/retry-new.json"
+printf '%s\n' '{"response":"unverified prose","structured_output":{"run_id":"selection-run","angle_id":"unverified","status":"success","findings":[{"claim":"unverified finding"}]}}' > "$selection_dir/unverified.json"
+
+selection_primary="$selection_dir/primary-routing.json"
+jq -n \
+  --arg official 'official.json' \
+  --arg independent 'independent.json' \
+  --arg exhausted 'exhausted.json' \
+  '{workers:[
+    {id:"researcher-official",role:"researcher",status:"completed",output:$official,accepted_attempt:1,routing:{schema_version:1,attempts:[{worker_id:"researcher-official",attempt:1,state:"completed",verification_status:"passed",exit_code:0,evidence_paths:[$official,"official.err"]}]}},
+    {id:"researcher-independent",role:"researcher",status:"completed",output:$independent,accepted_attempt:1,routing:{schema_version:1,attempts:[{worker_id:"researcher-independent",attempt:1,state:"completed",verification_status:"passed",exit_code:0,evidence_paths:[$independent,"independent.err"]}]}},
+    {id:"researcher-exhausted",role:"researcher",status:"failed",output:$exhausted,accepted_attempt:1,routing:{schema_version:1,attempts:[{worker_id:"researcher-exhausted",attempt:1,state:"failed",verification_status:"failed",exit_code:1,evidence_paths:[$exhausted,"exhausted.err"]}]}}
+  ]}' > "$selection_primary"
+primary_selection="$($ROOT/scripts/select-research-outputs.sh --workers "$selection_primary" --base-dir "$selection_dir")"
+[ "$(jq -r '.independent_angle_count' <<<"$primary_selection")" -eq 2 ] || fail 'Bash selector did not retain two independent verified angles'
+[ "$(jq '.selected_files | length' <<<"$primary_selection")" -eq 2 ] || fail 'Bash selector did not return two explicit selected files'
+[ "$(jq -r '.omitted_workers[0].worker_id' <<<"$primary_selection")" = 'researcher-exhausted' ] || fail 'Bash selector dropped exhausted worker diagnostics'
+
+BASH_SELECTED_FILES=()
+while IFS= read -r selected_file; do
+  BASH_SELECTED_FILES+=("$selected_file")
+done < <(jq -r '.selected_files[]' <<<"$primary_selection" | tr -d '\r')
+primary_findings="$($ROOT/scripts/extract-structured-output.sh --array "${BASH_SELECTED_FILES[@]}")"
+[ "$(jq 'length' <<<"$primary_findings")" -eq 2 ] || fail 'Bash selector did not provide two findings to extraction'
+[ "$(jq -r '.[0].findings[0].claim' <<<"$primary_findings")" = 'official finding' ] || fail 'Bash extraction lost official finding'
+[ "$(jq -r '.[1].findings[0].claim' <<<"$primary_findings")" = 'independent finding' ] || fail 'Bash extraction lost independent finding'
+pass 'Bash selector feeds only two verified independent angles to extraction'
+
+selection_retry="$selection_dir/retry-routing.json"
+jq -n \
+  --arg old 'retry-old.json' \
+  --arg new 'retry-new.json' \
+  '{workers:[{id:"researcher-retry",role:"researcher",status:"completed",output:$new,accepted_attempt:2,routing:{schema_version:1,attempts:[
+    {worker_id:"researcher-retry",attempt:1,state:"failed",verification_status:"failed",exit_code:1,evidence_paths:[$old,"retry-old.err"]},
+    {worker_id:"researcher-retry",attempt:2,state:"completed",verification_status:"passed",exit_code:0,evidence_paths:[$new,"retry-new.err"]}
+  ]}}]}' > "$selection_retry"
+retry_selection="$($ROOT/scripts/select-research-outputs.sh --workers "$selection_retry" --base-dir "$selection_dir")"
+[ "$(jq -r '.independent_angle_count' <<<"$retry_selection")" -eq 1 ] || fail 'Bash selector counted failed retry as a surviving angle'
+[ "$(jq -r '.selected_files[0]' <<<"$retry_selection")" = "$selection_dir/retry-new.json" ] || fail 'Bash selector did not choose the verified retry artifact'
+pass 'Bash selector excludes failed attempt and keeps verified retry artifact'
+
+selection_unverified="$selection_dir/unverified-routing.json"
+jq -n \
+  --arg output 'unverified.json' \
+  '{workers:[{id:"researcher-unverified",role:"researcher",status:"completed",output:$output,accepted_attempt:1,routing:{schema_version:1,attempts:[{worker_id:"researcher-unverified",attempt:1,state:"completed",verification_status:"pending",exit_code:0,evidence_paths:[$output,"unverified.err"]}]}}]}' > "$selection_unverified"
+unverified_selection="$($ROOT/scripts/select-research-outputs.sh --workers "$selection_unverified" --base-dir "$selection_dir")"
+[ "$(jq -r '.independent_angle_count' <<<"$unverified_selection")" -lt 2 ] || fail 'Bash selector did not expose fallback threshold'
+[ "$(jq '.selected_files | length' <<<"$unverified_selection")" -eq 0 ] || fail 'Bash selector admitted completed but unverified output'
+pass 'Bash selector exposes partial fallback when fewer than two angles survive'
 
 # Citation audit verification tests (Issue #10)
 audit_script="$ROOT/scripts/check-citation-audit.sh"
