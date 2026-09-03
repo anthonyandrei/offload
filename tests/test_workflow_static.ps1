@@ -135,5 +135,41 @@ Assert-True ($webContent -match 'Audit verification and acceptance rules') "web-
 Assert-True ($webContent -match 'Required claim/citation pair coverage') "web-research.md documents pair coverage requirement"
 Assert-True ($webContent -match 'Ledger with no auditable pairs') "web-research.md documents zero-pair branch"
 
+# 9. Execution mode documents isolated workspaces and baseline discipline
+$execContent = Get-Content -LiteralPath $ExecMd -Raw
+Assert-True ($execContent -match 'execution-workspace\.sh') "execution.md references execution-workspace.sh"
+Assert-True ($execContent -match 'execution-workspace\.ps1') "execution.md references execution-workspace.ps1"
+Assert-True ($execContent -match 'check-execution-scope\.sh') "execution.md references check-execution-scope.sh"
+Assert-True ($execContent -match 'check-execution-scope\.ps1') "execution.md references check-execution-scope.ps1"
+
+# All check-execution-scope examples in execution.md must supply --baseline
+$execFencedMatches = [regex]::Matches($execContent, '```(?:bash|powershell)\r?\n((?:(?!```)[\s\S])*?)\r?\n```')
+foreach ($em in $execFencedMatches) {
+    $block = $em.Groups[1].Value
+    if ($block -match 'check-execution-scope') {
+        Assert-True ($block -match '--baseline') "execution.md check-execution-scope example supplies --baseline"
+    }
+    if ($block -match 'run-agy-json') {
+        Assert-False ($block -match '--add-dir\s+["'']?<repo root>') "execution.md launcher block does not pass <repo root> to --add-dir"
+    }
+}
+
+# Acceptance criteria rules documented in execution.md
+Assert-True ($execContent -match 'rejected immediately before its output can become an implementation baseline') "execution.md documents gate-author unowned edit rejection"
+Assert-True ($execContent -match 'approved frozen gates') "execution.md documents implementers receive approved frozen gates"
+Assert-True ($execContent -match 'newly accepted baseline') "execution.md documents overlapping tasks serialized from newly accepted baseline"
+Assert-True ($execContent -match 'retain the original verification baseline') "execution.md documents retries retain original verification baseline"
+Assert-True ($execContent -match 'without waiting for sibling completion') "execution.md documents immediate quota handoff without waiting for siblings"
+Assert-True ($execContent -match 'Final combined gate check') "execution.md documents final combined gate check"
+Assert-True ($execContent -match 'Wait for active worker processes to terminate before calling cleanup') "execution.md documents cleanup waits for active workers"
+
+# 10. Routing provenance fixture and documentation alignment (Issue #13)
+$FixtureJson = Join-Path $RootDir 'tests/fixtures/routing-worker.json'
+Assert-True (Test-Path -LiteralPath $FixtureJson -PathType Leaf) "workflow-static: routing fixture exists"
+Assert-True ($skillContent -match 'tests/fixtures/routing-worker\.json') "SKILL.md links to routing fixture"
+Assert-True ($skillContent -match 'schema_version: 1, attempts:') "SKILL.md documents routing container contract"
+Assert-True ($webContent -match 'tests/fixtures/routing-worker\.json') "web-research.md links to routing fixture"
+Assert-True ($webContent -match 'schema_version: 1, attempts:') "web-research.md documents routing container contract"
+
 [Console]::Out.WriteLine("all workflow static checks passed ($script:TotalTests tests)")
 exit 0

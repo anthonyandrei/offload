@@ -603,6 +603,97 @@ try {
     $rStrRouting = Invoke-Provenance @('--validate', $fStrRouting)
     Assert-True ($rStrRouting.ExitCode -ne 0) "invalid-routing: rejects non-object routing field"
 
+    # =========================================================================
+    # Group 9: Canonical routing fixture, documented worker example, and bare-attempt rejection
+    # =========================================================================
+
+    # 9.1: Fixture exists and passes validation
+    $fixturePath = Join-Path $RootDir 'tests/fixtures/routing-worker.json'
+    Assert-True (Test-Path -LiteralPath $fixturePath -PathType Leaf) "fixture: tests/fixtures/routing-worker.json exists"
+
+    $fixtureContent = [System.IO.File]::ReadAllText($fixturePath, [System.Text.Encoding]::UTF8)
+    $fixtureWorker = $fixtureContent | ConvertFrom-Json -Depth 20
+    $provFromFixture = New-BaseProvenance @{ workers = @($fixtureWorker) }
+    $fileFixture = Write-ProvJson $provFromFixture 'prov-fixture-worker.json'
+    $resFixture = Invoke-Provenance @('--validate', $fileFixture)
+    Assert-Equal $resFixture.ExitCode 0 "fixture: documented worker object passes validation"
+
+    # 9.2: Fixture builds in build mode and preserves all attempt fields
+    $buildFixtureOut = Join-Path $TmpRoot 'built-prov-fixture.json'
+    $resBuildFixture = Invoke-Provenance @(
+        '--run-id', 'build-run-fixture',
+        '--request-summary', 'Build mode test with canonical fixture',
+        '--selected-mode', 'web-research',
+        '--profile', 'standard',
+        '--start-time', '2026-09-03T00:00:00Z',
+        '--end-time', '2026-09-03T00:05:00Z',
+        '--duration-seconds', '300',
+        '--scratch-path', (Join-Path $TmpRoot 'fixture-scratch'),
+        '--workers', "[$fixtureContent]",
+        '--final-status', 'success',
+        '--output', $buildFixtureOut
+    )
+    Assert-Equal $resBuildFixture.ExitCode 0 "fixture: builds provenance with documented worker fixture"
+
+    $builtJson = [System.Text.Json.Nodes.JsonNode]::Parse([System.IO.File]::ReadAllText($buildFixtureOut, [System.Text.Encoding]::UTF8))
+    $w = $builtJson["workers"][0]
+    Assert-Equal ($w["id"].ToString()) "researcher-web-1" "fixture: worker id is researcher-web-1"
+    $attempts = $w["routing"]["attempts"].AsArray()
+    Assert-Equal $attempts.Count 2 "fixture: retains both attempts under one worker"
+
+    $allAttemptFields = @(
+        'worker_id', 'role', 'mode', 'attempt', 'policy_revision',
+        'route', 'model', 'effort', 'reason', 'started_at',
+        'ended_at', 'duration_seconds', 'exit_code', 'state',
+        'failure_class', 'verification_status', 'evidence_paths', 'usage'
+    )
+    foreach ($f in $allAttemptFields) {
+        Assert-True ($attempts[0].AsObject().ContainsKey($f)) "fixture: attempt 1 preserves field $f"
+        Assert-True ($attempts[1].AsObject().ContainsKey($f)) "fixture: attempt 2 preserves field $f"
+    }
+
+    # 9.3: Two-attempt example retains both attempts under one stable worker identity
+    Assert-Equal ($attempts[0]["worker_id"].ToString()) "researcher-web-1" "fixture: attempt 1 worker_id matches stable worker identity"
+    Assert-Equal ($attempts[1]["worker_id"].ToString()) "researcher-web-1" "fixture: attempt 2 worker_id matches stable worker identity"
+    Assert-Equal ([int]$attempts[0]["attempt"].ToString()) 1 "fixture: attempt 1 is number 1"
+    Assert-Equal ([int]$attempts[1]["attempt"].ToString()) 2 "fixture: attempt 2 is number 2"
+
+    # 9.4: Mechanically check documented JSON example against fixture
+    $webMdPath = Join-Path $RootDir 'modes/web-research.md'
+    $webMdContent = [System.IO.File]::ReadAllText($webMdPath, [System.Text.Encoding]::UTF8)
+    $jsonRegex = [regex]'```json\r?\n([\s\S]*?)\r?\n\s*```'
+    $foundBlock = $null
+    foreach ($m in $jsonRegex.Matches($webMdContent)) {
+        if ($m.Groups[1].Value -match 'researcher-web-1') {
+            $foundBlock = $m.Groups[1].Value.Trim()
+            break
+        }
+    }
+    Assert-True ($foundBlock -ne $null) "fixture: modes/web-research.md contains documented worker JSON code block"
+    $docJsonNode = [System.Text.Json.Nodes.JsonNode]::Parse($foundBlock)
+    $fixtureNode = [System.Text.Json.Nodes.JsonNode]::Parse($fixtureContent)
+
+    $opt = [System.Text.Json.JsonSerializerOptions]::new()
+    $opt.WriteIndented = $false
+    $docNorm = $docJsonNode.ToJsonString($opt)
+    $fixNorm = $fixtureNode.ToJsonString($opt)
+    Assert-Equal $docNorm $fixNorm "fixture: documented JSON example in web-research.md matches tests/fixtures/routing-worker.json"
+
+    # 9.5: Previously documented bare-attempt shape is rejected
+    $attBare = New-BaseAttempt
+    $workerBare = [ordered]@{
+        id = "researcher-web-1"
+        role = "researcher"
+        status = "completed"
+        output = "workspace/researcher-web-1.json"
+        routing = $attBare
+    }
+    $provBare = New-BaseProvenance @{ workers = @($workerBare) }
+    $fileBare = Write-ProvJson $provBare 'prov-bare-attempt.json'
+    $resBare = Invoke-Provenance @('--validate', $fileBare)
+    Assert-True ($resBare.ExitCode -ne 0) "bare-attempt: rejects previously documented bare-attempt shape"
+    Assert-True ($resBare.Stderr -match 'schema_version') "bare-attempt: diagnostic mentions missing schema_version"
+
 } finally {
     if (Test-Path -LiteralPath $TmpRoot) {
         Remove-Item -LiteralPath $TmpRoot -Recurse -Force -ErrorAction SilentlyContinue

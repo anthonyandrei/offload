@@ -140,7 +140,7 @@ The orchestrator maintains `routing-outcomes.json` in each run's scratch workspa
   - `evidence_paths`: Array of output, error, gate, review, or audit artifact paths.
   - `usage`: Source-attributed reported usage object with explicit units, or null when unavailable.
 
-Pending assignments that never dispatched are listed in the final handoff report, not as attempt records. In web research runs, the attempt record may optionally be attached as a `routing` object in each worker entry within `provenance.json`.
+Pending assignments that never dispatched are listed in the final handoff report, not as attempt records. In web research runs, routing history for a worker may optionally be attached as a `routing` container (`{schema_version: 1, attempts: [...]}`) in each worker entry within `provenance.json`. See [`modes/web-research.md`](modes/web-research.md#provenance-and-cleanup) and canonical fixture [`tests/fixtures/routing-worker.json`](tests/fixtures/routing-worker.json) for the complete worker record example.
 
 ## Shared report contract
 

@@ -134,7 +134,7 @@ while ($i -lt $args.Count) {
         $i += 1
     }
     elseif ($arg -eq '-h' -or $arg -eq '--help' -or $arg -eq '-?') {
-        [Console]::Error.WriteLine("Usage: check-execution-scope.ps1 --owned <path> [--owned <path> ...] [--frozen <path> ...] [--baseline <revision>]")
+        [Console]::Error.WriteLine("Usage: check-execution-scope.ps1 --owned <path> [--owned <path> ...] [--frozen <path> ...] --baseline <revision>")
         exit 0
     }
     else {
@@ -145,6 +145,11 @@ while ($i -lt $args.Count) {
 
 if ($rawOwned.Count -eq 0) {
     [Console]::Error.WriteLine("Error: at least one --owned path is required")
+    exit 1
+}
+
+if ([string]::IsNullOrWhiteSpace($baseline)) {
+    [Console]::Error.WriteLine("Error: --baseline is required")
     exit 1
 }
 
