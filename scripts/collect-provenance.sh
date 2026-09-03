@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
 validate_file=""
 output_file=""
 run_id=""
@@ -117,7 +119,7 @@ if [[ ${#snapshot_paths[@]} -gt 0 && -z "$snapshot_paths_json" ]]; then
   snapshot_paths_json=$(python3 -c "import json, sys; print(json.dumps(sys.argv[1:]))" "${snapshot_paths[@]}")
 fi
 
-python3 - << 'PYEOF' \
+output_json=$(python3 - << 'PYEOF' \
   "$validate_file" \
   "$output_file" \
   "$run_id" \
@@ -191,7 +193,7 @@ KNOWN_MODES = {"execution", "repo-research", "web-research"}
 KNOWN_ROUTES = {"default", "quality-retry"}
 KNOWN_EFFORTS = {"low", "medium", "high"}
 KNOWN_STATES = {"running", "completed", "failed", "interrupted"}
-KNOWN_FAILURE_CLASSES = {"none", "quality", "timeout", "tool_error", "quota", "unknown"}
+KNOWN_FAILURE_CLASSES = {"none", "quality", "timeout", "tool_error", "quota", "unrunnable", "unknown"}
 KNOWN_VERIFICATION_STATUSES = {"pending", "passed", "failed", "not_performed"}
 GEMINI_MODEL_RE = re.compile(r"^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$")
 
@@ -211,10 +213,8 @@ def validate_worker_routing(worker):
     if "attempts" not in routing or not isinstance(routing["attempts"], list):
         sys.stderr.write("Error: routing attempts must be an array\n")
         sys.exit(1)
-    if len(routing["attempts"]) > 2:
-        sys.stderr.write("Error: routing attempts cannot contain more than 2 attempts\n")
-        sys.exit(1)
-    seen_attempts = set()
+    seen_attempt_pairs = set()
+    attempt_counts = {}
     for att in routing["attempts"]:
         if not isinstance(att, dict):
             sys.stderr.write("Error: routing attempt must be a JSON object\n")
@@ -238,10 +238,15 @@ def validate_worker_routing(worker):
         if not isinstance(att["attempt"], int) or isinstance(att["attempt"], bool) or att["attempt"] not in (1, 2):
             sys.stderr.write("Error: attempt number must be integer 1 or 2\n")
             sys.exit(1)
-        if att["attempt"] in seen_attempts:
-            sys.stderr.write(f"Error: duplicate attempt number {att['attempt']} in routing attempts\n")
+        attempt_key = (att["worker_id"], att["attempt"])
+        if attempt_key in seen_attempt_pairs:
+            sys.stderr.write("Error: duplicate worker_id/attempt pair in routing attempts\n")
             sys.exit(1)
-        seen_attempts.add(att["attempt"])
+        seen_attempt_pairs.add(attempt_key)
+        attempt_counts[att["worker_id"]] = attempt_counts.get(att["worker_id"], 0) + 1
+        if attempt_counts[att["worker_id"]] > 2:
+            sys.stderr.write(f"Error: routing attempts cannot contain more than 2 attempts for worker '{att['worker_id']}'\n")
+            sys.exit(1)
         if not isinstance(att["policy_revision"], str) or not att["policy_revision"].strip():
             sys.stderr.write("Error: attempt policy_revision must be a non-empty string\n")
             sys.exit(1)
@@ -402,11 +407,18 @@ for w in data["workers"]:
     validate_worker_routing(w)
 
 output_json = json.dumps(data, indent=2)
-
-if out_file:
-    with open(out_file, "w", encoding="utf-8") as f:
-        f.write(output_json + "\n")
-else:
-    sys.stdout.write(output_json + "\n")
-
+print(output_json)
 PYEOF
+)
+
+raw_tmp=$(mktemp)
+public_tmp=$(mktemp)
+trap 'rm -f "$raw_tmp" "$public_tmp"' EXIT
+printf '%s\n' "$output_json" > "$raw_tmp"
+"$script_dir/redact-publication-secrets.sh" --input "$raw_tmp" --output "$public_tmp"
+if [[ -n "$output_file" ]]; then
+  mkdir -p "$(dirname "$output_file")"
+  cp "$public_tmp" "$output_file"
+else
+  cat "$public_tmp"
+fi

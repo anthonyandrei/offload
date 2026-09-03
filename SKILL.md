@@ -142,7 +142,7 @@ The orchestrator maintains `routing-outcomes.json` in each run's scratch workspa
   - `duration_seconds`: Observed elapsed time (null while running).
   - `exit_code`: Worker process exit code (null while running).
   - `state`: `"running"`, `"completed"`, `"failed"`, or `"interrupted"`.
-  - `failure_class`: `"none"`, `"quality"`, `"timeout"`, `"tool_error"`, `"quota"`, or `"unknown"`.
+  - `failure_class`: `"none"`, `"quality"`, `"timeout"`, `"tool_error"`, `"quota"`, `"unrunnable"`, or `"unknown"`.
   - `verification`: `"pending"`, `"passed"`, `"failed"`, or `"not_performed"`.
   - `evidence_paths`: Array of output, error, gate, review, or audit artifact paths.
   - `usage`: Source-attributed reported usage object with explicit units, or null when unavailable.
@@ -203,10 +203,12 @@ Sample recorded: 1/1 high checked, 1/2 med/low sampled.
 
 ## Limits and worker safety
 
-- **`--mode plan` is a behavioral hint, not a write barrier.** Direct probes showed that plan-mode workers can write files. Never rely on `--mode plan` alone to protect live repository files.
+- **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted compatibility probe on `agy 1.1.25` found the tested direct write outside the permitted artifact area blocked, but exposed tools and command paths remained available. This observation is not a guarantee and plan mode is not the sole containment or safety mechanism.
 - **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at the live tree.
 - **Filesystem isolation.** Research modes run in disposable workspaces with scoped file snapshots. Live repository files are never exposed directly to research workers.
 - **Execution safety.** Execution mode requires a clean git baseline, mechanical execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path diffs, and test gates.
 - **Prohibition on nested dispatch.** Workers are instructed not to dispatch nested workers.
 - **Bounded scope requirement.** Open-ended research without a bounded question, declared scope, and evidence expectations is out of scope.
 - **Worker timeout.** Every worker runs with a bounded timeout (`--print-timeout 20m`).
+
+Result acceptance is separate from process completion: a parsed envelope, substantive structured output, evidence/scope/gate checks, and (where applicable) review or citation checks must all pass before an explicit `accepted_attempt` is recorded. Exit code 0 alone does not establish verified success. Gate exits 126 or 127 are `unrunnable`, retain their command and diagnostic evidence, use `verification: not_performed`, and do not consume a model retry.

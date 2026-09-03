@@ -8,7 +8,7 @@ Offload's online-research workflow is adapted from Asa by Achibukz, used with pe
 
 ## Worker safety and containment
 
-- **`--mode plan` is a behavioral hint, not a write barrier.** Direct testing showed that plan-mode workers can write files. Never rely on `--mode plan` alone to protect live repository files.
+- **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted `agy 1.1.25` probe blocked the tested direct write outside the permitted artifact area, but plan mode is not a sole safety control. Never rely on it alone to protect live repository files.
 - **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at a live repository tree.
 - **Filesystem isolation.** Research workflows run inside disposable workspaces outside the live repository. Workers receive only scoped snapshots of declared files, keeping live repository files untouched.
 - **Mechanical verification.** Execution workflows require a clean git working tree, execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path checks, and automated test gates.
@@ -340,7 +340,15 @@ pwsh -File tests/test_execution_scope.ps1
 - **Use the bundled launcher helpers (`run-agy-json.sh` or `run-agy-json.ps1`) for worker calls.** They own result and error paths and reject the unsupported `agy --output` flag.
 - **Use structured output extractors (`extract-structured-output.sh` or `extract-structured-output.ps1`) between research stages.** They forward only validated `structured_output`, keeping verbose worker prose out of later prompts.
 - **Model routing is governed by `model-policy.json`.** Launchers inject the policy-selected Gemini 3.8 Flash model (`gemini-3.8-flash-low` or `gemini-3.8-flash-high`) via `--role <role>`. Reasoning effort is encoded directly in the model ID; callers must not pass `--model` or `--effort`.
-- **`--mode plan` is a behavioral hint, not a write barrier.** Direct tests showed plan-mode workers can write files. `--add-dir` grants directory access without confining writes. Security relies on workspace isolation and mechanical verification.
+- **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted probe on `agy 1.1.25` blocked the tested direct write outside the permitted artifact area, but this observation is not a guarantee. `--add-dir` grants access without confining writes. Security relies on filesystem isolation and mechanical verification.
+
+Run the maintainer-only compatibility probe when the installed `agy` behavior needs a refresh (never as a deterministic CI gate):
+
+```text
+pwsh -NoProfile -File scripts/probe-agy-compatibility.ps1 --workspace <disposable-workspace> --output <probe-report.json>
+```
+
+Published provenance and reports are redacted at the publication boundary. Browser/headless claims must carry an in-scope reality anchor. Process completion and exit 0 do not by themselves establish an accepted result; gates that cannot run use the `unrunnable` classification.
 
 ## License
 

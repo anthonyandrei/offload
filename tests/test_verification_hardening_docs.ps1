@@ -186,9 +186,9 @@ Assert-True ($readmeContent -match 'probe-agy-compatibility|probe-compatibility|
 
 # 4.1 Probe script existence in scripts/
 $candidateProbeScripts = @(
-    Join-Path $RootDir 'scripts/probe-agy-compatibility.ps1',
-    Join-Path $RootDir 'scripts/probe-compatibility.ps1',
-    Join-Path $RootDir 'scripts/probe-plan-mode.ps1'
+    (Join-Path $RootDir 'scripts/probe-agy-compatibility.ps1'),
+    (Join-Path $RootDir 'scripts/probe-compatibility.ps1'),
+    (Join-Path $RootDir 'scripts/probe-plan-mode.ps1')
 )
 $probeScriptPs = $null
 foreach ($cand in $candidateProbeScripts) {
@@ -214,9 +214,9 @@ if ($probeScriptPs) {
 }
 if (-not $probeScriptSh) {
     $candidateBashScripts = @(
-        Join-Path $RootDir 'scripts/probe-agy-compatibility.sh',
-        Join-Path $RootDir 'scripts/probe-compatibility.sh',
-        Join-Path $RootDir 'scripts/probe-plan-mode.sh'
+        (Join-Path $RootDir 'scripts/probe-agy-compatibility.sh'),
+        (Join-Path $RootDir 'scripts/probe-compatibility.sh'),
+        (Join-Path $RootDir 'scripts/probe-plan-mode.sh')
     )
     foreach ($cand in $candidateBashScripts) {
         if (Test-Path -LiteralPath $cand -PathType Leaf) {
@@ -373,9 +373,9 @@ exit 0
     $statusOut = $gitProc.StandardOutput.ReadToEnd().Trim()
     $gitProc.WaitForExit()
 
-    $unrelatedChanges = ($statusOut -split "`r?`n") | Where-Object {
+    $unrelatedChanges = @($statusOut -split "`r?`n" | Where-Object {
         $_ -and $_ -notmatch 'test_verification_hardening_docs\.ps1'
-    }
+    })
     Assert-True ($unrelatedChanges.Count -eq 0) "probe: does not modify or contaminate git repository"
 } finally {
     if (Test-Path -LiteralPath $TmpRoot) {

@@ -161,11 +161,8 @@ function Assert-RoutingRecord($record, [string]$path) {
         Fail "invalid routing record attempts: $path"
     }
     $attemptList = @($attempts)
-    if ($attemptList.Count -gt 2) {
-        Fail "routing record contains more than two attempts: $path"
-    }
-
     $seenAttempts = @{}
+    $attemptCounts = @{}
     foreach ($attempt in $attemptList) {
         if ($null -eq $attempt -or $attempt -isnot [pscustomobject]) {
             Fail "routing record contains a non-object attempt: $path"
@@ -192,13 +189,20 @@ function Assert-RoutingRecord($record, [string]$path) {
         }
 
         $attemptNumber = Get-JsonProperty $attempt 'attempt'
-        if ($attemptNumber -isnot [int] -and $attemptNumber -isnot [long] -and $attemptNumber -isnot [double]) {
+        if (($attemptNumber -isnot [int] -and $attemptNumber -isnot [long] -and $attemptNumber -isnot [double]) -or [double]$attemptNumber -ne [math]::Truncate([double]$attemptNumber)) {
             Fail "routing record attempt number is not numeric: $path"
         }
-        if ($attemptNumber -notin @(1, 2) -or $seenAttempts.ContainsKey([int]$attemptNumber)) {
+        $workerId = [string](Get-JsonProperty $attempt 'worker_id')
+        $attemptKey = "$workerId`0$([int]$attemptNumber)"
+        if ($attemptNumber -notin @(1, 2) -or $seenAttempts.ContainsKey($attemptKey)) {
             Fail "routing record attempt numbers are invalid or duplicated: $path"
         }
-        $seenAttempts[[int]$attemptNumber] = $true
+        $seenAttempts[$attemptKey] = $true
+        if (-not $attemptCounts.ContainsKey($workerId)) { $attemptCounts[$workerId] = 0 }
+        $attemptCounts[$workerId]++
+        if ($attemptCounts[$workerId] -gt 2) {
+            Fail "routing record contains more than two attempts for worker '$workerId': $path"
+        }
 
         $verification = Get-JsonProperty $attempt 'verification_status'
         if ($null -eq $verification) {
@@ -225,7 +229,7 @@ function Assert-RoutingRecord($record, [string]$path) {
         if ((Get-JsonProperty $attempt 'state') -notin @('running', 'completed', 'failed', 'interrupted')) {
             Fail "routing record attempt has an invalid state: $path"
         }
-        if ((Get-JsonProperty $attempt 'failure_class') -notin @('none', 'quality', 'timeout', 'tool_error', 'quota', 'unknown')) {
+        if ((Get-JsonProperty $attempt 'failure_class') -notin @('none', 'quality', 'timeout', 'tool_error', 'quota', 'unrunnable', 'unknown')) {
             Fail "routing record attempt has an invalid failure class: $path"
         }
 
@@ -338,8 +342,62 @@ function Get-RoutingEvidencePaths([string]$routingPath) {
     return $paths.ToArray()
 }
 
+function Assert-ProvenanceAcceptedAttempts([string]$workspacePath, [object]$routingRecord) {
+    $provenancePath = [System.IO.Path]::Combine($workspacePath, 'provenance.json')
+    if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) {
+        return
+    }
+    try {
+        $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+    } catch {
+        Fail "provenance.json is not valid JSON: $provenancePath"
+    }
+    $workersNode = Get-JsonProperty $provenance 'workers'
+    if ($null -eq $workersNode) { return }
+    $workers = @($workersNode)
+    foreach ($worker in $workers) {
+        if ($null -eq $worker -or $worker -isnot [pscustomobject]) {
+            Fail "provenance workers must be objects: $provenancePath"
+        }
+        $workerId = if ($null -ne $worker.PSObject.Properties['id']) { [string]$worker.id } elseif ($null -ne $worker.PSObject.Properties['worker_id']) { [string]$worker.worker_id } else { '' }
+        if ([string]::IsNullOrWhiteSpace($workerId) -or $null -eq $worker.PSObject.Properties['accepted_attempt']) {
+            continue
+        }
+        $acceptedAttempt = Get-JsonProperty $worker 'accepted_attempt'
+        if (($acceptedAttempt -isnot [int] -and $acceptedAttempt -isnot [long] -and $acceptedAttempt -isnot [double]) -or [double]$acceptedAttempt -ne [math]::Truncate([double]$acceptedAttempt) -or $acceptedAttempt -notin @(1, 2)) {
+            Fail "provenance worker '$workerId' has an invalid accepted_attempt: $provenancePath"
+        }
+        $output = [string](Get-JsonProperty $worker 'output')
+        if ([string]::IsNullOrWhiteSpace($output)) {
+            Fail "provenance worker '$workerId' has no selected output: $provenancePath"
+        }
+        $matches = @(@($routingRecord.attempts) | Where-Object {
+            $verification = Get-JsonProperty $_ 'verification_status'
+            if ($null -eq $verification) { $verification = Get-JsonProperty $_ 'verification' }
+            [string](Get-JsonProperty $_ 'worker_id') -eq $workerId -and
+            (Get-JsonProperty $_ 'attempt') -eq [int]$acceptedAttempt -and
+            (Get-JsonProperty $_ 'state') -eq 'completed' -and
+            $verification -eq 'passed' -and
+            (Get-JsonProperty $_ 'exit_code') -eq 0 -and
+            @((Get-JsonProperty $_ 'evidence_paths')).Count -gt 0 -and
+            [string](@((Get-JsonProperty $_ 'evidence_paths'))[0]) -eq $output
+        })
+        if ($matches.Count -ne 1) {
+            Fail "provenance worker '$workerId' accepted_attempt does not resolve to one verified routing attempt: $provenancePath"
+        }
+        $selectedPath = if ([System.IO.Path]::IsPathRooted($output)) { $output } else { [System.IO.Path]::Combine($workspacePath, $output) }
+        if (-not (Test-Path -LiteralPath $selectedPath -PathType Leaf)) {
+            Fail "provenance worker '$workerId' selected output does not exist: $selectedPath"
+        }
+    }
+}
+
 function Write-EvidenceDisposition([string]$workspacePath, [string]$routingPath, [string]$dispositionPath) {
     $evidencePaths = @(Get-RoutingEvidencePaths $routingPath)
+    if (Test-Path -LiteralPath $routingPath -PathType Leaf) {
+        $routingRecord = Get-Content -LiteralPath $routingPath -Raw | ConvertFrom-Json
+        Assert-ProvenanceAcceptedAttempts $workspacePath $routingRecord
+    }
     $existingAttributes = $null
     try {
         $existingAttributes = [System.IO.File]::GetAttributes($dispositionPath)

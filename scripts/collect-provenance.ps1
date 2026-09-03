@@ -233,18 +233,15 @@ function Validate-WorkerRouting([System.Text.Json.Nodes.JsonNode]$workerNode) {
         Fail "routing attempts must be an array"
     }
     $attemptsArr = $routingObj["attempts"].AsArray()
-    if ($attemptsArr.Count -gt 2) {
-        Fail "routing attempts cannot contain more than 2 attempts"
-    }
-
     $knownRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
     $knownModes = @('execution', 'repo-research', 'web-research')
     $knownStates = @('running', 'completed', 'failed', 'interrupted')
-    $knownFailureClasses = @('none', 'quality', 'timeout', 'tool_error', 'quota', 'unknown')
+    $knownFailureClasses = @('none', 'quality', 'timeout', 'tool_error', 'quota', 'unrunnable', 'unknown')
     $knownVerStatuses = @('pending', 'passed', 'failed', 'not_performed')
     $geminiModelRegex = '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$'
 
-    $seenAttemptNumbers = [System.Collections.Generic.HashSet[int]]::new()
+    $seenAttemptPairs = [System.Collections.Generic.HashSet[string]]::new()
+    $attemptCounts = @{}
 
     foreach ($attNode in $attemptsArr) {
         if ($attNode -isnot [System.Text.Json.Nodes.JsonObject]) {
@@ -296,10 +293,16 @@ function Validate-WorkerRouting([System.Text.Json.Nodes.JsonNode]$workerNode) {
         if (-not $attNumOk -or ($attNum -ne 1 -and $attNum -ne 2)) {
             Fail "attempt number must be integer 1 or 2"
         }
-        if ($seenAttemptNumbers.Contains($attNum)) {
-            Fail "duplicate attempt number $attNum in routing attempts"
+        $attemptKey = "$wid`0$attNum"
+        if ($seenAttemptPairs.Contains($attemptKey)) {
+            Fail "duplicate worker_id/attempt pair in routing attempts"
         }
-        $seenAttemptNumbers.Add($attNum) | Out-Null
+        $seenAttemptPairs.Add($attemptKey) | Out-Null
+        if (-not $attemptCounts.ContainsKey($wid)) { $attemptCounts[$wid] = 0 }
+        $attemptCounts[$wid]++
+        if ($attemptCounts[$wid] -gt 2) {
+            Fail "routing attempts cannot contain more than 2 attempts for worker '$wid'"
+        }
 
         $polRev = Get-NodeString $attObj["policy_revision"]
         if ([string]::IsNullOrWhiteSpace($polRev)) {
@@ -550,14 +553,24 @@ $serializerOptions = [System.Text.Json.JsonSerializerOptions]::new()
 $serializerOptions.WriteIndented = $true
 $outputJson = $record.ToJsonString($serializerOptions)
 
-if (-not [string]::IsNullOrEmpty($outputFile)) {
-    $outDir = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($outputFile))
-    if (-not [string]::IsNullOrEmpty($outDir) -and -not [System.IO.Directory]::Exists($outDir)) {
-        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
+$rawTemp = [System.IO.Path]::GetTempFileName()
+$publicTemp = [System.IO.Path]::GetTempFileName()
+try {
+    [System.IO.File]::WriteAllText($rawTemp, $outputJson + "`n", [System.Text.UTF8Encoding]::new($false))
+    $redactor = Join-Path $PSScriptRoot 'redact-publication-secrets.ps1'
+    $LASTEXITCODE = 0
+    & $redactor --input $rawTemp --output $publicTemp
+    if ($LASTEXITCODE -ne 0) { Fail "publication redaction failed with exit code $LASTEXITCODE" }
+    $publicJson = [System.IO.File]::ReadAllText($publicTemp, [System.Text.Encoding]::UTF8)
+    if (-not [string]::IsNullOrEmpty($outputFile)) {
+        $outDir = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($outputFile))
+        if (-not [string]::IsNullOrEmpty($outDir) -and -not [System.IO.Directory]::Exists($outDir)) { [System.IO.Directory]::CreateDirectory($outDir) | Out-Null }
+        [System.IO.File]::WriteAllText($outputFile, $publicJson, [System.Text.UTF8Encoding]::new($false))
+    } else {
+        [Console]::Out.Write($publicJson)
     }
-    [System.IO.File]::WriteAllText($outputFile, $outputJson + "`n", [System.Text.UTF8Encoding]::new($false))
-} else {
-    [Console]::Out.Write($outputJson + "`n")
+} finally {
+    Remove-Item -LiteralPath $rawTemp, $publicTemp -Force -ErrorAction SilentlyContinue
 }
 
 exit 0

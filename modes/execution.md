@@ -31,7 +31,9 @@ Workers are dispatched by role using `run-agy-json` with `--role <role>`. The la
 | implementer | 3 | `gemini-3.8-flash-high` | high | `accept-edits` | Implement the task within owned files in candidate workspace. |
 | reviewer | 4 | `gemini-3.8-flash-high` | high | `plan` | Evaluate the recorded review artifact against criteria for diff-gated tasks. |
 
-`--mode plan` provides a behavioral hint, not a write barrier. `--add-dir` grants directory access without confining writes. Protection relies on isolated candidate worktrees, mechanical execution scope checks with explicit baselines, frozen path checks, and test gates.
+`--mode plan` is a version-sensitive behavioral hint, not a write barrier. On `agy 1.1.25`, the compatibility probe blocked the tested direct write outside the permitted artifact area, but this is not a guarantee. `--add-dir` grants access without confining writes. Protection relies on isolated candidate worktrees, mechanical execution scope checks with explicit baselines, frozen path checks, and test gates.
+
+Acceptance is distinct from process completion: exit 0, a top-level success status, or prose is insufficient. Require a parsed envelope, valid substantive structured output, execution-scope and gate evidence, and an explicit accepted attempt. A gate exit 126 or 127 is classified as `unrunnable` with `verification: not_performed`; preserve the command, exit code, and diagnostic evidence, and do not schedule a quality retry.
 
 ## Step 1: Split and scout
 

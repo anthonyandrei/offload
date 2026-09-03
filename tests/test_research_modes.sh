@@ -48,7 +48,7 @@ done
 pass 'router stays short and points to every mode'
 
 if rg -n -i 'plan mode[^.]{0,80}(write barrier|prevents? writes?|cannot write)|--add-dir[^.]{0,80}(confine|sandbox|prevents? writes?)|plan-mode[^.]{0,80}(write barrier|prevents? writes?)' \
-  "$ROOT" -g '!tests/test_research_modes.sh' -g '!tests/test_workflow_static.ps1' -g '!.scratch/**'; then
+  "$ROOT" -g '!tests/test_research_modes.sh' -g '!tests/test_workflow_static.ps1' -g '!tests/test_verification_hardening_docs.ps1' -g '!.scratch/**'; then
   fail 'repository still claims plan mode or --add-dir prevents writes'
 fi
 pass 'stale plan-mode and --add-dir safety claims are absent'
@@ -466,11 +466,11 @@ pass 'collect-provenance rejects previously documented bare-attempt shape in val
 # Research synthesis selection tests (Issue #15)
 selection_dir="$TMP_ROOT/research-selection"
 mkdir -p "$selection_dir"
-printf '%s\n' '{"response":"official prose","structured_output":{"run_id":"selection-run","angle_id":"official","status":"success","findings":[{"claim":"official finding"}]}}' > "$selection_dir/official.json"
-printf '%s\n' '{"response":"independent prose","structured_output":{"run_id":"selection-run","angle_id":"independent","status":"success","findings":[{"claim":"independent finding"}]}}' > "$selection_dir/independent.json"
-printf '%s\n' '{"response":"stale prose","structured_output":{"run_id":"selection-run","angle_id":"retry-old","status":"success","findings":[{"claim":"stale retry finding"}]}}' > "$selection_dir/retry-old.json"
-printf '%s\n' '{"response":"verified prose","structured_output":{"run_id":"selection-run","angle_id":"retry-new","status":"success","findings":[{"claim":"verified retry finding"}]}}' > "$selection_dir/retry-new.json"
-printf '%s\n' '{"response":"unverified prose","structured_output":{"run_id":"selection-run","angle_id":"unverified","status":"success","findings":[{"claim":"unverified finding"}]}}' > "$selection_dir/unverified.json"
+printf '%s\n' '{"response":"official prose","structured_output":{"run_id":"selection-run","angle_id":"official","status":"success","question":"What does the official angle establish?","findings":[{"claim":"official finding","source_urls":["https://example.com/official"]}]}}' > "$selection_dir/official.json"
+printf '%s\n' '{"response":"independent prose","structured_output":{"run_id":"selection-run","angle_id":"independent","status":"success","question":"What does the independent angle establish?","findings":[{"claim":"independent finding","source_urls":["https://example.com/independent"]}]}}' > "$selection_dir/independent.json"
+printf '%s\n' '{"response":"stale prose","structured_output":{"run_id":"selection-run","angle_id":"retry-old","status":"success","question":"What does the old retry establish?","findings":[{"claim":"stale retry finding","source_urls":["https://example.com/retry-old"]}]}}' > "$selection_dir/retry-old.json"
+printf '%s\n' '{"response":"verified prose","structured_output":{"run_id":"selection-run","angle_id":"retry-new","status":"success","question":"What does the verified retry establish?","findings":[{"claim":"verified retry finding","source_urls":["https://example.com/retry-new"]}]}}' > "$selection_dir/retry-new.json"
+printf '%s\n' '{"response":"unverified prose","structured_output":{"run_id":"selection-run","angle_id":"unverified","status":"success","question":"What does the unverified angle establish?","findings":[{"claim":"unverified finding","source_urls":["https://example.com/unverified"]}]}}' > "$selection_dir/unverified.json"
 
 selection_primary="$selection_dir/primary-routing.json"
 jq -n \

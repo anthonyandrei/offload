@@ -159,12 +159,14 @@ Each attempt records:
 | `started_at`, `ended_at`, `duration_seconds` | UTC timestamps and observed elapsed time; ending values are null while running. |
 | `exit_code` | Actual process exit code, or null when unavailable. |
 | `state` | `running`, `completed`, `failed`, or `interrupted`. This is process state, not a quality verdict. |
-| `failure_class` | `none`, `quality`, `timeout`, `tool_error`, `quota`, or `unknown`. |
+| `failure_class` | `none`, `quality`, `timeout`, `tool_error`, `quota`, `unrunnable`, or `unknown`. A gate exit 126/127 is `unrunnable` and does not consume a retry. |
 | `verification` | `pending`, `passed`, `failed`, or `not_performed`, using the applicable mode's checks. |
 | `evidence_paths` | Output, error, gate, review, or audit artifact references that support the outcome. |
 | `usage` | Null when unavailable; otherwise source-attributed reported measurements with explicit units. |
 
 Pending assignments that never dispatched belong in the final handoff/report, not in fabricated attempt records. Failed dispatches still belong in the report with their configuration or availability diagnostics.
+
+The retry ceiling is per logical worker: `(worker_id, attempt)` pairs are unique, each worker has at most two attempts, and attempt 2 reuses the same stable `worker_id`. An explicit `accepted_attempt` must resolve to that same worker's existing verified artifact; a newer or wildcard artifact is never selected implicitly.
 
 Record tokens, elapsed time, quota counters, or other usage measurements only when actually observed. Token counts and wall time are not interchangeable with AGY quota consumption. Missing usage stays null. Do not copy secrets or entire prompts into the routing record.
 

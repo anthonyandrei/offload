@@ -22,16 +22,16 @@ done
 
 if "$array_mode"; then
   jq -c -s '
-    if any(.[]; (type != "object") or (has("structured_output") | not)) then
-      error("every result must contain structured_output")
+    if any(.[]; (type != "object") or (has("structured_output") | not) or (.structured_output | type) != "object") then
+      error("every result must contain a non-null structured_output object")
     else
       map(.structured_output)
     end
   ' "$@"
 else
   jq -c '
-    if (type != "object") or (has("structured_output") | not) then
-      error("every result must contain structured_output")
+    if (type != "object") or (has("structured_output") | not) or (.structured_output | type) != "object" then
+      error("every result must contain a non-null structured_output object")
     else
       .structured_output
     end
