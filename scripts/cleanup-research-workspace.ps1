@@ -131,12 +131,268 @@ function Remove-EntryWithoutFollowingReparsePoint([string]$entry) {
     [System.IO.File]::Delete($entry)
 }
 
+$routingFileName = 'routing-outcomes.json'
+$dispositionFileName = 'evidence-disposition.json'
+$retainedFileNames = @('final.md', 'provenance.json', $routingFileName, $dispositionFileName, '.offload-research-workspace')
+
+function Get-JsonProperty($object, [string]$name) {
+    if ($null -eq $object) {
+        return $null
+    }
+    $property = $object.PSObject.Properties[$name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return ,$property.Value
+}
+
+function Assert-RoutingRecord($record, [string]$path) {
+    if ($null -eq $record -or $record -isnot [pscustomobject]) {
+        Fail "invalid routing record: $path"
+    }
+
+    $schemaVersion = Get-JsonProperty $record 'schema_version'
+    if ($schemaVersion -ne 1) {
+        Fail "invalid routing record schema_version: $path"
+    }
+
+    $attempts = Get-JsonProperty $record 'attempts'
+    if ($null -eq $attempts -or $attempts -isnot [array]) {
+        Fail "invalid routing record attempts: $path"
+    }
+    $attemptList = @($attempts)
+    if ($attemptList.Count -gt 2) {
+        Fail "routing record contains more than two attempts: $path"
+    }
+
+    $seenAttempts = @{}
+    foreach ($attempt in $attemptList) {
+        if ($null -eq $attempt -or $attempt -isnot [pscustomobject]) {
+            Fail "routing record contains a non-object attempt: $path"
+        }
+
+        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'model', 'effort', 'reason', 'state', 'started_at', 'ended_at', 'duration_seconds', 'exit_code', 'failure_class', 'evidence_paths', 'usage')) {
+            if ($null -eq $attempt.PSObject.Properties[$field]) {
+                Fail "routing record attempt is missing field '$field': $path"
+            }
+        }
+        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'model', 'effort', 'reason', 'state', 'failure_class')) {
+            $value = Get-JsonProperty $attempt $field
+            if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+                Fail "routing record attempt is missing string field '$field': $path"
+            }
+        }
+        $startedAt = Get-JsonProperty $attempt 'started_at'
+        if ($startedAt -isnot [string] -and $startedAt -isnot [datetime]) {
+            Fail "routing record attempt is missing timestamp field 'started_at': $path"
+        }
+        $endedAt = Get-JsonProperty $attempt 'ended_at'
+        if ($null -ne $endedAt -and $endedAt -isnot [string] -and $endedAt -isnot [datetime]) {
+            Fail "routing record attempt has invalid timestamp field 'ended_at': $path"
+        }
+
+        $attemptNumber = Get-JsonProperty $attempt 'attempt'
+        if ($attemptNumber -isnot [int] -and $attemptNumber -isnot [long] -and $attemptNumber -isnot [double]) {
+            Fail "routing record attempt number is not numeric: $path"
+        }
+        if ($attemptNumber -notin @(1, 2) -or $seenAttempts.ContainsKey([int]$attemptNumber)) {
+            Fail "routing record attempt numbers are invalid or duplicated: $path"
+        }
+        $seenAttempts[[int]$attemptNumber] = $true
+
+        $verification = Get-JsonProperty $attempt 'verification_status'
+        if ($null -eq $verification) {
+            $verification = Get-JsonProperty $attempt 'verification'
+        }
+        if ($verification -isnot [string] -or $verification -notin @('pending', 'passed', 'failed', 'not_performed')) {
+            Fail "routing record attempt is missing verification status: $path"
+        }
+
+        if ((Get-JsonProperty $attempt 'role') -notin @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')) {
+            Fail "routing record attempt has an invalid role: $path"
+        }
+        if ((Get-JsonProperty $attempt 'mode') -notin @('execution', 'repo-research', 'web-research')) {
+            Fail "routing record attempt has an invalid mode: $path"
+        }
+        if ((Get-JsonProperty $attempt 'route') -notin @('default', 'quality-retry')) {
+            Fail "routing record attempt has an invalid route: $path"
+        }
+        $model = [string](Get-JsonProperty $attempt 'model')
+        $effort = [string](Get-JsonProperty $attempt 'effort')
+        if ($model -notmatch '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$' -or $effort -notin @('low', 'medium', 'high') -or -not $model.EndsWith("-$effort")) {
+            Fail "routing record attempt has an invalid model or effort: $path"
+        }
+        if ((Get-JsonProperty $attempt 'state') -notin @('running', 'completed', 'failed', 'interrupted')) {
+            Fail "routing record attempt has an invalid state: $path"
+        }
+        if ((Get-JsonProperty $attempt 'failure_class') -notin @('none', 'quality', 'timeout', 'tool_error', 'quota', 'unknown')) {
+            Fail "routing record attempt has an invalid failure class: $path"
+        }
+
+        $duration = Get-JsonProperty $attempt 'duration_seconds'
+        if ($null -ne $duration -and (($duration -isnot [int] -and $duration -isnot [long] -and $duration -isnot [double]) -or $duration -lt 0 -or [double]::IsNaN([double]$duration) -or [double]::IsInfinity([double]$duration))) {
+            Fail "routing record attempt has an invalid duration: $path"
+        }
+        $exitCode = Get-JsonProperty $attempt 'exit_code'
+        if ($null -ne $exitCode -and (($exitCode -isnot [int] -and $exitCode -isnot [long] -and $exitCode -isnot [double]) -or [double]$exitCode -ne [math]::Truncate([double]$exitCode))) {
+            Fail "routing record attempt has an invalid exit code: $path"
+        }
+        $usage = Get-JsonProperty $attempt 'usage'
+        if ($null -ne $usage -and $usage -isnot [pscustomobject]) {
+            Fail "routing record attempt has invalid usage: $path"
+        }
+
+        $evidencePaths = Get-JsonProperty $attempt 'evidence_paths'
+        if ($null -eq $evidencePaths -or $evidencePaths -isnot [array]) {
+            Fail "routing record attempt is missing evidence_paths: $path"
+        }
+        foreach ($evidencePath in @($evidencePaths)) {
+            if ($evidencePath -isnot [string]) {
+                Fail "routing record evidence path is not a string: $path"
+            }
+        }
+    }
+}
+
+function New-DispositionEntry([string]$relativePath, [string]$disposition, $existsBeforeCleanup, [string]$sha256, [string]$reason) {
+    $entry = [ordered]@{
+        path = $relativePath
+        exists_before_cleanup = $existsBeforeCleanup
+        sha256 = if ([string]::IsNullOrEmpty($sha256)) { $null } else { $sha256 }
+        disposition = $disposition
+        status = $disposition
+    }
+    if (-not [string]::IsNullOrEmpty($reason)) {
+        $entry.reason = $reason
+    }
+    return [pscustomobject]$entry
+}
+
+function Get-EvidenceDisposition([string]$relativePath, [string]$workspacePath) {
+    if ([string]::IsNullOrWhiteSpace($relativePath) -or [System.IO.Path]::IsPathRooted($relativePath) -or $relativePath -match '[\x00-\x1f\x7f]' -or $relativePath -match ':') {
+        return New-DispositionEntry $relativePath 'uninspected' $null $null 'path is not a safe relative workspace path'
+    }
+
+    $parts = @($relativePath -split '[\\/]')
+    $unsafeParts = @($parts | Where-Object { [string]::IsNullOrEmpty($_) -or $_ -eq '.' -or $_ -eq '..' })
+    if ($parts.Count -eq 0 -or $unsafeParts.Count -gt 0) {
+        return New-DispositionEntry $relativePath 'uninspected' $null $null 'path contains unsafe traversal components'
+    }
+
+    $candidate = $workspacePath
+    foreach ($part in $parts) {
+        $candidate = [System.IO.Path]::Combine($candidate, $part)
+        try {
+            $attributes = [System.IO.File]::GetAttributes($candidate)
+        } catch [System.IO.FileNotFoundException] {
+            return New-DispositionEntry $relativePath 'missing' $false $null ''
+        } catch [System.IO.DirectoryNotFoundException] {
+            return New-DispositionEntry $relativePath 'missing' $false $null ''
+        }
+        if ($attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
+            return New-DispositionEntry $relativePath 'uninspected' $true $null 'path contains a reparse point'
+        }
+    }
+
+    $attributes = [System.IO.File]::GetAttributes($candidate)
+    if ($attributes.HasFlag([System.IO.FileAttributes]::Directory)) {
+        return New-DispositionEntry $relativePath 'uninspected' $true $null 'path is not a regular file'
+    }
+
+    $hash = [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.IO.File]::ReadAllBytes($candidate))).ToLowerInvariant()
+    $normalized = ($parts -join '/')
+    $disposition = if ($normalized -in $retainedFileNames) { 'retained' } else { 'pruned' }
+    return New-DispositionEntry $relativePath $disposition $true $hash ''
+}
+
+function Get-RoutingEvidencePaths([string]$routingPath) {
+    try {
+        $routingAttributes = [System.IO.File]::GetAttributes($routingPath)
+    } catch [System.IO.FileNotFoundException] {
+        return @()
+    } catch [System.IO.DirectoryNotFoundException] {
+        return @()
+    }
+    if ($routingAttributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
+        Fail "routing record must be a regular file: $routingPath"
+    }
+    if ($routingAttributes.HasFlag([System.IO.FileAttributes]::Directory)) {
+        Fail "routing record must be a regular file: $routingPath"
+    }
+
+    try {
+        $record = Get-Content -LiteralPath $routingPath -Raw | ConvertFrom-Json
+    } catch {
+        Fail "routing record is not valid JSON: $routingPath"
+    }
+    Assert-RoutingRecord $record $routingPath
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    foreach ($attempt in @($record.attempts)) {
+        foreach ($evidencePath in (Get-JsonProperty $attempt 'evidence_paths')) {
+            if (-not $paths.Contains([string]$evidencePath)) {
+                $paths.Add([string]$evidencePath)
+            }
+        }
+    }
+    return $paths.ToArray()
+}
+
+function Write-EvidenceDisposition([string]$workspacePath, [string]$routingPath, [string]$dispositionPath) {
+    $evidencePaths = @(Get-RoutingEvidencePaths $routingPath)
+    $existingAttributes = $null
+    try {
+        $existingAttributes = [System.IO.File]::GetAttributes($dispositionPath)
+    } catch [System.IO.FileNotFoundException] {
+        $existingAttributes = $null
+    } catch [System.IO.DirectoryNotFoundException] {
+        $existingAttributes = $null
+    }
+    if ($null -ne $existingAttributes) {
+        $attributes = $existingAttributes
+        if ($attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
+            Fail "evidence disposition manifest must be a regular file: $dispositionPath"
+        }
+        if ($attributes.HasFlag([System.IO.FileAttributes]::Directory)) {
+            Fail "evidence disposition manifest path is a directory: $dispositionPath"
+        }
+        try {
+            $existing = Get-Content -LiteralPath $dispositionPath -Raw | ConvertFrom-Json
+        } catch {
+            Fail "existing evidence disposition manifest is not valid JSON: $dispositionPath"
+        }
+        $existingEntries = Get-JsonProperty $existing 'entries'
+        if ((Get-JsonProperty $existing 'schema_version') -ne 1 -or $null -eq $existingEntries -or $existingEntries -isnot [array]) {
+            Fail "existing evidence disposition manifest has an invalid schema: $dispositionPath"
+        }
+        return
+    }
+
+    $entries = [System.Collections.Generic.List[object]]::new()
+    foreach ($path in $evidencePaths) {
+        $entries.Add((Get-EvidenceDisposition $path $workspacePath))
+    }
+    $manifest = [ordered]@{
+        schema_version = 1
+        routing_record = $routingFileName
+        entries = @($entries)
+    }
+    try {
+        $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $dispositionPath -Encoding utf8
+    } catch {
+        Fail "could not write evidence disposition manifest: $dispositionPath"
+    }
+}
+
 # Cleanup according to status
 if ($status -eq 'success') {
+    $routingPath = [System.IO.Path]::Combine($canonicalWs, $routingFileName)
+    $dispositionPath = [System.IO.Path]::Combine($canonicalWs, $dispositionFileName)
+    Write-EvidenceDisposition $canonicalWs $routingPath $dispositionPath
     $entries = [System.IO.Directory]::GetFileSystemEntries($canonicalWs)
     foreach ($entry in $entries) {
         $baseName = [System.IO.Path]::GetFileName($entry)
-        if ($baseName -in @('final.md', 'provenance.json', '.offload-research-workspace')) {
+        if ($baseName -in $retainedFileNames) {
             continue
         }
 
