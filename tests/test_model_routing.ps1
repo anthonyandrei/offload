@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 # tests/test_model_routing.ps1
 # Self-contained acceptance test suite for Gemini model routing in run-agy-json.ps1.
 # Implements contracts specified in docs/specs/0003-gemini-model-routing.md.
@@ -31,7 +31,7 @@ function Assert-True([bool]$condition, [string]$name, [string]$reason = "") {
     if ($condition) {
         Pass $name
     } else {
-        Fail $name (if ($reason) { $reason } else { "Condition was false" })
+        Fail $name $(if ($reason) { $reason } else { "Condition was false" })
     }
 }
 
@@ -39,7 +39,7 @@ function Assert-False([bool]$condition, [string]$name, [string]$reason = "") {
     if (-not $condition) {
         Pass $name
     } else {
-        Fail $name (if ($reason) { $reason } else { "Condition was true" })
+        Fail $name $(if ($reason) { $reason } else { "Condition was true" })
     }
 }
 
@@ -201,6 +201,15 @@ if ($env:FAKE_AGY_ARGS) {
         (ConvertTo-Json -InputObject $capturedArgs -Compress),
         [System.Text.Encoding]::UTF8
     )
+}
+if ($env:FAKE_AGY_STARTED_MARKER) {
+    [System.IO.File]::WriteAllText($env:FAKE_AGY_STARTED_MARKER, "started", [System.Text.Encoding]::UTF8)
+}
+if ($env:FAKE_AGY_DELAY_MS) {
+    [System.Threading.Thread]::Sleep([int]$env:FAKE_AGY_DELAY_MS)
+}
+if ($env:FAKE_AGY_COMPLETED_MARKER) {
+    [System.IO.File]::WriteAllText($env:FAKE_AGY_COMPLETED_MARKER, "completed", [System.Text.Encoding]::UTF8)
 }
 if ($env:FAKE_AGY_EXIT) {
     [Console]::Error.WriteLine("fake stderr")
@@ -1452,6 +1461,184 @@ exit 0
 
         Assert-True ($resInvalid.ExitCode -ne 0) "contract: invalid explicit AGY_BIN fails"
         Assert-False (Test-Path -LiteralPath $invalidOut) "contract: invalid explicit AGY_BIN does not run fallback worker"
+    }
+
+    # -----------------------------------------------------------------------
+    # 10. Output Destination Validation, Stream Disposal, and Cleanup Contracts (Issue #11)
+    # -----------------------------------------------------------------------
+
+    # 10.1 Identical output and error paths fail before worker starts
+    & {
+        $samePath = Join-Path $TmpRoot 'identical-out-err.json'
+        $argsFile = Join-Path $TmpRoot 'identical-out-err-args.json'
+        $res = Invoke-Launcher -ArgumentList @(
+            '--role', 'scout',
+            '--output', $samePath,
+            '--error', $samePath,
+            '--',
+            '-p', 'identical path test'
+        ) -Environment (@{
+            'AGY_BIN'       = $fakeAgyPs
+            'FAKE_AGY_ARGS' = $argsFile
+        })
+
+        Assert-True ($res.ExitCode -ne 0) "contract: identical output/error paths fail"
+        Assert-False (Test-Path -LiteralPath $argsFile) "contract: worker not launched on identical output/error paths"
+        Assert-True ($res.Stderr.Contains('must not be identical')) "contract: actionable error for identical output/error paths"
+    }
+
+    # 10.2 Case-variant identical output and error paths fail before worker starts
+    & {
+        $path1 = Join-Path $TmpRoot 'identical-case-test.json'
+        $path2 = Join-Path $TmpRoot 'IDENTICAL-CASE-TEST.JSON'
+        $argsFile = Join-Path $TmpRoot 'identical-case-args.json'
+        $res = Invoke-Launcher -ArgumentList @(
+            '--role', 'scout',
+            '--output', $path1,
+            '--error', $path2,
+            '--',
+            '-p', 'identical case test'
+        ) -Environment (@{
+            'AGY_BIN'       = $fakeAgyPs
+            'FAKE_AGY_ARGS' = $argsFile
+        })
+
+        Assert-True ($res.ExitCode -ne 0) "contract: case-variant identical paths fail"
+        Assert-False (Test-Path -LiteralPath $argsFile) "contract: worker not launched on case-variant identical paths"
+    }
+
+    # 10.3 Locked output destination fails before worker starts
+    & {
+        $lockedOut = Join-Path $TmpRoot 'locked-out.json'
+        $lockedStream = [System.IO.File]::Open($lockedOut, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $argsFile = Join-Path $TmpRoot 'locked-out-args.json'
+        try {
+            $res = Invoke-Launcher -ArgumentList @(
+                '--role', 'scout',
+                '--output', $lockedOut,
+                '--error', (Join-Path $TmpRoot 'locked-out-err.err'),
+                '--',
+                '-p', 'locked out test'
+            ) -Environment (@{
+                'AGY_BIN'       = $fakeAgyPs
+                'FAKE_AGY_ARGS' = $argsFile
+            })
+
+            Assert-True ($res.ExitCode -ne 0) "contract: locked output destination fails"
+            Assert-False (Test-Path -LiteralPath $argsFile) "contract: worker not launched on locked output destination"
+        } finally {
+            $lockedStream.Dispose()
+        }
+    }
+
+    # 10.4 Locked error destination fails before worker starts and disposes output stream
+    & {
+        $lockedErr = Join-Path $TmpRoot 'locked-err.err'
+        $lockedErrStream = [System.IO.File]::Open($lockedErr, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $unlockedOut = Join-Path $TmpRoot 'unlocked-out-for-locked-err.json'
+        $argsFile = Join-Path $TmpRoot 'locked-err-args.json'
+        try {
+            $res = Invoke-Launcher -ArgumentList @(
+                '--role', 'scout',
+                '--output', $unlockedOut,
+                '--error', $lockedErr,
+                '--',
+                '-p', 'locked err test'
+            ) -Environment (@{
+                'AGY_BIN'       = $fakeAgyPs
+                'FAKE_AGY_ARGS' = $argsFile
+            })
+
+            Assert-True ($res.ExitCode -ne 0) "contract: locked error destination fails"
+            Assert-False (Test-Path -LiteralPath $argsFile) "contract: worker not launched on locked error destination"
+        } finally {
+            $lockedErrStream.Dispose()
+        }
+
+        # Verify output file was cleanly disposed and can be reopened exclusively
+        $reopenedOut = [System.IO.File]::Open($unlockedOut, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $reopenedOut.Dispose()
+        Assert-True ($true) "contract: output stream was disposed when error stream failed"
+    }
+
+    # 10.5 Existing directory as output destination fails before worker starts
+    & {
+        $dirOut = Join-Path $TmpRoot 'dir-destination-test'
+        [System.IO.Directory]::CreateDirectory($dirOut) | Out-Null
+        $argsFile = Join-Path $TmpRoot 'dir-out-args.json'
+        $res = Invoke-Launcher -ArgumentList @(
+            '--role', 'scout',
+            '--output', $dirOut,
+            '--error', (Join-Path $TmpRoot 'dir-destination-err.err'),
+            '--',
+            '-p', 'dir dest test'
+        ) -Environment (@{
+            'AGY_BIN'       = $fakeAgyPs
+            'FAKE_AGY_ARGS' = $argsFile
+        })
+
+        Assert-True ($res.ExitCode -ne 0) "contract: existing directory output destination fails"
+        Assert-False (Test-Path -LiteralPath $argsFile) "contract: worker not launched on directory output destination"
+    }
+
+    # 10.6 Controlled post-start failure terminates child process and disposes streams
+    & {
+        $startedMarker = Join-Path $TmpRoot 'post-fail-started.txt'
+        $completedMarker = Join-Path $TmpRoot 'post-fail-completed.txt'
+        $postOut = Join-Path $TmpRoot 'post-fail-out.json'
+        $postErr = Join-Path $TmpRoot 'post-fail-err.err'
+
+        $res = Invoke-Launcher -ArgumentList @(
+            '--role', 'scout',
+            '--output', $postOut,
+            '--error', $postErr,
+            '--',
+            '-p', 'post-start failure test'
+        ) -Environment (@{
+            'AGY_BIN'                       = $fakeAgyPs
+            'FAKE_LAUNCHER_FAIL_POST_START' = '1'
+            'FAKE_AGY_STARTED_MARKER'       = $startedMarker
+            'FAKE_AGY_DELAY_MS'             = '2000'
+            'FAKE_AGY_COMPLETED_MARKER'     = $completedMarker
+        })
+
+        Assert-True ($res.ExitCode -ne 0) "contract: launcher exits nonzero on post-start failure"
+        Assert-True (Test-Path -LiteralPath $startedMarker) "contract: worker was launched before failure"
+        Assert-False (Test-Path -LiteralPath $completedMarker) "contract: worker was stopped before launcher returned"
+
+        # Wait longer than the worker delay to ensure child was terminated and not running asynchronously
+        Start-Sleep -Milliseconds 2200
+        Assert-False (Test-Path -LiteralPath $completedMarker) "contract: worker did not complete asynchronously after launcher returned"
+
+        # Verify output and error streams were disposed and can be opened exclusively
+        $reopenedOut = [System.IO.File]::Open($postOut, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $reopenedOut.Dispose()
+        $reopenedErr = [System.IO.File]::Open($postErr, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $reopenedErr.Dispose()
+        Assert-True ($true) "contract: output and error streams disposed on post-launch failure"
+    }
+
+    # 10.7 Successful launch disposes streams so output and error files can be reopened
+    & {
+        $succOut = Join-Path $TmpRoot 'succ-cleanup-out.json'
+        $succErr = Join-Path $TmpRoot 'succ-cleanup-err.err'
+
+        $res = Invoke-Launcher -ArgumentList @(
+            '--role', 'scout',
+            '--output', $succOut,
+            '--error', $succErr,
+            '--',
+            '-p', 'succ cleanup test'
+        ) -Environment (@{
+            'AGY_BIN' = $fakeAgyPs
+        })
+
+        Assert-Equal $res.ExitCode 0 "contract: successful launch exits 0"
+        $reopenedSuccOut = [System.IO.File]::Open($succOut, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $reopenedSuccOut.Dispose()
+        $reopenedSuccErr = [System.IO.File]::Open($succErr, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $reopenedSuccErr.Dispose()
+        Assert-True ($true) "contract: output and error streams disposed on success"
     }
 
     # -----------------------------------------------------------------------

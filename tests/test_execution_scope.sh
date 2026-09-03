@@ -83,7 +83,7 @@ invoke_scope_with_git_failure() {
 # 1.1 Fails when run outside a git worktree
 non_git_dir="$TMP_ROOT/non_git"
 mkdir -p "$non_git_dir"
-invoke_scope "$non_git_dir" --owned "base.txt"
+invoke_scope "$non_git_dir" --baseline HEAD --owned "base.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "helper must fail outside of a git worktree"
 pass "CLI rejects execution outside a git worktree"
 
@@ -94,30 +94,46 @@ printf 'base content\n' > "$repo_clean/base.txt"
 git -C "$repo_clean" add base.txt
 git -C "$repo_clean" commit -m "initial commit" -q
 
-invoke_scope "$repo_clean"
+invoke_scope "$repo_clean" --baseline HEAD
 [ "$RUN_EXIT" -ne 0 ] || fail "helper must fail when no --owned argument is passed"
 pass "CLI requires at least one --owned argument"
 
 # 1.3 Fails on unknown arguments
-invoke_scope "$repo_clean" --owned "base.txt" --unknown-option
+invoke_scope "$repo_clean" --baseline HEAD --owned "base.txt" --unknown-option
 [ "$RUN_EXIT" -ne 0 ] || fail "helper must fail on unknown arguments"
 pass "CLI rejects unknown arguments"
 
 # 1.4 Fails when --owned is passed without a value
-invoke_scope "$repo_clean" --owned
+invoke_scope "$repo_clean" --baseline HEAD --owned
 [ "$RUN_EXIT" -ne 0 ] || fail "helper must fail when --owned has no value"
 pass "CLI rejects --owned without value"
+
+# 1.5 Fails when no --baseline argument is provided
+invoke_scope "$repo_clean" --owned "base.txt"
+[ "$RUN_EXIT" -ne 0 ] || fail "helper must fail when no --baseline argument is passed"
+grep -Fq "Error: --baseline is required" <<< "$RUN_STDERR" || fail "stderr must report --baseline is required"
+pass "CLI requires --baseline argument"
+
+# 1.6 Fails when --baseline has no value
+invoke_scope "$repo_clean" --owned "base.txt" --baseline
+[ "$RUN_EXIT" -ne 0 ] || fail "helper must fail when --baseline has no value"
+pass "CLI rejects --baseline without value"
+
+# 1.7 Fails when --baseline has empty value
+invoke_scope "$repo_clean" --owned "base.txt" --baseline=
+[ "$RUN_EXIT" -ne 0 ] || fail "helper must fail when --baseline has empty value"
+pass "CLI rejects --baseline with empty value"
 
 # ===========================================================================
 # 2. Clean Repository ("Clean Success")
 # ===========================================================================
 
-invoke_scope "$repo_clean" --owned "base.txt"
+invoke_scope "$repo_clean" --baseline HEAD --owned "base.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "clean repo should return 0"
 [ -z "$RUN_STDOUT" ] || fail "clean repo should produce empty stdout"
 pass "clean repository returns 0 and prints nothing"
 
-invoke_scope "$repo_clean" --owned "base.txt" --frozen "base.txt"
+invoke_scope "$repo_clean" --baseline HEAD --owned "base.txt" --frozen "base.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "clean repo with untouched frozen path should return 0"
 [ -z "$RUN_STDOUT" ] || fail "clean repo with untouched frozen path should produce empty stdout"
 pass "clean repository with untouched frozen path returns 0 and prints nothing"
@@ -136,19 +152,19 @@ git -C "$repo_files" commit -m "initial files" -q
 printf 'modified a\n' >> "$repo_files/file_a.txt"
 
 # Valid: owned matches touched file exactly
-invoke_scope "$repo_files" --owned "file_a.txt"
+invoke_scope "$repo_files" --baseline HEAD --owned "file_a.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "owned modified file should return 0"
 [ -z "$RUN_STDOUT" ] || fail "owned modified file should produce empty stdout"
 pass "owned modified file passes"
 
 # Violation: modified file is not owned
-invoke_scope "$repo_files" --owned "file_b.txt"
+invoke_scope "$repo_files" --baseline HEAD --owned "file_b.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned modified file should return nonzero"
 grep -Fq "file_a.txt" <<< "$RUN_STDOUT" || fail "stdout must list file_a.txt violation"
 pass "unowned modified file returns nonzero and prints path"
 
 # Partial match: file_a must not match file_a.txt
-invoke_scope "$repo_files" --owned "file_a"
+invoke_scope "$repo_files" --baseline HEAD --owned "file_a"
 [ "$RUN_EXIT" -ne 0 ] || fail "partial filename match must not satisfy ownership"
 grep -Fq "file_a.txt" <<< "$RUN_STDOUT" || fail "stdout must list file_a.txt on partial match"
 pass "partial filename prefix does not satisfy file ownership"
@@ -170,26 +186,26 @@ printf 'mod app\n' >> "$repo_dirs/src/app.txt"
 printf 'mod btn\n' >> "$repo_dirs/src/components/button.txt"
 
 # Valid: owned directory without trailing slash
-invoke_scope "$repo_dirs" --owned "src"
+invoke_scope "$repo_dirs" --baseline HEAD --owned "src"
 [ "$RUN_EXIT" -eq 0 ] || fail "owned directory without trailing slash should return 0"
 [ -z "$RUN_STDOUT" ] || fail "owned directory should produce empty stdout"
 pass "owned directory without trailing slash covers contained files"
 
 # Valid: owned directory with trailing slash
-invoke_scope "$repo_dirs" --owned "src/"
+invoke_scope "$repo_dirs" --baseline HEAD --owned "src/"
 [ "$RUN_EXIT" -eq 0 ] || fail "owned directory with trailing slash should return 0"
 [ -z "$RUN_STDOUT" ] || fail "owned directory with trailing slash should produce empty stdout"
 pass "owned directory with trailing slash covers contained files"
 
 # Violation: nested directory does not cover parent directory files
-invoke_scope "$repo_dirs" --owned "src/components"
+invoke_scope "$repo_dirs" --baseline HEAD --owned "src/components"
 [ "$RUN_EXIT" -ne 0 ] || fail "src/components should not cover src/app.txt"
 grep -Fq "src/app.txt" <<< "$RUN_STDOUT" || fail "stdout must list src/app.txt"
 pass "nested directory scope does not cover parent directory files"
 
 # Boundary check: src must NOT match src-extra
 printf 'mod extra\n' >> "$repo_dirs/src-extra/file.txt"
-invoke_scope "$repo_dirs" --owned "src"
+invoke_scope "$repo_dirs" --baseline HEAD --owned "src"
 [ "$RUN_EXIT" -ne 0 ] || fail "owned dir src must not match src-extra"
 grep -Fq "src-extra/file.txt" <<< "$RUN_STDOUT" || fail "stdout must list src-extra/file.txt"
 pass "owned directory respects boundary and rejects prefix-sharing sibling"
@@ -211,13 +227,13 @@ printf 'mod doc\n' >> "$repo_multi/docs/guide.md"
 printf 'mod code\n' >> "$repo_multi/src/code.py"
 
 # Valid: both paths owned
-invoke_scope "$repo_multi" --owned "docs" --owned "src/code.py"
+invoke_scope "$repo_multi" --baseline HEAD --owned "docs" --owned "src/code.py"
 [ "$RUN_EXIT" -eq 0 ] || fail "multiple --owned arguments should succeed"
 [ -z "$RUN_STDOUT" ] || fail "multiple --owned stdout should be empty"
 pass "multiple repeated --owned arguments succeed"
 
 # Violation: omitted path
-invoke_scope "$repo_multi" --owned "docs"
+invoke_scope "$repo_multi" --baseline HEAD --owned "docs"
 [ "$RUN_EXIT" -ne 0 ] || fail "omitted owned path should fail"
 grep -Fq "src/code.py" <<< "$RUN_STDOUT" || fail "stdout must list unowned src/code.py"
 pass "omitted owned path among multiple changes reports violation"
@@ -236,14 +252,14 @@ git -C "$repo_frozen" commit -m "initial frozen" -q
 
 # Case A: Untouched frozen file
 printf 'mod allowed\n' >> "$repo_frozen/config/allowed.txt"
-invoke_scope "$repo_frozen" --owned "config" --frozen "config/secret.txt"
+invoke_scope "$repo_frozen" --baseline HEAD --owned "config" --frozen "config/secret.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "untouched frozen file should succeed"
 [ -z "$RUN_STDOUT" ] || fail "untouched frozen file should produce empty stdout"
 pass "untouched frozen file does not trigger violation"
 
 # Case B: Modified frozen file (even when owned)
 printf 'mod secret\n' >> "$repo_frozen/config/secret.txt"
-invoke_scope "$repo_frozen" --owned "config" --frozen "config/secret.txt"
+invoke_scope "$repo_frozen" --baseline HEAD --owned "config" --frozen "config/secret.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "modified frozen file must fail even if in owned directory"
 grep -Fq "config/secret.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen config/secret.txt"
 pass "modified frozen file reports violation even when covered by --owned"
@@ -263,13 +279,13 @@ git -C "$repo_frozendir" commit -m "initial frozen dir" -q
 printf 'mod old\n' >> "$repo_frozendir/legacy/sub/old.txt"
 
 # Violation: file in frozen directory
-invoke_scope "$repo_frozendir" --owned "legacy" --frozen "legacy"
+invoke_scope "$repo_frozendir" --baseline HEAD --owned "legacy" --frozen "legacy"
 [ "$RUN_EXIT" -ne 0 ] || fail "modified file inside frozen directory must fail"
 grep -Fq "legacy/sub/old.txt" <<< "$RUN_STDOUT" || fail "stdout must list legacy/sub/old.txt"
 pass "modified file inside frozen directory reports violation"
 
 # Frozen directory with trailing slash
-invoke_scope "$repo_frozendir" --owned "legacy" --frozen "legacy/"
+invoke_scope "$repo_frozendir" --baseline HEAD --owned "legacy" --frozen "legacy/"
 [ "$RUN_EXIT" -ne 0 ] || fail "frozen dir with trailing slash must fail"
 grep -Fq "legacy/sub/old.txt" <<< "$RUN_STDOUT" || fail "stdout must list legacy/sub/old.txt"
 pass "frozen directory with trailing slash reports violation"
@@ -277,7 +293,7 @@ pass "frozen directory with trailing slash reports violation"
 # Boundary check: legacy must NOT freeze legacy-v2
 git -C "$repo_frozendir" checkout -q legacy/sub/old.txt
 printf 'mod new\n' >> "$repo_frozendir/legacy-v2/new.txt"
-invoke_scope "$repo_frozendir" --owned "legacy-v2" --frozen "legacy"
+invoke_scope "$repo_frozendir" --baseline HEAD --owned "legacy-v2" --frozen "legacy"
 [ "$RUN_EXIT" -eq 0 ] || fail "frozen directory must not freeze sibling directory"
 [ -z "$RUN_STDOUT" ] || fail "frozen directory sibling should produce empty stdout"
 pass "frozen directory respects boundary and does not freeze prefix-sharing sibling"
@@ -298,19 +314,19 @@ printf 'mod staged\n' >> "$repo_mod/staged.txt"
 git -C "$repo_mod" add staged.txt
 
 # Both owned
-invoke_scope "$repo_mod" --owned "staged.txt" --owned "unstaged.txt"
+invoke_scope "$repo_mod" --baseline HEAD --owned "staged.txt" --owned "unstaged.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "both staged and unstaged owned should succeed"
 [ -z "$RUN_STDOUT" ] || fail "both staged and unstaged owned stdout should be empty"
 pass "modified tracked files (both staged and unstaged) pass when owned"
 
 # Missing unstaged
-invoke_scope "$repo_mod" --owned "staged.txt"
+invoke_scope "$repo_mod" --baseline HEAD --owned "staged.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned unstaged modification must fail"
 grep -Fq "unstaged.txt" <<< "$RUN_STDOUT" || fail "stdout must list unstaged.txt"
 pass "unowned unstaged modification reports violation"
 
 # Missing staged
-invoke_scope "$repo_mod" --owned "unstaged.txt"
+invoke_scope "$repo_mod" --baseline HEAD --owned "unstaged.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned staged modification must fail"
 grep -Fq "staged.txt" <<< "$RUN_STDOUT" || fail "stdout must list staged.txt"
 pass "unowned staged modification reports violation"
@@ -330,19 +346,19 @@ rm "$repo_del/del_unstaged.txt"
 git -C "$repo_del" rm -q del_staged.txt
 
 # Both owned
-invoke_scope "$repo_del" --owned "del_staged.txt" --owned "del_unstaged.txt"
+invoke_scope "$repo_del" --baseline HEAD --owned "del_staged.txt" --owned "del_unstaged.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "deleted tracked files should succeed when owned"
 [ -z "$RUN_STDOUT" ] || fail "deleted tracked files should produce empty stdout"
 pass "deleted tracked files (staged and unstaged) pass when owned"
 
 # Unowned unstaged delete
-invoke_scope "$repo_del" --owned "del_staged.txt"
+invoke_scope "$repo_del" --baseline HEAD --owned "del_staged.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned unstaged deletion must fail"
 grep -Fq "del_unstaged.txt" <<< "$RUN_STDOUT" || fail "stdout must list del_unstaged.txt"
 pass "unowned unstaged deletion reports violation"
 
 # Frozen deleted file
-invoke_scope "$repo_del" --owned "del_staged.txt" --owned "del_unstaged.txt" --frozen "del_unstaged.txt"
+invoke_scope "$repo_del" --baseline HEAD --owned "del_staged.txt" --owned "del_unstaged.txt" --frozen "del_unstaged.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "frozen deleted file must fail"
 grep -Fq "del_unstaged.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen deleted file"
 pass "frozen deleted file reports violation"
@@ -360,31 +376,31 @@ git -C "$repo_rename" commit -m "initial rename" -q
 git -C "$repo_rename" mv old_path.txt new_path.txt
 
 # Both paths owned
-invoke_scope "$repo_rename" --owned "old_path.txt" --owned "new_path.txt"
+invoke_scope "$repo_rename" --baseline HEAD --owned "old_path.txt" --owned "new_path.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "renamed file with both paths owned should succeed"
 [ -z "$RUN_STDOUT" ] || fail "renamed file with both paths owned stdout should be empty"
 pass "renamed file with both paths owned passes"
 
 # Only new path owned: old path violation
-invoke_scope "$repo_rename" --owned "new_path.txt"
+invoke_scope "$repo_rename" --baseline HEAD --owned "new_path.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "renamed file with only new path owned must fail"
 grep -Fq "old_path.txt" <<< "$RUN_STDOUT" || fail "stdout must list old_path.txt"
 pass "renamed file missing old path reports violation"
 
 # Only old path owned: new path violation
-invoke_scope "$repo_rename" --owned "old_path.txt"
+invoke_scope "$repo_rename" --baseline HEAD --owned "old_path.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "renamed file with only old path owned must fail"
 grep -Fq "new_path.txt" <<< "$RUN_STDOUT" || fail "stdout must list new_path.txt"
 pass "renamed file missing new path reports violation"
 
 # Frozen old path: fails
-invoke_scope "$repo_rename" --owned "old_path.txt" --owned "new_path.txt" --frozen "old_path.txt"
+invoke_scope "$repo_rename" --baseline HEAD --owned "old_path.txt" --owned "new_path.txt" --frozen "old_path.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "renamed file with frozen old path must fail"
 grep -Fq "old_path.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen old_path.txt"
 pass "renamed file with frozen old path reports violation"
 
 # Frozen new path: fails
-invoke_scope "$repo_rename" --owned "old_path.txt" --owned "new_path.txt" --frozen "new_path.txt"
+invoke_scope "$repo_rename" --baseline HEAD --owned "old_path.txt" --owned "new_path.txt" --frozen "new_path.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "renamed file with frozen new path must fail"
 grep -Fq "new_path.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen new_path.txt"
 pass "renamed file with frozen new path reports violation"
@@ -403,19 +419,19 @@ cp "$repo_copy/orig.txt" "$repo_copy/copy.txt"
 git -C "$repo_copy" add copy.txt
 
 # Both paths owned
-invoke_scope "$repo_copy" --owned "orig.txt" --owned "copy.txt"
+invoke_scope "$repo_copy" --baseline HEAD --owned "orig.txt" --owned "copy.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "copied file with both paths owned should succeed"
 [ -z "$RUN_STDOUT" ] || fail "copied file with both paths owned stdout should be empty"
 pass "copied file passes when copy is owned"
 
 # Unowned copy
-invoke_scope "$repo_copy" --owned "orig.txt"
+invoke_scope "$repo_copy" --baseline HEAD --owned "orig.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned copied file must fail"
 grep -Fq "copy.txt" <<< "$RUN_STDOUT" || fail "stdout must list copy.txt"
 pass "unowned copied file reports violation"
 
 # Frozen copy
-invoke_scope "$repo_copy" --owned "orig.txt" --owned "copy.txt" --frozen "copy.txt"
+invoke_scope "$repo_copy" --baseline HEAD --owned "orig.txt" --owned "copy.txt" --frozen "copy.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "frozen copied file must fail"
 grep -Fq "copy.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen copy.txt"
 pass "frozen copied file reports violation"
@@ -435,20 +451,20 @@ mkdir -p "$repo_untracked/untracked_dir"
 printf 'nested untracked\n' > "$repo_untracked/untracked_dir/nested.txt"
 
 # Valid: both owned
-invoke_scope "$repo_untracked" --owned "new_untracked.txt" --owned "untracked_dir"
+invoke_scope "$repo_untracked" --baseline HEAD --owned "new_untracked.txt" --owned "untracked_dir"
 [ "$RUN_EXIT" -eq 0 ] || fail "owned untracked files should succeed"
 [ -z "$RUN_STDOUT" ] || fail "owned untracked files stdout should be empty"
 pass "untracked files pass when owned"
 
 # Violation: unowned untracked file
-invoke_scope "$repo_untracked" --owned "base.txt"
+invoke_scope "$repo_untracked" --baseline HEAD --owned "base.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned untracked file must fail"
 grep -Fq "new_untracked.txt" <<< "$RUN_STDOUT" || fail "stdout must list new_untracked.txt"
 grep -Fq "untracked_dir/nested.txt" <<< "$RUN_STDOUT" || fail "stdout must list untracked_dir/nested.txt"
 pass "unowned untracked files report violation"
 
 # Frozen untracked file
-invoke_scope "$repo_untracked" --owned "new_untracked.txt" --owned "untracked_dir" --frozen "new_untracked.txt"
+invoke_scope "$repo_untracked" --baseline HEAD --owned "new_untracked.txt" --owned "untracked_dir" --frozen "new_untracked.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "frozen untracked file must fail"
 grep -Fq "new_untracked.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen untracked file"
 pass "frozen untracked file reports violation"
@@ -469,7 +485,7 @@ mkdir -p "$repo_ignored/temp"
 printf 'temp data\n' > "$repo_ignored/temp/scratch.txt"
 
 # Ignored files must not trigger violations
-invoke_scope "$repo_ignored" --owned "base.txt"
+invoke_scope "$repo_ignored" --baseline HEAD --owned "base.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "ignored files must not cause violation"
 [ -z "$RUN_STDOUT" ] || fail "ignored files stdout must be empty"
 pass "ignored files are excluded from scope violations"
@@ -489,19 +505,19 @@ printf 'modified spaced\n' >> "$repo_spaces/folder with spaces/file with spaces.
 printf 'untracked spaced\n' > "$repo_spaces/another spaced file.txt"
 
 # Valid: both owned
-invoke_scope "$repo_spaces" --owned "folder with spaces" --owned "another spaced file.txt"
+invoke_scope "$repo_spaces" --baseline HEAD --owned "folder with spaces" --owned "another spaced file.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "spaced paths within owned scope should succeed"
 [ -z "$RUN_STDOUT" ] || fail "spaced paths stdout should be empty"
 pass "spaced paths pass when owned"
 
 # Violation: unowned spaced file
-invoke_scope "$repo_spaces" --owned "folder with spaces"
+invoke_scope "$repo_spaces" --baseline HEAD --owned "folder with spaces"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned spaced file must fail"
 grep -Fq "another spaced file.txt" <<< "$RUN_STDOUT" || fail "stdout must list unowned spaced file"
 pass "unowned spaced path reports violation"
 
 # Frozen spaced file
-invoke_scope "$repo_spaces" --owned "folder with spaces" --owned "another spaced file.txt" --frozen "folder with spaces/file with spaces.txt"
+invoke_scope "$repo_spaces" --baseline HEAD --owned "folder with spaces" --owned "another spaced file.txt" --frozen "folder with spaces/file with spaces.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "frozen spaced file must fail"
 grep -Fq "folder with spaces/file with spaces.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen spaced path"
 pass "frozen spaced path reports violation"
@@ -523,19 +539,19 @@ mkdir -p "$repo_nonascii/münchen"
 printf 'stadt\n' > "$repo_nonascii/münchen/stadt.txt"
 
 # Valid: all owned
-invoke_scope "$repo_nonascii" --owned "dossier" --owned "résumé.md" --owned "münchen"
+invoke_scope "$repo_nonascii" --baseline HEAD --owned "dossier" --owned "résumé.md" --owned "münchen"
 [ "$RUN_EXIT" -eq 0 ] || fail "non-ASCII paths within owned scope should succeed"
 [ -z "$RUN_STDOUT" ] || fail "non-ASCII paths stdout should be empty"
 pass "non-ASCII paths pass when owned"
 
 # Violation: unowned non-ASCII path
-invoke_scope "$repo_nonascii" --owned "dossier" --owned "résumé.md"
+invoke_scope "$repo_nonascii" --baseline HEAD --owned "dossier" --owned "résumé.md"
 [ "$RUN_EXIT" -ne 0 ] || fail "unowned non-ASCII path must fail"
 grep -Fq "münchen/stadt.txt" <<< "$RUN_STDOUT" || fail "stdout must list unowned non-ASCII path münchen/stadt.txt"
 pass "unowned non-ASCII path reports violation"
 
 # Frozen non-ASCII path
-invoke_scope "$repo_nonascii" --owned "dossier" --owned "résumé.md" --owned "münchen" --frozen "dossier/café.txt"
+invoke_scope "$repo_nonascii" --baseline HEAD --owned "dossier" --owned "résumé.md" --owned "münchen" --frozen "dossier/café.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "frozen non-ASCII path must fail"
 grep -Fq "dossier/café.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen non-ASCII path dossier/café.txt"
 pass "frozen non-ASCII path reports violation"
@@ -589,7 +605,7 @@ fi
 exec "$REAL_GIT" "$@"
 EOF
 chmod +x "$fake_git_dir/git"
-invoke_scope_with_git_failure "$repo_baseline" "$fake_git_dir" status --owned owned.txt
+invoke_scope_with_git_failure "$repo_baseline" "$fake_git_dir" status --baseline "$baseline_revision" --owned owned.txt
 [ "$RUN_EXIT" -eq 73 ] || fail "git status failure must preserve exit code 73"
 grep -Fq "status" <<< "$RUN_STDERR" || fail "git status failure must name the operation"
 pass "mocked git status failure is reported"
@@ -633,7 +649,7 @@ printf 'new\n' > "$repo_cleanliness/new_owned.txt"
 # Capture porcelain status before running
 status_before=$(git -C "$repo_cleanliness" status --porcelain -uall)
 
-invoke_scope "$repo_cleanliness" --owned "tracked.txt" --owned "new_owned.txt"
+invoke_scope "$repo_cleanliness" --baseline HEAD --owned "tracked.txt" --owned "new_owned.txt"
 [ "$RUN_EXIT" -eq 0 ] || fail "valid scope check should succeed"
 [ -z "$RUN_STDOUT" ] || fail "valid scope check must produce empty stdout"
 
@@ -667,7 +683,7 @@ printf 'mod frozen\n' >> "$repo_violations/frozen_file.txt"
 
 status_viol_before=$(git -C "$repo_violations" status --porcelain -uall)
 
-invoke_scope "$repo_violations" --owned "clean.txt" --frozen "frozen_file.txt"
+invoke_scope "$repo_violations" --baseline HEAD --owned "clean.txt" --frozen "frozen_file.txt"
 [ "$RUN_EXIT" -ne 0 ] || fail "violations must produce nonzero exit code"
 grep -Fq "unowned_one.txt" <<< "$RUN_STDOUT" || fail "stdout must list unowned_one.txt"
 grep -Fq "unowned_two.txt" <<< "$RUN_STDOUT" || fail "stdout must list unowned_two.txt"

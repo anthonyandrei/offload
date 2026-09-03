@@ -348,7 +348,74 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 
 At the conclusion of the research run:
 
-1. **Assemble provenance.** Validate and generate `provenance.json` using the matching provenance helper. Each entry in the `workers` array may optionally include a `routing` object containing the corresponding attempt record from `routing-outcomes.json`:
+1. **Assemble provenance.** Validate and generate `provenance.json` using the matching provenance helper. Each entry in the `workers` array may optionally include a `routing` container (`{schema_version: 1, attempts: [...]}`) retaining all attempts for that worker from `routing-outcomes.json` (canonical fixture: [`tests/fixtures/routing-worker.json`](../tests/fixtures/routing-worker.json)):
+
+   ```json
+   {
+     "id": "researcher-web-1",
+     "role": "researcher",
+     "status": "completed",
+     "output": "workspace/researcher-web-1.json",
+     "routing": {
+       "schema_version": 1,
+       "attempts": [
+         {
+           "worker_id": "researcher-web-1",
+           "role": "researcher",
+           "mode": "web-research",
+           "attempt": 1,
+           "policy_revision": "2026-09-03.1",
+           "route": "default",
+           "model": "gemini-3.8-flash-high",
+           "effort": "high",
+           "reason": "Initial default dispatch",
+           "started_at": "2026-09-03T00:00:00Z",
+           "ended_at": "2026-09-03T00:01:30Z",
+           "duration_seconds": 90.0,
+           "exit_code": 1,
+           "state": "failed",
+           "failure_class": "quality",
+           "verification_status": "failed",
+           "evidence_paths": [
+             "workspace/researcher-web-1.attempt1.json"
+           ],
+           "usage": {
+             "prompt_tokens": 1000,
+             "candidates_tokens": 250,
+             "unit": "tokens"
+           }
+         },
+         {
+           "worker_id": "researcher-web-1",
+           "role": "researcher",
+           "mode": "web-research",
+           "attempt": 2,
+           "policy_revision": "2026-09-03.1",
+           "route": "default",
+           "model": "gemini-3.8-flash-high",
+           "effort": "high",
+           "reason": "Retry authorized after quality gate failure on attempt 1",
+           "started_at": "2026-09-03T00:02:00Z",
+           "ended_at": "2026-09-03T00:03:30Z",
+           "duration_seconds": 90.0,
+           "exit_code": 0,
+           "state": "completed",
+           "failure_class": "none",
+           "verification_status": "passed",
+           "evidence_paths": [
+             "workspace/researcher-web-1.json"
+           ],
+           "usage": {
+             "prompt_tokens": 1200,
+             "candidates_tokens": 300,
+             "unit": "tokens"
+           }
+         }
+       ]
+     }
+   }
+   ```
+
 
    #### Bash
    ```bash
