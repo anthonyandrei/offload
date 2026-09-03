@@ -215,6 +215,15 @@ if ($env:FAKE_AGY_EXIT) {
     [Console]::Error.WriteLine("fake stderr")
     exit [int]$env:FAKE_AGY_EXIT
 }
+if ($env:FAKE_AGY_TAG) {
+    [Console]::Error.WriteLine("fake stderr $($env:FAKE_AGY_TAG)")
+    [Console]::Out.WriteLine(( [ordered]@{
+        status = 'success'
+        response = "verbose worker text $($env:FAKE_AGY_TAG)"
+        structured_output = [ordered]@{ attempt = $env:FAKE_AGY_TAG }
+    } | ConvertTo-Json -Compress))
+    exit 0
+}
 [Console]::Error.WriteLine("fake stderr")
 [Console]::Out.WriteLine('{"status":"success","response":"verbose worker text","structured_output":{"ok":true}}')
 exit 0
@@ -1639,6 +1648,65 @@ exit 0
         $reopenedSuccErr = [System.IO.File]::Open($succErr, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
         $reopenedSuccErr.Dispose()
         Assert-True ($true) "contract: output and error streams disposed on success"
+    }
+
+    # 10.8 Attempt-specific artifacts preserve the first dispatch and select the accepted retry.
+    & {
+        $retryDir = Join-Path $TmpRoot 'retry-artifacts'
+        [System.IO.Directory]::CreateDirectory($retryDir) | Out-Null
+        $workerId = 'researcher-web-1'
+        $attempt1Out = Join-Path $retryDir "$workerId.attempt1.json"
+        $attempt1Err = Join-Path $retryDir "$workerId.attempt1.err"
+        $attempt2Out = Join-Path $retryDir "$workerId.attempt2.json"
+        $attempt2Err = Join-Path $retryDir "$workerId.attempt2.err"
+
+        $res1 = Invoke-Launcher -ArgumentList @(
+            '--role', 'researcher', '--output', $attempt1Out, '--error', $attempt1Err,
+            '--', '-p', 'attempt 1'
+        ) -Environment @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_TAG' = 'attempt1' }
+        Assert-Equal $res1.ExitCode 0 "attempt-artifacts: first PowerShell dispatch exits 0"
+        $attempt1OutHash = [Convert]::ToHexString([System.IO.File]::ReadAllBytes($attempt1Out))
+        $attempt1ErrHash = [Convert]::ToHexString([System.IO.File]::ReadAllBytes($attempt1Err))
+
+        $res2 = Invoke-Launcher -ArgumentList @(
+            '--role', 'researcher', '--output', $attempt2Out, '--error', $attempt2Err,
+            '--', '-p', 'attempt 2'
+        ) -Environment @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_TAG' = 'attempt2' }
+        Assert-Equal $res2.ExitCode 0 "attempt-artifacts: second PowerShell dispatch exits 0"
+        Assert-Equal ([Convert]::ToHexString([System.IO.File]::ReadAllBytes($attempt1Out))) $attempt1OutHash "attempt-artifacts: second dispatch preserves attempt 1 output"
+        Assert-Equal ([Convert]::ToHexString([System.IO.File]::ReadAllBytes($attempt1Err))) $attempt1ErrHash "attempt-artifacts: second dispatch preserves attempt 1 error"
+        $attempt1Json = Get-Content -LiteralPath $attempt1Out -Raw | ConvertFrom-Json
+        $attempt2Json = Get-Content -LiteralPath $attempt2Out -Raw | ConvertFrom-Json
+        Assert-Equal $attempt1Json.structured_output.attempt 'attempt1' "attempt-artifacts: attempt 1 artifact is retained"
+        Assert-Equal $attempt2Json.structured_output.attempt 'attempt2' "attempt-artifacts: attempt 2 artifact is separate"
+
+        $attemptFields = @{
+            worker_id = $workerId; role = 'researcher'; mode = 'web-research'; policy_revision = '2026-09-03.1'
+            route = 'default'; model = 'gemini-3.8-flash-high'; effort = 'high'; reason = 'fake retry test'
+            started_at = '2026-01-01T00:00:00Z'; ended_at = '2026-01-01T00:01:00Z'; duration_seconds = 60
+            exit_code = 0; state = 'completed'; failure_class = 'none'; verification_status = 'passed'; usage = $null
+        }
+        $routingAttempts = @(
+            [ordered]@{ worker_id = $workerId; role = $attemptFields.role; mode = $attemptFields.mode; attempt = 1; policy_revision = $attemptFields.policy_revision; route = $attemptFields.route; model = $attemptFields.model; effort = $attemptFields.effort; reason = $attemptFields.reason; started_at = $attemptFields.started_at; ended_at = $attemptFields.ended_at; duration_seconds = 60; exit_code = 0; state = 'completed'; failure_class = 'none'; verification_status = 'passed'; evidence_paths = @($attempt1Out, $attempt1Err); usage = $null },
+            [ordered]@{ worker_id = $workerId; role = $attemptFields.role; mode = $attemptFields.mode; attempt = 2; policy_revision = $attemptFields.policy_revision; route = $attemptFields.route; model = $attemptFields.model; effort = $attemptFields.effort; reason = $attemptFields.reason; started_at = '2026-01-01T00:02:00Z'; ended_at = '2026-01-01T00:03:00Z'; duration_seconds = 60; exit_code = 0; state = 'completed'; failure_class = 'none'; verification_status = 'passed'; evidence_paths = @($attempt2Out, $attempt2Err); usage = $null }
+        )
+        $routingWorker = [ordered]@{
+            id = $workerId; role = 'researcher'; status = 'completed'; output = $attempt2Out; accepted_attempt = 2
+            routing = [ordered]@{ schema_version = 1; attempts = $routingAttempts }
+        }
+        $routingRecord = [ordered]@{
+            run_id = 'retry-artifact-test'; request_summary = 'retry artifact test'; selected_mode = 'web-research'; profile = 'standard'; deep_trigger = $null
+            start_time = '2026-01-01T00:00:00Z'; end_time = '2026-01-01T00:05:00Z'; duration_seconds = 300; scratch_path = $retryDir
+            workers = @($routingWorker); repository_snapshot_paths = @(); final_citations = @(); audit_verdicts = @(); final_status = 'success'; incomplete_stage_reasons = @()
+        }
+        $routingPath = Join-Path $retryDir 'routing.json'
+        [System.IO.File]::WriteAllText($routingPath, ($routingRecord | ConvertTo-Json -Depth 20), [System.Text.Encoding]::UTF8)
+        $provHelper = Join-Path $ScriptsDir 'collect-provenance.ps1'
+        $routingValidation = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $provHelper, '--validate', $routingPath)
+        Assert-Equal $routingValidation.ExitCode 0 "attempt-artifacts: routing record validates in PowerShell"
+        Assert-Equal $routingWorker.accepted_attempt 2 "attempt-artifacts: routing record selects accepted attempt 2"
+        Assert-NotEqual $attempt1Out $attempt2Out "attempt-artifacts: output paths are distinct"
+        Assert-NotEqual $attempt1Err $attempt2Err "attempt-artifacts: error paths are distinct"
     }
 
     # -----------------------------------------------------------------------

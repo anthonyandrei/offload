@@ -657,6 +657,13 @@ try {
     Assert-Equal ($attempts[1]["worker_id"].ToString()) "researcher-web-1" "fixture: attempt 2 worker_id matches stable worker identity"
     Assert-Equal ([int]$attempts[0]["attempt"].ToString()) 1 "fixture: attempt 1 is number 1"
     Assert-Equal ([int]$attempts[1]["attempt"].ToString()) 2 "fixture: attempt 2 is number 2"
+    Assert-Equal ([int]$w["accepted_attempt"].ToString()) 2 "fixture: accepted_attempt selects attempt 2"
+    Assert-Equal $w["output"].ToString() "workspace/researcher-web-1.attempt2.json" "fixture: selected output points to attempt 2 artifact"
+    Assert-Equal $attempts[0]["evidence_paths"][0].ToString() "workspace/researcher-web-1.attempt1.json" "fixture: attempt 1 output path is attempt-specific"
+    Assert-Equal $attempts[1]["evidence_paths"][0].ToString() "workspace/researcher-web-1.attempt2.json" "fixture: attempt 2 output path is attempt-specific"
+    Assert-Equal $attempts[0]["evidence_paths"][1].ToString() "workspace/researcher-web-1.attempt1.err" "fixture: attempt 1 error path is attempt-specific"
+    Assert-Equal $attempts[1]["evidence_paths"][1].ToString() "workspace/researcher-web-1.attempt2.err" "fixture: attempt 2 error path is attempt-specific"
+    Assert-True ($attempts[0]["evidence_paths"][0].ToString() -ne $attempts[1]["evidence_paths"][0].ToString()) "fixture: retry output paths are distinct"
 
     # 9.4: Mechanically check documented JSON example against fixture
     $webMdPath = Join-Path $RootDir 'modes/web-research.md'
