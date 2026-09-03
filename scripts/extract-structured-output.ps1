@@ -74,10 +74,10 @@ if ($arrayMode) {
     foreach ($item in $extractedOutputs) {
         [void]$jsonArray.Add([System.Text.Json.Nodes.JsonNode]::Parse($item))
     }
-    [Console]::Out.WriteLine($jsonArray.ToJsonString())
+    Write-Output $jsonArray.ToJsonString()
 } else {
     foreach ($item in $extractedOutputs) {
-        [Console]::Out.WriteLine($item)
+        Write-Output $item
     }
 }
 

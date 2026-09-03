@@ -167,5 +167,5 @@ if (-not [string]::IsNullOrEmpty($sourceRepo)) {
     }
 }
 
-[Console]::Out.WriteLine($workspace)
+Write-Output $workspace
 exit 0

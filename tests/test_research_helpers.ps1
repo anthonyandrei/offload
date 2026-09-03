@@ -427,6 +427,29 @@ exit 0
     $worker2 = Join-Path $TmpRoot 'worker-two.json'
     '{"response":"another long worker prose 2","structured_output":{"angle":"two","findings":[2]}}' | Set-Content -LiteralPath $worker2 -Encoding utf8
 
+    # 2.0 Documented PowerShell pipeline assignment and native invocation
+    $extractScript = Join-Path $ScriptsDir 'extract-structured-output.ps1'
+    $directExtractCommand = '$researcherFiles = @($env:WORKER_ONE, $env:WORKER_TWO); $mergedResearchFindings = & $env:EXTRACT_SCRIPT --array @researcherFiles; if ([string]::IsNullOrWhiteSpace($mergedResearchFindings)) { exit 1 }; $mergedResearchFindings'
+    $resDirectExtract = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-Command', $directExtractCommand
+    ) -Environment @{
+        'EXTRACT_SCRIPT' = $extractScript
+        'WORKER_ONE' = $worker1
+        'WORKER_TWO' = $worker2
+    }
+    Assert-Equal $resDirectExtract.ExitCode 0 "extract-structured-output: documented in-process assignment exits 0"
+    Assert-Equal $resDirectExtract.Stderr.Trim() '' "extract-structured-output: documented in-process assignment keeps diagnostics off stderr for valid input"
+    $parsedDirectExtract = $resDirectExtract.Stdout | ConvertFrom-Json
+    Assert-Equal $parsedDirectExtract.Count 2 "extract-structured-output: documented in-process assignment returns both findings"
+    Assert-Equal $parsedDirectExtract[0].angle 'one' "extract-structured-output: documented in-process assignment preserves finding 1"
+    Assert-Equal $parsedDirectExtract[1].angle 'two' "extract-structured-output: documented in-process assignment preserves finding 2"
+
+    $resNativeExtract = Invoke-Helper -ScriptName 'extract-structured-output.ps1' -ArgumentList @('--array', $worker1, $worker2)
+    Assert-Equal $resNativeExtract.ExitCode 0 "extract-structured-output: native pwsh -File invocation exits 0"
+    Assert-Equal $resNativeExtract.Stderr.Trim() '' "extract-structured-output: native pwsh -File invocation keeps diagnostics off stderr for valid input"
+    $parsedNativeExtract = $resNativeExtract.Stdout | ConvertFrom-Json
+    Assert-Equal ($parsedNativeExtract | ConvertTo-Json -Compress) ($parsedDirectExtract | ConvertTo-Json -Compress) "extract-structured-output: direct and native invocations return the same payload"
+
     # 2.1 Scalar extraction
     $resScalar = Invoke-Helper -ScriptName 'extract-structured-output.ps1' -ArgumentList @($worker1)
     Assert-Equal $resScalar.ExitCode 0 "extract-structured-output: scalar mode exits 0"
@@ -479,6 +502,32 @@ exit 0
     #    - rooted/absolute path rejection
     #    - symlink / junction rejection
     # =======================================================================
+
+    # 3.0 Documented PowerShell pipeline assignment and native invocation
+    $makeWorkspaceScript = Join-Path $ScriptsDir 'make-research-workspace.ps1'
+    $directWorkspaceCommand = '$workspace = (& $env:MAKE_WORKSPACE_SCRIPT --source-repo (Get-Location).Path --path scripts).Trim(); if ([string]::IsNullOrWhiteSpace($workspace) -or -not (Test-Path -LiteralPath $workspace -PathType Container)) { exit 1 }; $workspace'
+    $resDirectWorkspace = Invoke-ToolProcess -FilePath $PwshBin -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-Command', $directWorkspaceCommand
+    ) -Environment @{
+        'MAKE_WORKSPACE_SCRIPT' = $makeWorkspaceScript
+    } -WorkingDirectory $RootDir
+    Assert-Equal $resDirectWorkspace.ExitCode 0 "make-research-workspace: documented in-process assignment exits 0"
+    Assert-Equal $resDirectWorkspace.Stderr.Trim() '' "make-research-workspace: documented in-process assignment keeps diagnostics off stderr for valid input"
+    $directWorkspacePath = $resDirectWorkspace.Stdout.Trim()
+    Assert-True (Test-Path -LiteralPath $directWorkspacePath -PathType Container) "make-research-workspace: documented in-process assignment returns an existing workspace path"
+
+    $resNativeWorkspace = Invoke-Helper -ScriptName 'make-research-workspace.ps1' -ArgumentList @(
+        '--source-repo', $RootDir,
+        '--path', 'scripts'
+    )
+    Assert-Equal $resNativeWorkspace.ExitCode 0 "make-research-workspace: native pwsh -File invocation exits 0"
+    Assert-Equal $resNativeWorkspace.Stderr.Trim() '' "make-research-workspace: native pwsh -File invocation keeps diagnostics off stderr for valid input"
+    $nativeWorkspacePath = $resNativeWorkspace.Stdout.Trim()
+    Assert-True (Test-Path -LiteralPath $nativeWorkspacePath -PathType Container) "make-research-workspace: native pwsh -File invocation returns an existing workspace path"
+    Assert-True (Test-Path -LiteralPath (Join-Path $directWorkspacePath '.offload-research-workspace') -PathType Leaf) "make-research-workspace: direct invocation returns a marked workspace"
+    Assert-True (Test-Path -LiteralPath (Join-Path $nativeWorkspacePath '.offload-research-workspace') -PathType Leaf) "make-research-workspace: native invocation returns a marked workspace"
+    Assert-True (Test-Path -LiteralPath (Join-Path $directWorkspacePath 'repo/scripts') -PathType Container) "make-research-workspace: direct invocation copies the declared scope"
+    Assert-True (Test-Path -LiteralPath (Join-Path $nativeWorkspacePath 'repo/scripts') -PathType Container) "make-research-workspace: native invocation copies the declared scope"
 
     # 3.1 Workspace marker creation
     $resWs = Invoke-Helper -ScriptName 'make-research-workspace.ps1' -ArgumentList @()
