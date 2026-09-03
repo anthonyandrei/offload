@@ -31,7 +31,8 @@ function Assert-True([bool]$condition, [string]$name, [string]$reason = "") {
     if ($condition) {
         Pass $name
     } else {
-        Fail $name (if ($reason) { $reason } else { "Condition was false" })
+        $failureReason = if ($reason) { $reason } else { "Condition was false" }
+        Fail $name $failureReason
     }
 }
 
@@ -39,7 +40,8 @@ function Assert-False([bool]$condition, [string]$name, [string]$reason = "") {
     if (-not $condition) {
         Pass $name
     } else {
-        Fail $name (if ($reason) { $reason } else { "Condition was true" })
+        $failureReason = if ($reason) { $reason } else { "Condition was true" }
+        Fail $name $failureReason
     }
 }
 
@@ -574,8 +576,81 @@ try {
     Assert-True ($resNonAsciiFrozen.ExitCode -ne 0) "frozen non-ASCII path reports violation"
     Assert-True ($resNonAsciiFrozen.Stdout.Contains('dossier/café.txt')) "frozen non-ASCII lists path dossier/café.txt"
 
+    # 16. Baseline-Relative Committed Changes
+    $repoBaseline = Join-Path $TmpRoot 'repo_baseline'
+    Init-GitRepo $repoBaseline
+    [System.IO.File]::WriteAllText((Join-Path $repoBaseline 'owned.txt'), "owned base`n", [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText((Join-Path $repoBaseline 'frozen.txt'), "frozen base`n", [System.Text.Encoding]::UTF8)
+    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('add', '.') | Out-Null
+    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('commit', '-m', 'baseline', '-q') | Out-Null
+    $baselineRevision = (Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('rev-parse', 'HEAD')).Trim()
+    [System.IO.File]::WriteAllText((Join-Path $repoBaseline 'unowned-committed.txt'), "unowned`n", [System.Text.Encoding]::UTF8)
+    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('add', '.') | Out-Null
+    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('commit', '-m', 'unowned committed edit', '-q') | Out-Null
+    [System.IO.File]::AppendAllText((Join-Path $repoBaseline 'frozen.txt'), "committed frozen edit`n", [System.Text.Encoding]::UTF8)
+    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('add', '.') | Out-Null
+    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('commit', '-m', 'frozen committed edit', '-q') | Out-Null
+    $resCommitted = Invoke-ScopeHelper -WorkingDirectory $repoBaseline -ArgumentList @('--baseline', $baselineRevision, '--owned', 'owned.txt', '--frozen', 'frozen.txt')
+    Assert-True ($resCommitted.ExitCode -ne 0) "baseline detects committed changes with clean status"
+    Assert-True ($resCommitted.Stdout.Contains('unowned-committed.txt')) "baseline reports committed unowned path"
+    Assert-True ($resCommitted.Stdout.Contains('frozen.txt')) "baseline reports committed frozen path"
+    $resInvalidBaseline = Invoke-ScopeHelper -WorkingDirectory $repoBaseline -ArgumentList @('--baseline', 'does-not-exist', '--owned', 'owned.txt')
+    Assert-True ($resInvalidBaseline.ExitCode -ne 0) "invalid baseline returns nonzero"
+
+    # Git status failures must be surfaced with the original exit code.
+    $fakeGitDir = Join-Path $TmpRoot 'fake-git-status'
+    [System.IO.Directory]::CreateDirectory($fakeGitDir) | Out-Null
+    $realGit = (Get-Command git.exe -ErrorAction Stop).Source
+    $fakeGitPath = Join-Path $fakeGitDir 'git-wrapper.ps1'
+    $fakeGitScript = @"
+param([Parameter(ValueFromRemainingArguments=`$true)][string[]]`$GitArguments)
+if (`$GitArguments -contains `$env:FAKE_GIT_FAILURE) {
+    [Console]::Error.WriteLine("simulated `$env:FAKE_GIT_FAILURE failure")
+    if (`$env:FAKE_GIT_FAILURE -eq 'status') { exit 73 }
+    exit 74
+}
+& `$env:REAL_GIT @GitArguments
+exit `$LASTEXITCODE
+"@
+    [System.IO.File]::WriteAllText($fakeGitPath, $fakeGitScript, [System.Text.Encoding]::UTF8)
+    $resStatusFailure = Invoke-ScopeHelper -WorkingDirectory $repoBaseline -Environment @{
+        OFFLOAD_GIT_WRAPPER = $fakeGitPath
+        REAL_GIT = $realGit
+        FAKE_GIT_FAILURE = 'status'
+    } -ArgumentList @('--owned', 'owned.txt')
+    Assert-Equal $resStatusFailure.ExitCode 73 "git status failure preserves exit code"
+    Assert-True ($resStatusFailure.Stderr.Contains('status')) "git status failure names the operation"
+    Pass "mocked git status failure is reported"
+    $resDiffFailure = Invoke-ScopeHelper -WorkingDirectory $repoBaseline -Environment @{
+        OFFLOAD_GIT_WRAPPER = $fakeGitPath
+        REAL_GIT = $realGit
+        FAKE_GIT_FAILURE = 'diff'
+    } -ArgumentList @('--baseline', $baselineRevision, '--owned', 'owned.txt')
+    Assert-Equal $resDiffFailure.ExitCode 74 "git diff failure preserves exit code"
+    Assert-True ($resDiffFailure.Stderr.Contains('diff')) "git diff failure names the operation"
+    Pass "mocked git diff failure is reported"
+
+    # Baseline renames and deletions must include every affected path.
+    $repoBaselinePaths = Join-Path $TmpRoot 'repo_baseline_paths'
+    Init-GitRepo $repoBaselinePaths
+    [System.IO.File]::WriteAllText((Join-Path $repoBaselinePaths 'rename-old.txt'), "rename me`n", [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText((Join-Path $repoBaselinePaths 'delete-me.txt'), "delete me`n", [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText((Join-Path $repoBaselinePaths 'unrelated.txt'), "unchanged`n", [System.Text.Encoding]::UTF8)
+    Invoke-Git -WorkingDirectory $repoBaselinePaths -ArgumentList @('add', '.') | Out-Null
+    Invoke-Git -WorkingDirectory $repoBaselinePaths -ArgumentList @('commit', '-m', 'baseline paths', '-q') | Out-Null
+    $baselinePathsRevision = (Invoke-Git -WorkingDirectory $repoBaselinePaths -ArgumentList @('rev-parse', 'HEAD')).Trim()
+    Invoke-Git -WorkingDirectory $repoBaselinePaths -ArgumentList @('mv', 'rename-old.txt', 'rename-new.txt') | Out-Null
+    Invoke-Git -WorkingDirectory $repoBaselinePaths -ArgumentList @('rm', 'delete-me.txt') | Out-Null
+    Invoke-Git -WorkingDirectory $repoBaselinePaths -ArgumentList @('commit', '-m', 'rename and delete', '-q') | Out-Null
+    $resBaselinePaths = Invoke-ScopeHelper -WorkingDirectory $repoBaselinePaths -ArgumentList @('--baseline', $baselinePathsRevision, '--owned', 'unrelated.txt', '--frozen', 'delete-me.txt')
+    Assert-True ($resBaselinePaths.ExitCode -ne 0) "baseline rename and deletion violations return nonzero"
+    Assert-True ($resBaselinePaths.Stdout.Contains('rename-old.txt')) "baseline reports rename old path"
+    Assert-True ($resBaselinePaths.Stdout.Contains('rename-new.txt')) "baseline reports rename new path"
+    Assert-True ($resBaselinePaths.Stdout.Contains('delete-me.txt')) "baseline reports deleted path"
+    Pass "baseline renames and deletions include all affected paths"
+
     # =======================================================================
-    # 16. Valid Scope Prints Nothing and Creates No Comparison Files
+    # 17. Valid Scope Prints Nothing and Creates No Comparison Files
     # =======================================================================
 
     $repoCleanliness = Join-Path $TmpRoot 'repo_cleanliness'
