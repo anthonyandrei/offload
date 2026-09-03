@@ -56,6 +56,26 @@ invoke_scope() {
   RUN_STDERR=$(cat "$err_file")
 }
 
+invoke_scope_with_git_failure() {
+  local repo_dir="$1"
+  local fake_git_dir="$2"
+  local failure_mode="$3"
+  shift 3
+  local out_file="$TMP_ROOT/out.tmp"
+  local err_file="$TMP_ROOT/err.tmp"
+  local real_git
+  real_git=$(command -v git)
+  rm -f "$out_file" "$err_file"
+
+  set +e
+  (cd "$repo_dir" && PATH="$fake_git_dir:$PATH" REAL_GIT="$real_git" FAKE_GIT_FAILURE="$failure_mode" "$HELPER" "$@") > "$out_file" 2> "$err_file"
+  RUN_EXIT=$?
+  set -e
+
+  RUN_STDOUT=$(cat "$out_file")
+  RUN_STDERR=$(cat "$err_file")
+}
+
 # ===========================================================================
 # 1. CLI Argument and Environment Validation
 # ===========================================================================
@@ -521,7 +541,84 @@ grep -Fq "dossier/café.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen 
 pass "frozen non-ASCII path reports violation"
 
 # ===========================================================================
-# 16. Valid Scope Prints Nothing and Creates No Comparison Files
+# 16. Baseline-Relative Committed Changes
+# ===========================================================================
+
+repo_baseline="$TMP_ROOT/repo_baseline"
+init_repo "$repo_baseline"
+printf 'owned base\n' > "$repo_baseline/owned.txt"
+printf 'frozen base\n' > "$repo_baseline/frozen.txt"
+git -C "$repo_baseline" add .
+git -C "$repo_baseline" commit -m "baseline" -q
+baseline_revision=$(git -C "$repo_baseline" rev-parse HEAD)
+printf 'unowned\n' > "$repo_baseline/unowned-committed.txt"
+git -C "$repo_baseline" add .
+git -C "$repo_baseline" commit -m "unowned committed edit" -q
+printf 'committed frozen edit\n' >> "$repo_baseline/frozen.txt"
+git -C "$repo_baseline" add .
+git -C "$repo_baseline" commit -m "frozen committed edit" -q
+invoke_scope "$repo_baseline" --baseline "$baseline_revision" --owned owned.txt --frozen frozen.txt
+[ "$RUN_EXIT" -ne 0 ] || fail "baseline must detect committed changes with clean status"
+grep -Fq "unowned-committed.txt" <<< "$RUN_STDOUT" || fail "baseline stdout must list committed unowned path"
+grep -Fq "frozen.txt" <<< "$RUN_STDOUT" || fail "baseline stdout must list committed frozen path"
+pass "baseline detects committed changes with clean status"
+invoke_scope "$repo_baseline" --baseline does-not-exist --owned owned.txt
+[ "$RUN_EXIT" -ne 0 ] || fail "invalid baseline must return nonzero"
+pass "invalid baseline returns nonzero"
+
+fake_git_dir="$TMP_ROOT/fake-git-status"
+mkdir -p "$fake_git_dir"
+cat > "$fake_git_dir/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${FAKE_GIT_FAILURE:-}" = "status" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "status" ]; then
+      printf '%s\n' "simulated status failure" >&2
+      exit 73
+    fi
+  done
+fi
+if [ "${FAKE_GIT_FAILURE:-}" = "diff" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "diff" ]; then
+      printf '%s\n' "simulated diff failure" >&2
+      exit 74
+    fi
+  done
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$fake_git_dir/git"
+invoke_scope_with_git_failure "$repo_baseline" "$fake_git_dir" status --owned owned.txt
+[ "$RUN_EXIT" -eq 73 ] || fail "git status failure must preserve exit code 73"
+grep -Fq "status" <<< "$RUN_STDERR" || fail "git status failure must name the operation"
+pass "mocked git status failure is reported"
+invoke_scope_with_git_failure "$repo_baseline" "$fake_git_dir" diff --baseline "$baseline_revision" --owned owned.txt
+[ "$RUN_EXIT" -eq 74 ] || fail "git diff failure must preserve exit code 74"
+grep -Fq "diff" <<< "$RUN_STDERR" || fail "git diff failure must name the operation"
+pass "mocked git diff failure is reported"
+
+# Baseline renames and deletions must include every affected path.
+repo_baseline_paths="$TMP_ROOT/repo_baseline_paths"
+init_repo "$repo_baseline_paths"
+printf 'rename me\n' > "$repo_baseline_paths/rename-old.txt"
+printf 'delete me\n' > "$repo_baseline_paths/delete-me.txt"
+printf 'unchanged\n' > "$repo_baseline_paths/unrelated.txt"
+git -C "$repo_baseline_paths" add .
+git -C "$repo_baseline_paths" commit -m "baseline paths" -q
+baseline_paths_revision=$(git -C "$repo_baseline_paths" rev-parse HEAD)
+git -C "$repo_baseline_paths" mv rename-old.txt rename-new.txt
+git -C "$repo_baseline_paths" rm delete-me.txt -q
+git -C "$repo_baseline_paths" commit -m "rename and delete" -q
+invoke_scope "$repo_baseline_paths" --baseline "$baseline_paths_revision" --owned unrelated.txt --frozen delete-me.txt
+[ "$RUN_EXIT" -ne 0 ] || fail "baseline must detect renames and deletions"
+grep -Fq "rename-old.txt" <<< "$RUN_STDOUT" || fail "baseline stdout must list the old rename path"
+grep -Fq "rename-new.txt" <<< "$RUN_STDOUT" || fail "baseline stdout must list the new rename path"
+grep -Fq "delete-me.txt" <<< "$RUN_STDOUT" || fail "baseline stdout must list the deleted path"
+pass "baseline reports every rename and deletion path"
+
+# ===========================================================================
+# 18. Valid Scope Prints Nothing and Creates No Comparison Files
 # ===========================================================================
 
 repo_cleanliness="$TMP_ROOT/repo_cleanliness"
