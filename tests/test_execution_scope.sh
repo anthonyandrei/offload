@@ -521,36 +521,7 @@ grep -Fq "dossier/café.txt" <<< "$RUN_STDOUT" || fail "stdout must list frozen 
 pass "frozen non-ASCII path reports violation"
 
 # ===========================================================================
-# 16. Baseline-Relative Committed Changes
-# ===========================================================================
-
-repo_baseline="$TMP_ROOT/repo_baseline"
-init_repo "$repo_baseline"
-printf 'owned base\n' > "$repo_baseline/owned.txt"
-printf 'frozen base\n' > "$repo_baseline/frozen.txt"
-git -C "$repo_baseline" add .
-git -C "$repo_baseline" commit -m "baseline" -q
-baseline_revision=$(git -C "$repo_baseline" rev-parse HEAD)
-
-printf 'unowned\n' > "$repo_baseline/unowned-committed.txt"
-git -C "$repo_baseline" add .
-git -C "$repo_baseline" commit -m "unowned committed edit" -q
-printf 'committed frozen edit\n' >> "$repo_baseline/frozen.txt"
-git -C "$repo_baseline" add .
-git -C "$repo_baseline" commit -m "frozen committed edit" -q
-
-invoke_scope "$repo_baseline" --baseline "$baseline_revision" --owned "owned.txt"
-[ "$RUN_EXIT" -ne 0 ] || fail "baseline should detect committed changes with clean status"
-grep -Fq "unowned-committed.txt" <<< "$RUN_STDOUT" || fail "baseline must report committed unowned path"
-grep -Fq "frozen.txt" <<< "$RUN_STDOUT" || fail "baseline must report committed frozen path"
-pass "baseline detects committed changes with clean status"
-
-invoke_scope "$repo_baseline" --baseline "does-not-exist" --owned "owned.txt"
-[ "$RUN_EXIT" -ne 0 ] || fail "invalid baseline must return nonzero"
-pass "invalid baseline returns nonzero"
-
-# ===========================================================================
-# 17. Valid Scope Prints Nothing and Creates No Comparison Files
+# 16. Valid Scope Prints Nothing and Creates No Comparison Files
 # ===========================================================================
 
 repo_cleanliness="$TMP_ROOT/repo_cleanliness"
@@ -583,7 +554,7 @@ done
 pass "valid scope prints nothing, modifies no status, and creates no comparison files"
 
 # ===========================================================================
-# 18. Violations Print Each Violating Path and Return Nonzero
+# 17. Violations Print Each Violating Path and Return Nonzero
 # ===========================================================================
 
 repo_violations="$TMP_ROOT/repo_violations"

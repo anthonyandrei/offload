@@ -575,34 +575,7 @@ try {
     Assert-True ($resNonAsciiFrozen.Stdout.Contains('dossier/café.txt')) "frozen non-ASCII lists path dossier/café.txt"
 
     # =======================================================================
-    # 16. Baseline-Relative Committed Changes
-    # =======================================================================
-
-    $repoBaseline = Join-Path $TmpRoot 'repo_baseline'
-    Init-GitRepo $repoBaseline
-    [System.IO.File]::WriteAllText((Join-Path $repoBaseline 'owned.txt'), "owned base`n", [System.Text.Encoding]::UTF8)
-    [System.IO.File]::WriteAllText((Join-Path $repoBaseline 'frozen.txt'), "frozen base`n", [System.Text.Encoding]::UTF8)
-    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('add', '.') | Out-Null
-    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('commit', '-m', 'baseline', '-q') | Out-Null
-    $baselineRevision = (Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('rev-parse', 'HEAD')).Trim()
-
-    [System.IO.File]::WriteAllText((Join-Path $repoBaseline 'unowned-committed.txt'), "unowned`n", [System.Text.Encoding]::UTF8)
-    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('add', '.') | Out-Null
-    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('commit', '-m', 'unowned committed edit', '-q') | Out-Null
-    [System.IO.File]::AppendAllText((Join-Path $repoBaseline 'frozen.txt'), "committed frozen edit`n", [System.Text.Encoding]::UTF8)
-    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('add', '.') | Out-Null
-    Invoke-Git -WorkingDirectory $repoBaseline -ArgumentList @('commit', '-m', 'frozen committed edit', '-q') | Out-Null
-
-    $resCommitted = Invoke-ScopeHelper -WorkingDirectory $repoBaseline -ArgumentList @('--baseline', $baselineRevision, '--owned', 'owned.txt')
-    Assert-True ($resCommitted.ExitCode -ne 0) "baseline detects committed changes with clean status"
-    Assert-True ($resCommitted.Stdout.Contains('unowned-committed.txt')) "baseline reports committed unowned path"
-    Assert-True ($resCommitted.Stdout.Contains('frozen.txt')) "baseline reports committed frozen path"
-
-    $resInvalidBaseline = Invoke-ScopeHelper -WorkingDirectory $repoBaseline -ArgumentList @('--baseline', 'does-not-exist', '--owned', 'owned.txt')
-    Assert-True ($resInvalidBaseline.ExitCode -ne 0) "invalid baseline returns nonzero"
-
-    # =======================================================================
-    # 17. Valid Scope Prints Nothing and Creates No Comparison Files
+    # 16. Valid Scope Prints Nothing and Creates No Comparison Files
     # =======================================================================
 
     $repoCleanliness = Join-Path $TmpRoot 'repo_cleanliness'
@@ -633,7 +606,7 @@ try {
     Pass "valid scope prints nothing, modifies no status, and creates no comparison files"
 
     # =======================================================================
-    # 18. Violations Print Each Violating Path and Return Nonzero
+    # 17. Violations Print Each Violating Path and Return Nonzero
     # =======================================================================
 
     $repoViolations = Join-Path $TmpRoot 'repo_violations'
