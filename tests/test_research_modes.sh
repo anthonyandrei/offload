@@ -33,7 +33,8 @@ for file in \
   scripts/collect-provenance.sh \
   scripts/cleanup-research-workspace.sh \
   scripts/run-agy-json.sh \
-  scripts/extract-structured-output.sh; do
+  scripts/extract-structured-output.sh \
+  scripts/check-citation-audit.sh; do
   require_file "$file"
 done
 pass 'router, modes, and helper files exist'
@@ -66,7 +67,8 @@ for script in \
   scripts/collect-provenance.sh \
   scripts/cleanup-research-workspace.sh \
   scripts/run-agy-json.sh \
-  scripts/extract-structured-output.sh; do
+  scripts/extract-structured-output.sh \
+  scripts/check-citation-audit.sh; do
   bash -n "$ROOT/$script" || fail "$script does not parse"
   [ -x "$ROOT/$script" ] || fail "$script is not executable"
 done
@@ -74,6 +76,8 @@ pass 'research helpers parse and are executable'
 
 require_text modes/web-research.md 'run-agy-json.sh'
 require_text modes/web-research.md 'extract-structured-output.sh'
+require_text modes/web-research.md 'check-citation-audit.sh'
+require_text modes/web-research.md 'check-citation-audit.ps1'
 require_text modes/web-research.md 'Read `structured_output` from each researcher JSON response'
 require_text modes/web-research.md 'Read `structured_output` from the synthesizer JSON response'
 require_text modes/web-research.md 'Read `structured_output` from the auditor JSON response'
@@ -291,6 +295,123 @@ if "$ROOT/scripts/collect-provenance.sh" --validate "$bad_prov" >/dev/null 2>&1;
   fail 'collect-provenance --validate accepted record missing required fields'
 fi
 pass 'collect-provenance rejects invalid enum values, negative duration, and incomplete records'
+
+# Citation audit verification tests (Issue #10)
+audit_script="$ROOT/scripts/check-citation-audit.sh"
+
+# Help and missing arguments
+"$audit_script" --help >/dev/null 2>&1 || fail 'check-citation-audit.sh --help failed'
+if "$audit_script" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted empty arguments'
+fi
+if "$audit_script" --ledger '{not-json' --auditor '{"citation_audits":[]}' >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted malformed ledger JSON'
+fi
+if "$audit_script" --ledger '[]' --auditor '{not-json' >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted malformed auditor JSON'
+fi
+
+std_ledger='[{"claim_id":"c1","claim":"Claim 1","citations":["https://example.com/1","https://example.com/2"],"decision_relevance":"critical","status":"supported"},{"claim_id":"c2","claim":"Claim 2","citations":["https://example.com/3"],"decision_relevance":"supporting","status":"supported"}]'
+
+# Criterion 1: Empty and partial audits rejected even with pass
+if "$audit_script" --ledger "$std_ledger" --auditor '{"citation_audits":[],"final_status":"pass"}' >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted empty citation_audits with pass'
+fi
+if "$audit_script" --ledger "$std_ledger" --auditor '{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}' >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted partial citation_audits missing c2'
+fi
+
+# Criterion 2: Duplicate and unknown pairs rejected; two citations for one claim require separate coverage
+dup_audits='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$dup_audits" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted duplicate audit entry'
+fi
+
+unk_audits='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/unknown","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$unk_audits" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted unknown audit entry'
+fi
+
+single_claim_two_cits='[{"claim_id":"c1","claim":"Claim 1","citations":["https://example.com/a","https://example.com/b"],"decision_relevance":"critical","status":"supported"}]'
+single_audit_only='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/a","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+if "$audit_script" --ledger "$single_claim_two_cits" --auditor "$single_audit_only" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted single audit when two citations were required'
+fi
+
+# Criterion 3: Supported verdicts only before acceptance; failed or unresolved cannot coexist with pass
+resolves_false='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":false,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$resolves_false" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted resolves=false with pass'
+fi
+
+refutes_audit='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"refutes","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$refutes_audit" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted refutes verdict with pass'
+fi
+
+partially_audit='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"partially_supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$partially_audit" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted partially_supports verdict with pass'
+fi
+
+unsupported_audit='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"unsupported","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$unsupported_audit" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted unsupported verdict with pass'
+fi
+
+remove_with_pass='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass","claims_to_remove":["c1"]}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$remove_with_pass" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted claims_to_remove with pass'
+fi
+
+narrow_with_pass='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass","claims_to_narrow":["c1"]}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$narrow_with_pass" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted claims_to_narrow with pass'
+fi
+
+unresolved_with_pass='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass","claims_unresolved":["c1"]}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$unresolved_with_pass" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted claims_unresolved with pass'
+fi
+
+# Criterion 4: Ledger with no auditable pairs
+if "$audit_script" --ledger '[]' --auditor '{"citation_audits":[],"final_status":"pass"}' >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted empty ledger by default without citations'
+fi
+"$audit_script" --ledger '[]' --auditor '{"citation_audits":[],"final_status":"pass"}' --allow-empty >/dev/null 2>&1 || fail 'check-citation-audit.sh failed on empty ledger with --allow-empty'
+if "$audit_script" --ledger '[]' --auditor "$single_audit_only" --allow-empty >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted unexpected audits on empty ledger with --allow-empty'
+fi
+
+# Criterion 5: Complete valid coverage and workflow branching
+valid_pass='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}'
+"$audit_script" --ledger "$std_ledger" --auditor "$valid_pass" >/dev/null 2>&1 || fail 'check-citation-audit.sh failed on complete valid pass'
+
+valid_revise='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"refutes","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"revise","claims_to_remove":["c1"]}'
+set +e
+"$audit_script" --ledger "$std_ledger" --auditor "$valid_revise" >/dev/null 2>&1
+revise_code=$?
+set -e
+[ "$revise_code" -eq 1 ] || fail "check-citation-audit.sh expected exit code 1 for valid revise, got $revise_code"
+
+contradictory_revise='{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c1","citation_url":"https://example.com/2","resolves":true,"support_verdict":"supports","source_classification":"primary"},{"claim_id":"c2","citation_url":"https://example.com/3","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"revise"}'
+if "$audit_script" --ledger "$std_ledger" --auditor "$contradictory_revise" >/dev/null 2>&1; then
+  fail 'check-citation-audit.sh accepted contradictory revise without claims to remove/narrow'
+fi
+
+# File wrapper input test
+wrapper_ledger_file="$TMP_ROOT/synth-wrapper.json"
+wrapper_auditor_file="$TMP_ROOT/audit-wrapper.json"
+printf '{"structured_output":{"claim_ledger":[{"claim_id":"c1","citations":["https://example.com/1"]}]}}\n' > "$wrapper_ledger_file"
+printf '{"structured_output":{"citation_audits":[{"claim_id":"c1","citation_url":"https://example.com/1","resolves":true,"support_verdict":"supports","source_classification":"primary"}],"final_status":"pass"}}\n' > "$wrapper_auditor_file"
+"$audit_script" --ledger "$wrapper_ledger_file" --auditor "$wrapper_auditor_file" >/dev/null 2>&1 || fail 'check-citation-audit.sh failed with file wrappers'
+
+# JSON output flag test
+json_result="$("$audit_script" --ledger "$wrapper_ledger_file" --auditor "$wrapper_auditor_file" --json)"
+[ "$(echo "$json_result" | jq -r '.valid')" = 'true' ] || fail 'check-citation-audit.sh --json valid is not true'
+[ "$(echo "$json_result" | jq -r '.status')" = 'pass' ] || fail 'check-citation-audit.sh --json status is not pass'
+[ "$(echo "$json_result" | jq -r '.exit_code')" = '0' ] || fail 'check-citation-audit.sh --json exit_code is not 0'
+pass 'check-citation-audit validates coverage, duplicate/unknown pairs, verdict consistency, and exit contracts'
 
 # Manual installation instructions in README.md must copy the entire skill directory
 if [[ -f "$ROOT/README.md" ]]; then

@@ -127,5 +127,13 @@ Assert-Equal $policy.roles.researcher.default_model "gemini-3.8-flash-high" "pol
 Assert-Equal $policy.roles.synthesizer.default_model "gemini-3.8-flash-high" "policy: synthesizer default model"
 Assert-Equal $policy.roles.auditor.default_model "gemini-3.8-flash-high" "policy: auditor default model"
 
+# 8. Web research documents check-citation-audit helpers and exact coverage rules
+$webContent = Get-Content -LiteralPath $WebMd -Raw
+Assert-True ($webContent -match 'check-citation-audit\.sh') "web-research.md references check-citation-audit.sh"
+Assert-True ($webContent -match 'check-citation-audit\.ps1') "web-research.md references check-citation-audit.ps1"
+Assert-True ($webContent -match 'Audit verification and acceptance rules') "web-research.md documents audit verification rules"
+Assert-True ($webContent -match 'Required claim/citation pair coverage') "web-research.md documents pair coverage requirement"
+Assert-True ($webContent -match 'Ledger with no auditable pairs') "web-research.md documents zero-pair branch"
+
 [Console]::Out.WriteLine("all workflow static checks passed ($script:TotalTests tests)")
 exit 0
