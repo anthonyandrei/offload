@@ -296,6 +296,122 @@ if "$ROOT/scripts/collect-provenance.sh" --validate "$bad_prov" >/dev/null 2>&1;
 fi
 pass 'collect-provenance rejects invalid enum values, negative duration, and incomplete records'
 
+# Routing provenance fixture verification (Issue #13)
+require_file 'tests/fixtures/routing-worker.json'
+
+python3 -c '
+import json, re, sys
+
+with open("modes/web-research.md", "r", encoding="utf-8") as f:
+    content = f.read()
+
+blocks = re.findall(r"```json\r?\n([\s\S]*?)\r?\n\s*```", content)
+doc_block = None
+for b in blocks:
+    if "researcher-web-1" in b:
+        doc_block = b.strip()
+        break
+
+if not doc_block:
+    sys.stderr.write("documented researcher-web-1 json block missing in modes/web-research.md\n")
+    sys.exit(1)
+
+doc_data = json.loads(doc_block)
+with open("tests/fixtures/routing-worker.json", "r", encoding="utf-8") as f:
+    fix_data = json.load(f)
+
+if doc_data != fix_data:
+    sys.stderr.write("documented json does not match tests/fixtures/routing-worker.json\n")
+    sys.exit(1)
+' || fail 'documented JSON example in modes/web-research.md does not match tests/fixtures/routing-worker.json'
+pass 'documented worker example in modes/web-research.md matches tests/fixtures/routing-worker.json'
+
+prov_fixture_out="$TMP_ROOT/prov-fixture-built.json"
+"$ROOT/scripts/collect-provenance.sh" \
+  --run-id 'run-fixture-test' \
+  --request-summary 'Routing fixture verification' \
+  --selected-mode 'web-research' \
+  --profile 'standard' \
+  --start-time '2026-01-01T00:00:00Z' \
+  --end-time '2026-01-01T00:05:00Z' \
+  --duration-seconds 300 \
+  --scratch-path '/tmp/scratch-fixture' \
+  --final-status 'success' \
+  --workers "[$(cat "$ROOT/tests/fixtures/routing-worker.json")]" \
+  --output "$prov_fixture_out"
+
+[ -f "$prov_fixture_out" ] || fail 'collect-provenance did not create output for fixture'
+"$ROOT/scripts/collect-provenance.sh" --validate "$prov_fixture_out" || fail 'collect-provenance --validate failed on fixture record'
+
+[ "$(jq -r '.workers[0].id' "$prov_fixture_out")" = 'researcher-web-1' ] || fail 'fixture worker id corrupted'
+[ "$(jq '.workers[0].routing.schema_version' "$prov_fixture_out")" -eq 1 ] || fail 'fixture worker schema_version corrupted'
+[ "$(jq '.workers[0].routing.attempts | length' "$prov_fixture_out")" -eq 2 ] || fail 'fixture worker attempts count is not 2'
+[ "$(jq -r '.workers[0].routing.attempts[0].worker_id' "$prov_fixture_out")" = 'researcher-web-1' ] || fail 'attempt 1 worker_id mismatch'
+[ "$(jq -r '.workers[0].routing.attempts[1].worker_id' "$prov_fixture_out")" = 'researcher-web-1' ] || fail 'attempt 2 worker_id mismatch'
+[ "$(jq '.workers[0].routing.attempts[0].attempt' "$prov_fixture_out")" -eq 1 ] || fail 'attempt 1 number mismatch'
+[ "$(jq '.workers[0].routing.attempts[1].attempt' "$prov_fixture_out")" -eq 2 ] || fail 'attempt 2 number mismatch'
+[ "$(jq -r '.workers[0].accepted_attempt' "$prov_fixture_out")" -eq 2 ] || fail 'accepted_attempt does not select attempt 2'
+[ "$(jq -r '.workers[0].output' "$prov_fixture_out")" = 'workspace/researcher-web-1.attempt2.json' ] || fail 'worker output does not select attempt 2 artifact'
+[ "$(jq -r '.workers[0].routing.attempts[0].evidence_paths[0]' "$prov_fixture_out")" = 'workspace/researcher-web-1.attempt1.json' ] || fail 'attempt 1 evidence path is not attempt-specific'
+[ "$(jq -r '.workers[0].routing.attempts[1].evidence_paths[0]' "$prov_fixture_out")" = 'workspace/researcher-web-1.attempt2.json' ] || fail 'attempt 2 evidence path is not attempt-specific'
+[ "$(jq -r '.workers[0].routing.attempts[0].evidence_paths[1]' "$prov_fixture_out")" = 'workspace/researcher-web-1.attempt1.err' ] || fail 'attempt 1 error path is not attempt-specific'
+[ "$(jq -r '.workers[0].routing.attempts[1].evidence_paths[1]' "$prov_fixture_out")" = 'workspace/researcher-web-1.attempt2.err' ] || fail 'attempt 2 error path is not attempt-specific'
+[ "$(jq -r '.workers[0].routing.attempts[0].evidence_paths[0]' "$prov_fixture_out")" != "$(jq -r '.workers[0].routing.attempts[1].evidence_paths[0]' "$prov_fixture_out")" ] || fail 'retry reused the attempt 1 evidence path'
+
+for req_att_field in worker_id role mode attempt policy_revision route model effort reason started_at ended_at duration_seconds exit_code state failure_class verification_status evidence_paths usage; do
+  jq -e ".workers[0].routing.attempts[0] | has(\"$req_att_field\")" "$prov_fixture_out" >/dev/null || fail "attempt 1 missing field: $req_att_field"
+  jq -e ".workers[0].routing.attempts[1] | has(\"$req_att_field\")" "$prov_fixture_out" >/dev/null || fail "attempt 2 missing field: $req_att_field"
+done
+pass 'collect-provenance validates documented fixture and preserves all attempt fields under stable identity'
+
+# Two fake dispatches using the documented Bash naming convention must not overwrite attempt 1.
+retry_fake_bin="$TMP_ROOT/retry-fake-bin"
+mkdir -p "$retry_fake_bin"
+cat > "$retry_fake_bin/agy" <<'FAKE_RETRY_AGY'
+#!/usr/bin/env bash
+set -euo pipefail
+tag="${FAKE_AGY_TAG:?FAKE_AGY_TAG is required}"
+printf 'fake stderr %s\n' "$tag" >&2
+printf '{"status":"success","response":"%s","structured_output":{"attempt":"%s"}}\n' "$tag" "$tag"
+FAKE_RETRY_AGY
+chmod +x "$retry_fake_bin/agy"
+
+retry_dir="$TMP_ROOT/retry-artifacts"
+retry_worker_id='researcher-web-1'
+retry_attempt1_output="$retry_dir/$retry_worker_id.attempt1.json"
+retry_attempt1_error="$retry_dir/$retry_worker_id.attempt1.err"
+retry_attempt2_output="$retry_dir/$retry_worker_id.attempt2.json"
+retry_attempt2_error="$retry_dir/$retry_worker_id.attempt2.err"
+FAKE_AGY_TAG=attempt1 PATH="$retry_fake_bin:$PATH" \
+  "$ROOT/scripts/run-agy-json.sh" --role researcher \
+  --output "$retry_attempt1_output" --error "$retry_attempt1_error" -- -p 'attempt 1'
+retry_attempt1_output_hash=$(sha256sum "$retry_attempt1_output" | awk '{print $1}')
+retry_attempt1_error_hash=$(sha256sum "$retry_attempt1_error" | awk '{print $1}')
+FAKE_AGY_TAG=attempt2 PATH="$retry_fake_bin:$PATH" \
+  "$ROOT/scripts/run-agy-json.sh" --role researcher \
+  --output "$retry_attempt2_output" --error "$retry_attempt2_error" -- -p 'attempt 2'
+[ "$(sha256sum "$retry_attempt1_output" | awk '{print $1}')" = "$retry_attempt1_output_hash" ] || fail 'second Bash dispatch changed attempt 1 output'
+[ "$(sha256sum "$retry_attempt1_error" | awk '{print $1}')" = "$retry_attempt1_error_hash" ] || fail 'second Bash dispatch changed attempt 1 error'
+[ "$(jq -r '.structured_output.attempt' "$retry_attempt1_output")" = attempt1 ] || fail 'Bash attempt 1 artifact does not contain attempt 1 payload'
+[ "$(jq -r '.structured_output.attempt' "$retry_attempt2_output")" = attempt2 ] || fail 'Bash attempt 2 artifact does not contain attempt 2 payload'
+retry_record="$retry_dir/routing.json"
+printf '{"run_id":"retry-run","request_summary":"retry artifact test","selected_mode":"web-research","profile":"standard","deep_trigger":null,"start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-01T00:05:00Z","duration_seconds":300,"scratch_path":"%s","workers":[{"id":"%s","role":"researcher","status":"completed","output":"%s","accepted_attempt":2,"routing":{"schema_version":1,"attempts":[{"worker_id":"%s","role":"researcher","mode":"web-research","attempt":1,"policy_revision":"2026-09-03.1","route":"default","model":"gemini-3.8-flash-high","effort":"high","reason":"Initial default dispatch","started_at":"2026-01-01T00:00:00Z","ended_at":"2026-01-01T00:01:00Z","duration_seconds":60,"exit_code":0,"state":"completed","failure_class":"none","verification_status":"passed","evidence_paths":["%s","%s"],"usage":null},{"worker_id":"%s","role":"researcher","mode":"web-research","attempt":2,"policy_revision":"2026-09-03.1","route":"default","model":"gemini-3.8-flash-high","effort":"high","reason":"Retry after verification failure","started_at":"2026-01-01T00:02:00Z","ended_at":"2026-01-01T00:03:00Z","duration_seconds":60,"exit_code":0,"state":"completed","failure_class":"none","verification_status":"passed","evidence_paths":["%s","%s"],"usage":null}]}}],"repository_snapshot_paths":[],"final_citations":[],"audit_verdicts":[],"final_status":"success","incomplete_stage_reasons":[]}\n' \
+  '/tmp/retry-artifacts' "$retry_worker_id" "$retry_attempt2_output" "$retry_worker_id" "$retry_attempt1_output" "$retry_attempt1_error" "$retry_worker_id" "$retry_attempt2_output" "$retry_attempt2_error" > "$retry_record"
+"$ROOT/scripts/collect-provenance.sh" --validate "$retry_record" || fail 'Bash retry routing record failed validation'
+pass 'Bash attempt-specific artifacts preserve attempt 1 and validate explicit accepted attempt'
+
+bare_worker='{"id":"researcher-web-1","role":"researcher","status":"completed","output":"workspace/researcher-web-1.json","routing":{"worker_id":"researcher-web-1","role":"researcher","mode":"web-research","attempt":1,"policy_revision":"2026-09-03.1","route":"default","model":"gemini-3.8-flash-high","effort":"high","reason":"Initial default dispatch","started_at":"2026-09-03T00:00:00Z","ended_at":"2026-09-03T00:01:30Z","duration_seconds":90.0,"exit_code":0,"state":"completed","failure_class":"none","verification_status":"passed","evidence_paths":[],"usage":null}}'
+bare_prov="$TMP_ROOT/bare-prov.json"
+printf '{"run_id":"r1","request_summary":"s","selected_mode":"web-research","profile":"standard","deep_trigger":null,"start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-01T00:05:00Z","duration_seconds":300,"scratch_path":"/tmp/scratch","workers":[%s],"repository_snapshot_paths":[],"final_citations":[],"audit_verdicts":[],"final_status":"success","incomplete_stage_reasons":[]}\n' "$bare_worker" > "$bare_prov"
+
+if "$ROOT/scripts/collect-provenance.sh" --validate "$bare_prov" >/dev/null 2>&1; then
+  fail 'collect-provenance --validate accepted bare-attempt shape'
+fi
+if "$ROOT/scripts/collect-provenance.sh" --run-id r1 --request-summary s --selected-mode web-research --profile standard --start-time 2026-01-01T00:00:00Z --end-time 2026-01-01T00:05:00Z --duration-seconds 300 --scratch-path /tmp/scratch --final-status success --workers "[$bare_worker]" >/dev/null 2>&1; then
+  fail 'collect-provenance build mode accepted bare-attempt shape'
+fi
+pass 'collect-provenance rejects previously documented bare-attempt shape in validation and build mode'
+
 # Citation audit verification tests (Issue #10)
 audit_script="$ROOT/scripts/check-citation-audit.sh"
 

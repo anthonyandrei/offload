@@ -52,8 +52,8 @@ RESEARCH_SCHEMA='{"type":"object","properties":{"lane_id":{"type":"string"},"lan
 
 "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
   --role researcher \
-  --output "$WORKSPACE/<slug>.research.json" \
-  --error "$WORKSPACE/<slug>.research.err" \
+  --output "$WORKSPACE/<slug>.attempt1.research.json" \
+  --error "$WORKSPACE/<slug>.attempt1.research.err" \
   -- \
   -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." \
   --output-format json \
@@ -69,8 +69,8 @@ $ResearchSchema = '{"type":"object","properties":{"lane_id":{"type":"string"},"l
 
 & "$OffloadRoot/scripts/run-agy-json.ps1" `
   --role researcher `
-  --output "$Workspace/<slug>.research.json" `
-  --error "$Workspace/<slug>.research.err" `
+  --output "$Workspace/<slug>.attempt1.research.json" `
+  --error "$Workspace/<slug>.attempt1.research.err" `
   '--' `
   -p "Lane ID: <slug>. Lane kind: <research or audit>. Question: <bounded question>. Allowed scope: <scope>. Evidence expectations: <expectations>. Non-mutation rule: investigate only, do not create or edit files, do not dispatch nested workers." `
   --output-format json `
@@ -81,6 +81,8 @@ $ResearchSchema = '{"type":"object","properties":{"lane_id":{"type":"string"},"l
 ```
 
 Read `structured_output` from the JSON response to extract validated findings.
+
+If a lane needs its one permitted retry, keep the same `lane_id` and use new paths. Set `ATTEMPT=2` in Bash or `$Attempt = 2` in PowerShell, then dispatch to `<slug>.attempt2.research.json` and `<slug>.attempt2.research.err`. Record both paths in the corresponding attempt's `evidence_paths`, and set an explicit `accepted_attempt` after verification. Any report or later consumer must read only the selected attempt, never a wildcard that could include both attempts.
 
 ## Verification protocol
 

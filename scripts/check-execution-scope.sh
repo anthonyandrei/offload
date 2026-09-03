@@ -83,7 +83,7 @@ while [ $# -gt 0 ]; do
       shift 1
       ;;
     -h|--help)
-      printf 'Usage: %s --owned <path> [--owned <path> ...] [--frozen <path> ...] [--baseline <revision>]\n' "$0" >&2
+      printf 'Usage: %s --owned <path> [--owned <path> ...] [--frozen <path> ...] --baseline <revision>\n' "$0" >&2
       exit 0
       ;;
     *)
@@ -95,6 +95,11 @@ done
 
 if [ "${#raw_owned[@]}" -eq 0 ]; then
   printf 'Error: at least one --owned path is required\n' >&2
+  exit 1
+fi
+
+if [ "$baseline_supplied" -eq 0 ] || [ -z "$baseline" ]; then
+  printf 'Error: --baseline is required\n' >&2
   exit 1
 fi
 

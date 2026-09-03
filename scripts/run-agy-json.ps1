@@ -369,58 +369,131 @@ if (-not $resolvedAgy) {
     Fail "agy was not found (checked AGY_BIN, Get-Command agy, %USERPROFILE%\.local\bin\agy.exe)" 1
 }
 
-# Ensure parent directories exist
+# Resolve paths and validate output/error destinations
 $resolvedOutputPath = [System.IO.Path]::GetFullPath($outputPath)
 $resolvedErrorPath = [System.IO.Path]::GetFullPath($errorPath)
 
-$outDir = [System.IO.Path]::GetDirectoryName($resolvedOutputPath)
-if (-not [string]::IsNullOrEmpty($outDir) -and -not [System.IO.Directory]::Exists($outDir)) {
-    [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
+$pathComparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+
+if ([string]::Equals($resolvedOutputPath, $resolvedErrorPath, $pathComparison)) {
+    Fail "output and error paths must not be identical: $resolvedOutputPath"
 }
 
-$errDir = [System.IO.Path]::GetDirectoryName($resolvedErrorPath)
-if (-not [string]::IsNullOrEmpty($errDir) -and -not [System.IO.Directory]::Exists($errDir)) {
-    [System.IO.Directory]::CreateDirectory($errDir) | Out-Null
+if ([System.IO.Directory]::Exists($resolvedOutputPath)) {
+    Fail "output destination is an existing directory: $resolvedOutputPath"
 }
 
-$psi = [System.Diagnostics.ProcessStartInfo]::new()
-if ($resolvedAgy.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
-    $pwshBin = (Get-Process -Id $PID).Path
-    $psi.FileName = $pwshBin
-    $psi.ArgumentList.Add('-NoProfile')
-    $psi.ArgumentList.Add('-File')
-    $psi.ArgumentList.Add($resolvedAgy)
-} else {
-    $psi.FileName = $resolvedAgy
+if ([System.IO.Directory]::Exists($resolvedErrorPath)) {
+    Fail "error destination is an existing directory: $resolvedErrorPath"
 }
 
-$psi.UseShellExecute = $false
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$psi.ArgumentList.Add('--model')
-$psi.ArgumentList.Add($resolvedModel)
-foreach ($arg in $forwardedArgs) {
-    $psi.ArgumentList.Add($arg)
-}
-
-$proc = $null
 try {
-    $proc = [System.Diagnostics.Process]::Start($psi)
+    $outDir = [System.IO.Path]::GetDirectoryName($resolvedOutputPath)
+    if (-not [string]::IsNullOrEmpty($outDir) -and -not [System.IO.Directory]::Exists($outDir)) {
+        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
+    }
+
+    $errDir = [System.IO.Path]::GetDirectoryName($resolvedErrorPath)
+    if (-not [string]::IsNullOrEmpty($errDir) -and -not [System.IO.Directory]::Exists($errDir)) {
+        [System.IO.Directory]::CreateDirectory($errDir) | Out-Null
+    }
 } catch {
-    Fail "failed to start agy: $($_.Exception.Message)" 1
+    Fail "failed to create parent directory for output or error: $($_.Exception.Message)" 1
 }
 
-$outFs = [System.IO.File]::Create($resolvedOutputPath)
-$errFs = [System.IO.File]::Create($resolvedErrorPath)
+$outFs = $null
+$errFs = $null
+$proc = $null
+$launcherSuccess = $false
+$workerExitCode = 1
 
 try {
-    $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
-    $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
-    $proc.WaitForExit()
-    [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
+    try {
+        $outFs = [System.IO.File]::Create($resolvedOutputPath)
+    } catch {
+        Fail "failed to open output destination '$resolvedOutputPath': $($_.Exception.Message)" 1
+    }
+
+    try {
+        $errFs = [System.IO.File]::Create($resolvedErrorPath)
+    } catch {
+        Fail "failed to open error destination '$resolvedErrorPath': $($_.Exception.Message)" 1
+    }
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    if ($resolvedAgy.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $pwshBin = (Get-Process -Id $PID).Path
+        $psi.FileName = $pwshBin
+        $psi.ArgumentList.Add('-NoProfile')
+        $psi.ArgumentList.Add('-File')
+        $psi.ArgumentList.Add($resolvedAgy)
+    } else {
+        $psi.FileName = $resolvedAgy
+    }
+
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.ArgumentList.Add('--model')
+    $psi.ArgumentList.Add($resolvedModel)
+    foreach ($arg in $forwardedArgs) {
+        $psi.ArgumentList.Add($arg)
+    }
+
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+    } catch {
+        Fail "failed to start agy: $($_.Exception.Message)" 1
+    }
+
+    try {
+        if ($env:FAKE_LAUNCHER_FAIL_POST_START -or $env:OFFLOAD_TEST_FAIL_POST_START) {
+            if ($env:FAKE_AGY_STARTED_MARKER) {
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                while (-not (Test-Path -LiteralPath $env:FAKE_AGY_STARTED_MARKER) -and $sw.ElapsedMilliseconds -lt 5000) {
+                    [System.Threading.Thread]::Sleep(20)
+                }
+            }
+            throw "simulated post-start failure"
+        }
+
+        $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
+        $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
+        $proc.WaitForExit()
+        [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
+        $workerExitCode = $proc.ExitCode
+        $launcherSuccess = $true
+    } catch {
+        Fail "launcher failed after starting worker: $($_.Exception.Message)" 1
+    }
 } finally {
-    $outFs.Dispose()
-    $errFs.Dispose()
+    if ($null -ne $proc -and -not $launcherSuccess) {
+        try {
+            if (-not $proc.HasExited) {
+                $proc.Kill($true)
+                $proc.WaitForExit()
+            }
+        } catch [System.InvalidOperationException] {
+            # Process already exited
+        } catch {
+            # Best effort kill
+        }
+    }
+    if ($null -ne $outFs) {
+        try {
+            $outFs.Dispose()
+        } catch { }
+    }
+    if ($null -ne $errFs) {
+        try {
+            $errFs.Dispose()
+        } catch { }
+    }
+    if ($null -ne $proc) {
+        try {
+            $proc.Dispose()
+        } catch { }
+    }
 }
 
-exit $proc.ExitCode
+exit $workerExitCode

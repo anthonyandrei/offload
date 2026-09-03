@@ -95,6 +95,13 @@ In PowerShell command expressions, always quote the delimiter (`'--'`).
 - **Attempt 2** is its only permitted retry. Maximum two attempts total per assignment.
 - Changing process IDs, models, conversations, or prompt instructions does not reset the retry count.
 
+### Attempt artifact paths
+
+- Give every worker process its own output and error paths. Include the stable `worker_id` and attempt number in both paths, such as `<worker_id>.attempt1.json` and `<worker_id>.attempt1.err`.
+- Build the paths before each launcher call. Attempt 2 must use new paths, never the attempt 1 paths, so the launcher cannot truncate earlier evidence.
+- Add every process artifact path to that attempt's `evidence_paths` entry in `routing-outcomes.json`.
+- After verification, record one explicit `accepted_attempt` for each logical worker beside that worker's `routing` container, and point its selected output field at that attempt's artifact. Downstream stages read only the accepted attempt paths. They must not use a wildcard or a filename that can refer to the latest retry by accident.
+
 ### Failure classification and recovery rules
 
 1. **Verified success**: Output passes mechanical gates and verification checks. Accept result; no retry.
@@ -140,7 +147,7 @@ The orchestrator maintains `routing-outcomes.json` in each run's scratch workspa
   - `evidence_paths`: Array of output, error, gate, review, or audit artifact paths.
   - `usage`: Source-attributed reported usage object with explicit units, or null when unavailable.
 
-Pending assignments that never dispatched are listed in the final handoff report, not as attempt records. In web research runs, the attempt record may optionally be attached as a `routing` object in each worker entry within `provenance.json`.
+Pending assignments that never dispatched are listed in the final handoff report, not as attempt records. In web research runs, routing history for a worker may optionally be attached as a `routing` container (`{schema_version: 1, attempts: [...]}`) in each worker entry within `provenance.json`. See [`modes/web-research.md`](modes/web-research.md#provenance-and-cleanup) and canonical fixture [`tests/fixtures/routing-worker.json`](tests/fixtures/routing-worker.json) for the complete worker record example.
 
 ## Shared report contract
 
