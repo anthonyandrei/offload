@@ -42,6 +42,16 @@ function Canonicalize-Path([string]$path) {
     return [System.IO.Path]::GetFullPath($path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
 }
 
+function Test-PathWithin([string]$child, [string]$parent) {
+    $childPath = Canonicalize-Path $child
+    $parentPath = Canonicalize-Path $parent
+    if ([string]::Equals($childPath, $parentPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    return $childPath.StartsWith("$parentPath$separator", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Normalize-RelPath([string]$path) {
     if ([string]::IsNullOrWhiteSpace($path)) {
         return ""
@@ -396,6 +406,17 @@ function Cmd-VerifyExport([string[]]$cmdArgs) {
         Fail "manifest contains no owned paths"
     }
 
+    # The review artifact must live outside the candidate so the worker cannot
+    # change the evidence after export.
+    if ([string]::IsNullOrWhiteSpace($patchOutput)) {
+        $mDir = Split-Path -Parent $canonManifest
+        $patchOutput = [System.IO.Path]::Combine($mDir, "$taskId.patch")
+    }
+    $canonPatch = Canonicalize-Path $patchOutput
+    if (Test-PathWithin $canonPatch $workspaceDir) {
+        Fail "patch output must be outside candidate workspace: $patchOutput"
+    }
+
     # 1. Run scope verification via check-execution-scope.ps1 inside candidate workspace
     $scopeArgs = [System.Collections.Generic.List[string]]::new()
     $scopeArgs.Add('-NoProfile')
@@ -443,18 +464,13 @@ function Cmd-VerifyExport([string[]]$cmdArgs) {
     }
 
     # Determine patch destination
-    if ([string]::IsNullOrWhiteSpace($patchOutput)) {
-        $mDir = Split-Path -Parent $canonManifest
-        $patchOutput = [System.IO.Path]::Combine($mDir, "$taskId.patch")
-    }
-    $canonPatch = Canonicalize-Path $patchOutput
     $patchDir = Split-Path -Parent $canonPatch
     if (-not (Test-Path -LiteralPath $patchDir -PathType Container)) {
         [System.IO.Directory]::CreateDirectory($patchDir) | Out-Null
     }
 
     # Generate binary diff from baseline
-    $resDiff = Run-GitCommand -WorkingDir $workspaceDir -GitArgs @('diff', '-p', '--binary', $baseline, '--output', $canonPatch)
+    $resDiff = Run-GitCommand -WorkingDir $workspaceDir -GitArgs @('diff', '--cached', '--find-renames', '-p', '--binary', $baseline, '--output', $canonPatch)
     if ($resDiff.ExitCode -ne 0) {
         Fail "failed to export git diff from baseline $baseline : $($resDiff.Stderr)"
     }
@@ -467,15 +483,39 @@ function Cmd-VerifyExport([string[]]$cmdArgs) {
     $patchDigest = "sha256:$hexDigest"
 
     # 4. Verify touched paths in diff against owned and frozen
-    $resNames = Run-GitCommand -WorkingDir $workspaceDir -GitArgs @('diff', '--name-only', '-z', $baseline)
-    $rawNames = $resNames.Stdout.Split("`0", [System.StringSplitOptions]::RemoveEmptyEntries)
+    $resNames = Run-GitCommand -WorkingDir $workspaceDir -GitArgs @('diff', '--cached', '--name-status', '-z', '--find-renames', $baseline)
+    if ($resNames.ExitCode -ne 0) {
+        Fail "failed to list exported paths from baseline $baseline : $($resNames.Stderr)"
+    }
+    $rawNames = $resNames.Stdout.Split([char]0, [System.StringSplitOptions]::RemoveEmptyEntries)
     $touchedList = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($name in $rawNames) {
-        $t = Normalize-RelPath $name
-        if ([string]::IsNullOrWhiteSpace($t)) { continue }
+    $nameIndex = 0
+    while ($nameIndex -lt $rawNames.Length) {
+        $status = [string]$rawNames[$nameIndex]
+        if ($nameIndex + 1 -ge $rawNames.Length) {
+            Fail "malformed NUL-delimited git diff output"
+        }
+        $t = Normalize-RelPath ([string]$rawNames[$nameIndex + 1])
+        if ([string]::IsNullOrWhiteSpace($t)) {
+            $nameIndex += 2
+            continue
+        }
         $touchedList.Add($t)
+        if ($status.StartsWith('R') -or $status.StartsWith('C')) {
+            if ($nameIndex + 2 -ge $rawNames.Length) {
+                Fail "malformed NUL-delimited git rename output"
+            }
+            $renameTarget = Normalize-RelPath ([string]$rawNames[$nameIndex + 2])
+            if (-not [string]::IsNullOrWhiteSpace($renameTarget)) {
+                $touchedList.Add($renameTarget)
+            }
+            $nameIndex += 1
+        }
+        $nameIndex += 2
+    }
 
+    foreach ($t in $touchedList) {
         foreach ($f in $frozenPaths) {
             $nf = [string]$f
             if ($t -eq $nf -or $t.StartsWith("$nf/")) {

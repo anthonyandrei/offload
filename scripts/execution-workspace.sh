@@ -63,6 +63,16 @@ canonicalize_path() {
   fi
 }
 
+path_is_within() {
+  local child parent
+  child="$(canonicalize_path "$1")"
+  parent="$(canonicalize_path "$2")"
+  [ "$child" = "$parent" ] || case "$child" in
+    "$parent"/*) return 0 ;;
+  esac
+  return 1
+}
+
 normalize_rel_path() {
   local p="$1"
   p="${p//\\//}"
@@ -457,6 +467,19 @@ cmd_verify_export() {
 
   [ "${#owned_paths[@]}" -gt 0 ] || fail "manifest contains no owned paths"
 
+  # The review artifact must live outside the candidate so the worker cannot
+  # change the evidence after export.
+  if [ -z "$patch_output" ]; then
+    local mdir
+    mdir="$(dirname "$canon_manifest")"
+    patch_output="$mdir/$task_id.patch"
+  fi
+  local canon_patch
+  canon_patch="$(canonicalize_path "$patch_output")"
+  if path_is_within "$canon_patch" "$workspace_dir"; then
+    fail "patch output must be outside candidate workspace: $patch_output"
+  fi
+
   # 1. Scope check execution: run check-execution-scope against candidate worktree
   local scope_args=("--baseline" "$baseline")
   for o in "${owned_paths[@]}"; do
@@ -483,18 +506,10 @@ cmd_verify_export() {
   # 2. Stage all changes (including untracked and deletions) to ensure uncommitted changes are captured
   git -C "$workspace_dir" add -A
 
-  # Determine patch output destination
-  if [ -z "$patch_output" ]; then
-    local mdir
-    mdir="$(dirname "$canon_manifest")"
-    patch_output="$mdir/$task_id.patch"
-  fi
-  local canon_patch
-  canon_patch="$(canonicalize_path "$patch_output")"
   mkdir -p "$(dirname "$canon_patch")"
 
   # Generate binary diff from baseline
-  if ! git -C "$workspace_dir" diff -p --binary "$baseline" --output "$canon_patch"; then
+  if ! git -C "$workspace_dir" diff --cached --find-renames -p --binary "$baseline" --output "$canon_patch"; then
     fail "failed to export git diff from baseline $baseline"
   fi
 
@@ -508,10 +523,38 @@ cmd_verify_export() {
 
   # 4. Verify that the exported patch touches only owned paths and no frozen paths
   local touched_files=()
-  while IFS= read -r line; do
-    line="${line%$'\r'}"
-    [ -n "$line" ] && touched_files+=("$line")
-  done < <(git -C "$workspace_dir" diff --name-only -z "$baseline" | tr '\0' '\n')
+  # Read the exact staged status record so renames retain both paths and
+  # artifact coverage matches the exported patch.
+  local names_file
+  names_file="$(mktemp "${TMPDIR:-/tmp}/execution-workspace.names.XXXXXX")"
+  if ! git -C "$workspace_dir" diff --cached --name-status -z --find-renames "$baseline" >"$names_file"; then
+    rm -f "$names_file"
+    fail "failed to list exported paths from baseline $baseline"
+  fi
+  local -a name_tokens=()
+  while IFS= read -r -d '' token; do
+    name_tokens+=("$token")
+  done < "$names_file"
+  rm -f "$names_file"
+  local name_index=0
+  while [ "$name_index" -lt "${#name_tokens[@]}" ]; do
+    local diff_status="${name_tokens[$name_index]}"
+    local path_index=$((name_index + 1))
+    [ "$path_index" -lt "${#name_tokens[@]}" ] || fail "malformed NUL-delimited git diff output"
+    local tf="${name_tokens[$path_index]}"
+    tf="$(normalize_rel_path "$tf")"
+    [ -n "$tf" ] || fail "malformed NUL-delimited git diff path"
+    touched_files+=("$tf")
+    name_index=$((name_index + 2))
+    if [[ "$diff_status" == R* || "$diff_status" == C* ]]; then
+      [ "$name_index" -lt "${#name_tokens[@]}" ] || fail "malformed NUL-delimited git rename output"
+      local rename_target
+      rename_target="$(normalize_rel_path "${name_tokens[$name_index]}")"
+      [ -n "$rename_target" ] || fail "malformed NUL-delimited git rename path"
+      touched_files+=("$rename_target")
+      name_index=$((name_index + 1))
+    fi
+  done
 
   for tf in ${touched_files[@]+"${touched_files[@]}"}; do
     # Check frozen

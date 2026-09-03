@@ -427,4 +427,3 @@ pass "final combined gate check failure leaves caller's existing work intact"
 invoke_cmd "$WS_HELPER" cleanup --manifest "$MANIFEST_C8" --status failed
 
 printf 'all execution workflow tests passed\n'
-

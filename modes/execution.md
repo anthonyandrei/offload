@@ -29,7 +29,7 @@ Workers are dispatched by role using `run-agy-json` with `--role <role>`. The la
 | scout | 1 | `gemini-3.8-flash-low` | low | `plan` | Report repository-relative file paths a task touches. |
 | gate-author | 2 | `gemini-3.8-flash-high` | high | `accept-edits` | Author an executable test file from acceptance criteria. |
 | implementer | 3 | `gemini-3.8-flash-high` | high | `accept-edits` | Implement the task within owned files in candidate workspace. |
-| reviewer | 4 | `gemini-3.8-flash-high` | high | `plan` | Evaluate git diff against criteria for diff-gated tasks. |
+| reviewer | 4 | `gemini-3.8-flash-high` | high | `plan` | Evaluate the recorded review artifact against criteria for diff-gated tasks. |
 
 `--mode plan` provides a behavioral hint, not a write barrier. `--add-dir` grants directory access without confining writes. Protection relies on isolated candidate worktrees, mechanical execution scope checks with explicit baselines, frozen path checks, and test gates.
 
@@ -240,10 +240,27 @@ Read worker JSON responses and record outcomes in `routing-outcomes.json`:
 Verify every worker reporting `SUCCESS`:
 
 1. **Mechanical execution scope check and patch export.**
-   Run `execution-workspace verify-export --manifest "<scratch dir>/offload/<slug>.manifest.json"`.
-   This executes `check-execution-scope` against the candidate worktree with `--baseline <manifest.baseline> --owned <manifest.owned> --frozen <manifest.frozen>`.
-   Any unowned modification or frozen path violation (such as edits to approved gates) fails and exits non-zero.
-   On success, a verified binary patch is exported and its sha256 checksum is recorded in the manifest.
+   Run `execution-workspace verify-export --manifest "<scratch dir>/offload/<slug>.manifest.json"` before dispatching a reviewer.
+
+   #### Bash
+   ```bash
+   if ! REVIEW_ARTIFACT="$("$OFFLOAD_ROOT/scripts/execution-workspace.sh" verify-export --manifest "<manifest path>")"; then
+     echo "review artifact export failed" >&2
+     exit 1
+   fi
+   ```
+
+   #### PowerShell
+   ```powershell
+   $ReviewArtifact = & "$OffloadRoot/scripts/execution-workspace.ps1" `
+     verify-export `
+     --manifest "<manifest path>"
+   if ($LASTEXITCODE -ne 0) {
+     throw "review artifact export failed"
+   }
+   ```
+
+   `verify-export` stages all candidate changes, including committed, staged, unstaged, deleted, renamed, untracked, and binary changes. It executes `check-execution-scope` against the recorded baseline and owned/frozen paths, then writes one binary-capable patch outside the candidate and records its `patch_file`, `patch_digest`, and `touched_paths` in the manifest. Any scope, Git, artifact, or digest failure rejects the review.
 
    Direct manual invocation of `check-execution-scope` always requires `--baseline`:
    #### Bash
@@ -266,9 +283,11 @@ Verify every worker reporting `SUCCESS`:
      --frozen "<frozen path 2>"
    ```
 
+   Any violation printed by the helper represents an unowned modification or a frozen path violation. The helper exits nonzero when violations exist. Report violations regardless of gate results.
+
 2. **Candidate gate execution.**
    - Machine gate: Run the frozen gate command in the candidate workspace (`$TASK_WORKSPACE`) and check exit code (0 required).
-   - Diff gate: Dispatch an adversarial reviewer worker against `$TASK_WORKSPACE` using `--role reviewer`:
+   - Diff gate: Dispatch an adversarial reviewer worker to inspect the recorded artifact using `--role reviewer`:
 
      #### Bash
      ```bash
@@ -278,11 +297,12 @@ Verify every worker reporting `SUCCESS`:
         --output "<scratch dir>/offload/<slug>.attempt1.review.json" \
         --error "<scratch dir>/offload/<slug>.attempt1.review.err" \
        -- \
-       -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" \
+        -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the artifact that proves it. Criteria: <criteria>" \
        --output-format json \
        --mode plan \
        --json-schema "$REVIEW_SCHEMA" \
-       --add-dir "$TASK_WORKSPACE" \
+       --add-dir "<repo root>" \
+       --add-dir "<patch parent>" \
        --print-timeout 20m
      ```
 
@@ -294,20 +314,24 @@ Verify every worker reporting `SUCCESS`:
         --output "<scratch dir>/offload/<slug>.attempt1.review.json" `
         --error "<scratch dir>/offload/<slug>.attempt1.review.err" `
        '--' `
-       -p "Run 'git diff' in this repository. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the diff that proves it. Criteria: <criteria>" `
+        -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Do not dispatch nested workers. For each criterion below, decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one line verbatim from the artifact that proves it. Criteria: <criteria>" `
        --output-format json `
        --mode plan `
+
        --json-schema $ReviewSchema `
-       --add-dir $TaskWorkspace `
+       --add-dir "<repo root>" `
+       --add-dir "<patch parent>" `
        --print-timeout 20m
-     ```
+      ```
 
-     Read `structured_output` from the JSON response to extract criteria verdicts and quotes.
-     For each `pass` verdict, verify the quoted line against the actual diff inside `$TASK_WORKSPACE`:
-     - Bash: `git -C "$TASK_WORKSPACE" diff | grep -F -- "<quote>"`
-     - PowerShell: `(git -C $TaskWorkspace diff) | Select-String -SimpleMatch "<quote>"`
+      Read `structured_output` from the JSON response to extract criteria verdicts and quotes.
 
-     If all quotes match verbatim, accept the verdict (`agy+grep`). If any quote fails to match, any criterion fails, or the reviewer hedges, inspect the diff directly (`agy→orchestrator`).
+    For each `pass` verdict, first recheck the recorded digest, then verify the quoted line against the same artifact bytes:
+    - Bash digest: `test "sha256:$(sha256sum "<patch_file>" | awk '{print tolower($1)}')" = "<patch_digest>"`
+    - PowerShell digest: `$actualDigest = "sha256:$((Get-FileHash -Algorithm SHA256 -LiteralPath "<patch_file>").Hash.ToLowerInvariant())"; if ($actualDigest -ne "<patch_digest>") { throw "review artifact digest mismatch" }`
+    - Bash quote: `grep -F -- "<quote>" "<patch_file>"`
+    - PowerShell quote: `Select-String -LiteralPath "<patch_file>" -SimpleMatch -Pattern "<quote>"`
+   If all quotes match verbatim, accept the verdict (`agy+grep`). If any quote fails to match, the digest fails, any criterion fails, or the reviewer hedges, inspect the recorded artifact directly (`agy→orchestrator`).
 
 3. **Integration of verified tasks.**
    - Disjoint tasks: Apply verified candidate patches sequentially via `execution-workspace integrate --manifest "<manifest>"`. The helper tests integration in a disposable scratch worktree before applying to the target.
@@ -326,7 +350,7 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 - **Baseline retention on retry.** Retries must retain the original verification baseline for that writing stage (e.g. `$GATE_BASELINE`). A failed attempt never becomes an implicitly trusted baseline. Create a fresh candidate worktree at the original baseline for attempt 2.
 - **Implementer quality failure.** If a gate fails or an execution scope check violation occurs, this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output. Use `--route quality-retry` only if an evidence-backed escalation target is configured for `implementer` in `model-policy.json`; otherwise use `--route default`. If attempt 2 fails, halt that task.
 - **Scout or gate-author operational failure.** If a scout or gate-author crashes, times out, or produces unparsable output, retry once using `--route default`. If the retry fails, complete that step directly as the orchestrator (`orchestrator (fallback)`).
-- **Reviewer failure.** If reviewer output is unparsable or fails quote verification, inspect the diff directly as the orchestrator (`agy→orchestrator`).
+- **Reviewer failure.** If reviewer output is unparsable or fails digest or quote verification, inspect the recorded artifact directly as the orchestrator (`agy→orchestrator`).
 - **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Record still-running candidates immediately without waiting for siblings, preserve completed artifacts, and return unfinished work to the calling orchestrator.
 - **Workspace cleanup.** After workers have terminated, clean up candidate worktrees:
   - Bash: `"$OFFLOAD_ROOT/scripts/execution-workspace.sh" cleanup --manifest "<manifest>" --status success|failed|retain`

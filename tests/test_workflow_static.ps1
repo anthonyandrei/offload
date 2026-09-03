@@ -54,6 +54,17 @@ Assert-True ($skillContent -match 'Immediate quota handoff') "skill: documents i
 Assert-True ($skillContent -match 'routing-outcomes\.json') "skill: documents routing-outcomes.json schema and fields"
 Assert-True ($skillContent -match 'gemini-3.8-flash-low' -and $skillContent -match 'gemini-3.8-flash-high') "skill: specifies Gemini 3.8 Flash baseline defaults"
 
+# 2a. Diff-gated reviews use one recorded artifact, not the live checkout
+$executionContent = Get-Content -LiteralPath $ExecMd -Raw
+Assert-True ($executionContent -match 'verify-export --manifest') "execution.md creates a recorded review artifact"
+Assert-True ($executionContent -match 'patch_file') "execution.md passes the recorded artifact to the reviewer"
+Assert-True ($executionContent -match 'patch_digest') "execution.md verifies the recorded artifact digest"
+Assert-True ($executionContent -match 'sha256sum' -and $executionContent -match 'Get-FileHash') "execution.md rechecks the recorded artifact digest"
+Assert-True ($executionContent -match 'review artifact export failed') "execution.md blocks failed artifact generation"
+Assert-True ($executionContent -match 'add-dir "<patch parent>"') "execution.md grants reviewer access to the artifact"
+Assert-False ($executionContent -match "Run 'git diff' in this repository") "execution.md reviewer does not inspect a bare git diff"
+Assert-False ($executionContent -match 'git diff \| grep -F') "execution.md quote verifier does not inspect a bare git diff"
+
 # 3. Every mode references SKILL.md shared section
 foreach ($pair in @(
     @{ Path = $ExecMd; Name = "execution.md" },
