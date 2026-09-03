@@ -162,8 +162,10 @@ contains_element() {
 add_touched_path() {
   local path
   path="$(normalize_path "$1")"
-  if [ -n "$path" ] && ! contains_element "$path" "${touched_paths[@]}"; then
-    touched_paths+=("$path")
+  if [ -n "$path" ]; then
+    if [ "${#touched_paths[@]}" -eq 0 ] || ! contains_element "$path" ${touched_paths[@]+"${touched_paths[@]}"}; then
+      touched_paths+=("$path")
+    fi
   fi
 }
 
