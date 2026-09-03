@@ -179,7 +179,7 @@ Sample recorded: 1/1 high checked, 1/2 med/low sampled.
 
 - `orchestrator`: Step performed directly by the orchestrator.
 - `agy+red+read`: Gate written by gate-author, validated by red check and read.
-- `agy+grep`: Diff reviewed by worker, verbatim quote verified in git diff.
+- `agy+grep`: Recorded artifact reviewed by worker, verbatim quote and digest verified by the orchestrator.
 - `agy→orchestrator`: Reviewer escalated or hedged, diff inspected by orchestrator.
 - `orchestrator+checked`: Evidence location or command directly verified in repository.
 - `orchestrator+sampled`: Sample of medium- or low-priority citations verified.

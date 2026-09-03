@@ -110,7 +110,7 @@ Used for code and file modifications across independent gated tasks.
      ```powershell
      & "$OffloadRoot/scripts/check-execution-scope.ps1" --owned src/render.py --frozen tests/test_render.py
      ```
-   - Gate command: run the machine test command or verify reviewer diff quotes verbatim against `git diff`.
+   - Gate command: run the machine test command or verify reviewer quotes verbatim against the recorded artifact after checking its digest.
 
 ### Repository research workflow (`modes/repo-research.md`)
 
@@ -273,7 +273,7 @@ All modes format results into a consistent summary:
 
 - `orchestrator`: Step performed directly by orchestrator.
 - `agy+red+read`: Gate written by worker, checked with red run and inspection.
-- `agy+grep`: Diff reviewed by worker, verbatim quote verified in git diff.
+- `agy+grep`: Recorded artifact reviewed by worker, verbatim quote and digest verified by the orchestrator.
 - `agy→orchestrator`: Reviewer escalated, diff inspected by orchestrator.
 - `orchestrator+checked`: Evidence directly verified in live repository.
 - `orchestrator+sampled`: Sample of medium or low priority citations verified.
