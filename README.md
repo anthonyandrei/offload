@@ -1,10 +1,20 @@
 # offload
 
-`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless workers through a vendor adapter. The reference adapter launches `agy`.
+`offload` is an agent-agnostic skill for delegating bounded code and research work to headless workers. The calling agent remains responsible for isolation, verification, cleanup, and reporting; the worker handles the assigned task. The reference adapter launches `agy`.
 
 Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Code, Codex CLI, or any agent that can read instructions and run shell commands. `agy` is the worker, not the orchestrator. The orchestrator never accepts worker claims at face value. It verifies work mechanically through test gates, execution scope checks, verbatim quote matching, independent citation auditing, and direct repository checks.
 
 Offload's online-research workflow is adapted from Asa by Achibukz, used with permission. Do not publish a private repository URL, branch, commit, screenshots, or copied text.
+
+## What it supports
+
+- Execution workers in isolated Git worktrees, with owned and frozen paths checked after each run.
+- Research workers in disposable snapshots that keep the live repository untouched.
+- Shell-native helpers for Bash 3.2+ and PowerShell 7+.
+- Vendor-neutral adapters for AGY, Claude Code, and Codex CLI, all using the same assignment and normalized-result contract.
+- Shared model routing through `model-policy.json`, with bounded retries and immediate handoff when the worker quota is exhausted.
+
+Start with the root [`SKILL.md`](SKILL.md) for the workflow contract. The README gives the public overview; the mode documents contain the shell-specific procedures.
 
 ## Publication boundary
 
@@ -14,12 +24,12 @@ Published source skills use the vendor-neutral contract in
 without offload. Offload is an explicit optional delegation layer. Adapters own
 vendor command syntax, model catalogs, capability probes, and output parsing.
 
-Published consumers use stable capabilities and internal model preferences,
-with reasoning effort kept separate. They do not depend on vendor names, family
+Published consumers use stable capabilities and internal model preferences, with
+reasoning effort kept separate. They do not depend on vendor names, family
 labels, or exact model IDs. The compatibility checker rejects unavailable
 adapters and vendor-specific references. Capability support does not enforce
-security. The orchestrator still owns isolation, execution scope checks,
-cleanup, and acceptance gates.
+security; the orchestrator still owns isolation, execution scope checks, cleanup,
+and acceptance gates.
 
 ## Worker safety and containment
 
@@ -47,21 +57,22 @@ cleanup, and acceptance gates.
 
 Orchestrators select helper scripts based on their current shell (`.sh` for Bash, `.ps1` for PowerShell), never by host operating system detection or universal launchers. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
-### Claude adapter
+### Worker adapters
 
-The bounded Claude Code adapter is available as `scripts/run-claude-json.ps1` and
-`scripts/run-claude-json.sh`. It accepts the versioned assignment contract in
-[`docs/specs/0004-claude-adapter.md`](docs/specs/0004-claude-adapter.md), probes
-the installed Claude CLI, forwards only the bounded prompt and tool policy,
-and returns a normalized result while preserving orchestrator ownership of
-verification and ledgers.
+The repository ships three adapters. Each one probes the installed worker,
+launches it with the selection made by the orchestrator, and returns the shared
+normalized result format.
 
-Set `CLAUDE_BIN` when Claude is not on `PATH`. The adapter accepts internal
-`fast`, `balanced`, and `deep` preferences without mapping them to published
-model IDs. A pinned model requires a caller-provided live catalog. Unsupported
-or unmarked sandboxes fail closed. On Windows, use an isolated runtime such as
-WSL, Git for Windows, or the supported native Claude binary; the adapter does
-not turn the caller checkout into a sandbox.
+| Adapter | Entry points | Contract |
+|---|---|---|
+| AGY | `scripts/run-agy-json.ps1`, `scripts/run-agy-json.sh` | Reference adapter for `agy` workers |
+| Claude Code | `scripts/run-claude-json.ps1`, `scripts/run-claude-json.sh` | [`docs/specs/0004-claude-adapter.md`](docs/specs/0004-claude-adapter.md) |
+| Codex CLI | `scripts/run-codex-json.ps1`, `scripts/run-codex-json.sh` | [`docs/codex-adapter.md`](docs/codex-adapter.md) |
+
+All adapters implement [`docs/adapter-contract.md`](docs/adapter-contract.md).
+Set `AGY_BIN` or `CLAUDE_BIN` when the corresponding executable is not on
+`PATH`. Unsupported or unmarked sandboxes fail closed; an adapter does not turn
+the caller checkout into a sandbox.
 
 ## Requirements
 
