@@ -90,13 +90,14 @@ foreach ($worker in $workers) {
         continue
     }
 
-    $matchingAttempts = @($worker.routing.attempts | Where-Object {
+    $matchingAttempts = @( @($worker.routing.attempts) | Where-Object {
+        $_.worker_id -eq $workerId -and
         $_.attempt -eq $acceptedAttempt -and
         $_.state -eq 'completed' -and
         $_.verification_status -eq 'passed' -and
         $_.exit_code -eq 0 -and
         $null -ne $_.evidence_paths -and
-        $_.evidence_paths.Count -gt 0 -and
+        @($_.evidence_paths).Count -gt 0 -and
         [string]$_.evidence_paths[0] -eq $output
     })
     if ($matchingAttempts.Count -ne 1) {
@@ -115,13 +116,25 @@ foreach ($worker in $workers) {
         Add-Omission $workerId 'selected artifact is not valid JSON'
         continue
     }
-    if ($null -eq $artifact -or -not ($artifact.PSObject.Properties.Name -contains 'structured_output') -or $null -eq $artifact.structured_output -or $artifact.structured_output.status -ne 'success' -or [string]::IsNullOrWhiteSpace([string]$artifact.structured_output.angle_id)) {
-        Add-Omission $workerId 'selected artifact is not a successful researcher result'
+    $structuredOutput = if ($null -ne $artifact -and $artifact.PSObject.Properties.Name -contains 'structured_output') { $artifact.structured_output } else { $null }
+    $findings = @()
+    if ($null -ne $structuredOutput -and $structuredOutput.PSObject.Properties.Name -contains 'findings') {
+        $findings = @($structuredOutput.findings)
+    }
+    $findingsValid = $findings.Count -gt 0
+    foreach ($finding in $findings) {
+        if ($null -eq $finding -or $finding.PSObject.Properties.Name -notcontains 'source_urls' -or $finding.source_urls -isnot [System.Array] -or @($finding.source_urls).Count -eq 0 -or @($finding.source_urls | Where-Object { [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) {
+            $findingsValid = $false
+            break
+        }
+    }
+    if ($null -eq $artifact -or $null -eq $structuredOutput -or $structuredOutput.status -ne 'success' -or [string]::IsNullOrWhiteSpace([string]$structuredOutput.angle_id) -or [string]::IsNullOrWhiteSpace([string]$structuredOutput.question) -or -not $findingsValid) {
+        Add-Omission $workerId 'selected artifact is not a substantive researcher result'
         continue
     }
 
     $selectedFiles.Add($selectedPath)
-    $independentAngles.Add([string]$artifact.structured_output.angle_id)
+    $independentAngles.Add([string]$structuredOutput.angle_id)
 }
 
 $uniqueAngles = @($independentAngles | Sort-Object -Unique)

@@ -163,6 +163,16 @@ if ($forwardedArgs.Count -eq 0) {
     Fail "agy arguments are required after --"
 }
 
+$callerLocation = Get-Location
+if ($null -eq $callerLocation.Provider -or $callerLocation.Provider.Name -ne 'FileSystem') {
+    Fail "current location must use the FileSystem provider; refusing to launch agy from '$($callerLocation.Path)'"
+}
+$callerWorkingDirectory = $callerLocation.ProviderPath
+if ([string]::IsNullOrWhiteSpace($callerWorkingDirectory) -or -not [System.IO.Directory]::Exists($callerWorkingDirectory)) {
+    Fail "current filesystem location is not an existing directory: $($callerLocation.Path)"
+}
+$callerWorkingDirectory = [System.IO.Path]::GetFullPath($callerWorkingDirectory)
+
 $knownValueTakingOptions = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 @('-p', '--prompt', '--print', '--prompt-interactive', '-i', '--path', '--output-format', '--mode', '--json-schema', '--add-dir', '--agent', '--conversation', '--log-file', '--print-timeout', '--project', '--input-format') | ForEach-Object { $knownValueTakingOptions.Add($_) | Out-Null }
 
@@ -432,6 +442,7 @@ try {
     }
 
     $psi.UseShellExecute = $false
+    $psi.WorkingDirectory = $callerWorkingDirectory
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.ArgumentList.Add('--model')

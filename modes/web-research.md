@@ -15,7 +15,7 @@ Conducts cited online investigations and multi-angle technical research by dispa
 
 ## Worker isolation and mixed repositories
 
-`--mode plan` provides a behavioral hint, not a write barrier. Direct testing demonstrated that plan-mode workers can write files. Similarly, `--add-dir` grants directory access without confining worker writes. Safety and containment rely on strict filesystem isolation:
+`--mode plan` is a version-sensitive behavioral hint, not a write barrier. The accepted `agy 1.1.25` probe blocked the tested direct write outside the permitted artifact area, but exposed tools and commands mean this is not a guarantee. Similarly, `--add-dir` grants directory access without confining worker writes. Safety and containment rely on strict filesystem isolation:
 
 1. **Create workspace.** Initialize a temporary directory outside the live codebase using the matching workspace helper:
 
@@ -388,6 +388,8 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 - **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.
 
 ## Provenance and cleanup
+
+Browser, GUI, rendering, and other externally observable headless claims require a reality anchor: an explicit artifact type and path or artifact identifier, plus the claim or acceptance criterion it supports. Accept screenshots, DOM snapshots, network captures, console logs, rendered files, or equivalent regular files inside the disposable workspace or owned output; missing or out-of-scope anchors are unverified. Before publishing provenance, `final.md`, or a handoff/report, recursively redact credential-shaped values with stable `[REDACTED]` markers; leave raw scratch evidence unchanged.
 
 At the conclusion of the research run:
 

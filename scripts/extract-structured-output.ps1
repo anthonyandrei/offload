@@ -62,11 +62,10 @@ foreach ($filePath in $filePaths) {
     }
 
     $soNode = $rootObj["structured_output"]
-    if ($soNode -eq $null) {
-        [void]$extractedOutputs.Add("null")
-    } else {
-        [void]$extractedOutputs.Add($soNode.ToJsonString())
+    if ($null -eq $soNode -or $soNode -isnot [System.Text.Json.Nodes.JsonObject]) {
+        Fail "structured_output must be a non-null JSON object: $filePath"
     }
+    [void]$extractedOutputs.Add($soNode.ToJsonString())
 }
 
 if ($arrayMode) {

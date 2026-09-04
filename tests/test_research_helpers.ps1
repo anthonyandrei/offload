@@ -513,7 +513,8 @@ exit 0
                 run_id = 'selection-run'
                 angle_id = $angleId
                 status = 'success'
-                findings = @(@{ claim = $finding })
+                question = "What does the $angleId research angle establish?"
+                findings = @(@{ claim = $finding; source_urls = @('https://example.com/source') })
             }
         } | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $path -Encoding utf8
     }

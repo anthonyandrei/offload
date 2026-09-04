@@ -93,8 +93,9 @@ while [ "$index" -lt "$worker_count" ]; do
     continue
   fi
 
-  attempt_json=$(jq -c --argjson accepted "$accepted_attempt" --arg output "$output" '
+  attempt_json=$(jq -c --arg worker_id "$worker_id" --argjson accepted "$accepted_attempt" --arg output "$output" '
     [.routing.attempts[]?
+      | select(.worker_id == $worker_id)
       | select(.attempt == $accepted)
       | select(.state == "completed" and .verification_status == "passed" and .exit_code == 0)
       | select((.evidence_paths | type) == "array" and .evidence_paths[0] == $output)]
@@ -124,6 +125,11 @@ while [ "$index" -lt "$worker_count" ]; do
     and .structured_output.status == "success"
     and (.structured_output.angle_id | type) == "string"
     and (.structured_output.angle_id | length) > 0
+    and (.structured_output.question | type) == "string"
+    and (.structured_output.question | length) > 0
+    and (.structured_output.findings | type) == "array"
+    and (.structured_output.findings | length) > 0
+    and all(.structured_output.findings[]; (type == "object") and (.source_urls | type) == "array" and (.source_urls | length) > 0 and all(.source_urls[]; (type == "string") and length > 0))
   ' "$artifact_path" >/dev/null 2>&1; then
     omit_worker "$worker_id" 'selected artifact is not a successful researcher result'
     index=$((index + 1))

@@ -141,9 +141,9 @@ validate_routing_record() {
     def nullable_string_field($name): ((.[$name] == null) or (.[$name] | type == "string" and length > 0));
     type == "object"
     and (.schema_version | type == "number" and . == 1)
-    and (.attempts | type == "array" and length <= 2)
-    and ((.attempts | map(.attempt)) as $numbers
-         | (($numbers | unique | length) == ($numbers | length)))
+    and (.attempts | type == "array")
+    and (([.attempts[] | {worker_id, attempt}] | unique | length) == (.attempts | length))
+    and ((.attempts | group_by(.worker_id) | all(.[]; length <= 2)))
     and all(.attempts[];
       type == "object"
       and string_field("worker_id")
@@ -162,7 +162,7 @@ validate_routing_record() {
       and (.attempt | type == "number" and floor == . and . >= 1 and . <= 2)
       and ((.duration_seconds == null) or (.duration_seconds | type == "number" and . >= 0))
       and ((.exit_code == null) or (.exit_code | type == "number" and floor == .))
-      and (.failure_class | IN("none", "quality", "timeout", "tool_error", "quota", "unknown"))
+      and (.failure_class | IN("none", "quality", "timeout", "tool_error", "quota", "unrunnable", "unknown"))
       and ((.verification_status? // .verification?) | IN("pending", "passed", "failed", "not_performed"))
       and (.evidence_paths | type == "array" and all(.[]; type == "string"))
       and ((.usage == null) or (.usage | type == "object"))
@@ -170,6 +170,28 @@ validate_routing_record() {
   ' "$routing_file" >/dev/null 2>&1; then
     fail_cleanup "invalid routing record: $routing_file"
   fi
+}
+
+validate_provenance_accepted_attempts() {
+  local provenance_file="$target_phys/provenance.json"
+  [[ -f "$provenance_file" ]] || return 0
+  jq -e 'type == "object" and ((.workers // []) | type == "array")' "$provenance_file" >/dev/null 2>&1 || fail_cleanup "invalid provenance workers container: $provenance_file"
+
+  while IFS=$'\t' read -r worker_id accepted_attempt output; do
+    output="${output%$'\r'}"
+    [[ -n "$worker_id" ]] || fail_cleanup "provenance worker has no worker_id: $provenance_file"
+    [[ "$accepted_attempt" == 1 || "$accepted_attempt" == 2 ]] || fail_cleanup "provenance worker '$worker_id' has an invalid accepted_attempt"
+    [[ -n "$output" ]] || fail_cleanup "provenance worker '$worker_id' has no selected output"
+
+    match_count=$(jq -r --arg worker_id "$worker_id" --argjson accepted "$accepted_attempt" --arg output "$output" '[.attempts[] | select(.worker_id == $worker_id and .attempt == $accepted and .state == "completed" and ((.verification_status? // .verification?) == "passed") and .exit_code == 0 and (.evidence_paths | type == "array" and .[0] == $output))] | length' "$routing_file") || fail_cleanup "could not validate accepted attempt for worker '$worker_id'"
+    [[ "$match_count" == 1 ]] || fail_cleanup "provenance worker '$worker_id' accepted_attempt does not resolve to one verified routing attempt"
+
+    case "$output" in
+      /*|[A-Za-z]:[\\/]*) selected_path="$output" ;;
+      *) selected_path="$target_phys/$output" ;;
+    esac
+    [[ -f "$selected_path" && ! -L "$selected_path" ]] || fail_cleanup "provenance worker '$worker_id' selected output does not exist: $selected_path"
+  done < <(jq -r '.workers[]? | select(.accepted_attempt != null) | [(.id // .worker_id // ""), (.accepted_attempt | tostring), (.output // "")] | @tsv' "$provenance_file")
 }
 
 hash_regular_file() {
@@ -270,6 +292,7 @@ append_disposition_entry() {
 write_evidence_disposition() {
   if [[ -e "$routing_file" || -L "$routing_file" ]]; then
     validate_routing_record
+    [[ -f "$target_phys/provenance.json" ]] && validate_provenance_accepted_attempts
   fi
 
   if [[ -L "$disposition_file" || -e "$disposition_file" ]]; then

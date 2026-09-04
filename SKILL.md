@@ -105,13 +105,14 @@ In PowerShell command expressions, always quote the delimiter (`'--'`).
 ### Failure classification and recovery rules
 
 1. **Verified success**: Output passes mechanical gates and verification checks. Accept result; no retry.
-2. **Quality failure**: The worker completed with a parsable response (exit code 0), but the output fails verification (e.g. machine gate failure, execution scope violation, reviewer quote mismatch, unsupported synthesis claim, or audit rejection).
+2. **Quality failure**: The worker completed with a parsable response (exit code 0), but the output fails verification (e.g. machine gate failure normalized to `quality` via `execute-gate.sh` or `execute-gate.ps1`, execution scope violation, reviewer quote mismatch, unsupported synthesis claim, or audit rejection).
    - If retry budget remains and mode permits correction: retry once (attempt 2) with concrete verification feedback. Use `--route quality-retry` only when an evidence-backed escalation target is configured in policy; otherwise use `--route default`.
    - If attempt 2 fails or the mode requires immediate fallback: stop retrying and follow that mode's halt, partial-result, or orchestrator fallback path.
-3. **Operational failure**: Process crash (nonzero exit code), timeout (20 minutes with no output), unparsable JSON, or tool failure.
+3. **Unrunnable failure**: Gate execution exited 126 or 127, normalized to `failure_class: "unrunnable"` with `verification: not_performed`. Preserve the command, exit code, and diagnostic evidence in `routing-outcomes.json`. Exits 126 and 127 are not quality retries; do not schedule or spend a model retry.
+4. **Operational failure**: Process crash (nonzero exit code), timeout (20 minutes with no output), unparsable JSON, or tool failure.
    - Follow mode's recovery rule with at most one same-model retry (`--route default`) where permitted. Never escalate models for operational failures.
-4. **Unknown failure**: Record uncertainty and follow the operational-failure path. Do not assume a quality failure or quota issue.
-5. **Quota exhaustion**: Explicit Gemini quota error reported by `agy` structured output or diagnostics. Trigger immediate quota handoff.
+5. **Unknown failure**: Record uncertainty and follow the operational-failure path. Do not assume a quality failure or quota issue.
+6. **Quota exhaustion**: Explicit Gemini quota error reported by `agy` structured output or diagnostics. Trigger immediate quota handoff.
 
 ### Immediate quota handoff
 
@@ -142,7 +143,7 @@ The orchestrator maintains `routing-outcomes.json` in each run's scratch workspa
   - `duration_seconds`: Observed elapsed time (null while running).
   - `exit_code`: Worker process exit code (null while running).
   - `state`: `"running"`, `"completed"`, `"failed"`, or `"interrupted"`.
-  - `failure_class`: `"none"`, `"quality"`, `"timeout"`, `"tool_error"`, `"quota"`, or `"unknown"`.
+  - `failure_class`: `"none"`, `"quality"`, `"timeout"`, `"tool_error"`, `"quota"`, `"unrunnable"`, or `"unknown"`.
   - `verification`: `"pending"`, `"passed"`, `"failed"`, or `"not_performed"`.
   - `evidence_paths`: Array of output, error, gate, review, or audit artifact paths.
   - `usage`: Source-attributed reported usage object with explicit units, or null when unavailable.
@@ -203,10 +204,12 @@ Sample recorded: 1/1 high checked, 1/2 med/low sampled.
 
 ## Limits and worker safety
 
-- **`--mode plan` is a behavioral hint, not a write barrier.** Direct probes showed that plan-mode workers can write files. Never rely on `--mode plan` alone to protect live repository files.
+- **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted compatibility probe on `agy 1.1.25` found the tested direct write outside the permitted artifact area blocked, but exposed tools and command paths remained available. This observation is not a guarantee and plan mode is not the sole containment or safety mechanism.
 - **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at the live tree.
 - **Filesystem isolation.** Research modes run in disposable workspaces with scoped file snapshots. Live repository files are never exposed directly to research workers.
 - **Execution safety.** Execution mode requires a clean git baseline, mechanical execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path diffs, and test gates.
 - **Prohibition on nested dispatch.** Workers are instructed not to dispatch nested workers.
 - **Bounded scope requirement.** Open-ended research without a bounded question, declared scope, and evidence expectations is out of scope.
 - **Worker timeout.** Every worker runs with a bounded timeout (`--print-timeout 20m`).
+
+Result acceptance is separate from process completion: a parsed envelope, substantive structured output, evidence/scope/gate checks, and (where applicable) review or citation checks must all pass before an explicit `accepted_attempt` is recorded. Exit code 0 alone does not establish verified success. Gate exits 126 or 127 are `unrunnable`, retain their command and diagnostic evidence, use `verification: not_performed`, and do not consume a model retry.

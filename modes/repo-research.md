@@ -24,7 +24,7 @@ Open-ended research without a bounded question, defined scope, and evidence expe
 
 ## Filesystem isolation and workspace creation
 
-Do not point workers directly at the live repository. `--mode plan` is a behavioral hint, not a write barrier. Direct testing demonstrated that plan-mode workers can write files. Similarly, `--add-dir` grants directory access without confining worker writes.
+Do not point workers directly at the live repository. `--mode plan` is a version-sensitive behavioral hint, not a write barrier; the `agy 1.1.25` probe is an observation, not a guarantee. Similarly, `--add-dir` grants directory access without confining worker writes. Filesystem isolation and disposable workspaces are the containment boundary.
 
 Isolate every research run in a disposable workspace:
 

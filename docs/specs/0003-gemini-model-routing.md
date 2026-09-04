@@ -136,7 +136,7 @@ Quota classification requires explicit AGY quota evidence from structured output
 
 The one-retry ceiling does not grant a retry in stages that currently fall back or return partial immediately. Preserve these mode distinctions:
 
-- Execution keeps its scout and gate-author fallback, implementer gate/scope retry, and direct orchestrator review fallback.
+- Execution keeps its scout and gate-author fallback, implementer gate/scope retry (consuming normalized `scripts/execute-gate.sh` / `scripts/execute-gate.ps1` outcomes where gate exit 126 or 127 is `unrunnable` without quality retry), and direct orchestrator review fallback.
 - Repository research keeps its bounded same-model operational retry and subsequent orchestrator fallback.
 - Web research keeps its minimum-angle requirement and partial-result behavior for failed mandatory synthesis or audit stages. Its allowed synthesis revision uses the synthesizer's second attempt; the final audit uses the auditor's second attempt. Earlier retries consume those same budgets. Exhaustion returns a partial result rather than creating a new assignment to repeat the stage.
 
@@ -146,7 +146,7 @@ On quota handoff, preserve completed artifacts and list verified, unverified, fa
 
 ## Outcome records and reporting
 
-Maintain a `routing-outcomes.json` artifact in each run's existing scratch workspace. The orchestrator owns it and updates it after dispatch and verification. This is a bounded run record, not a new service or persistent scheduler. Use a top-level `schema_version` of 1 and an `attempts` array.
+Maintain a `routing-outcomes.json` artifact in each run's existing scratch workspace. The orchestrator owns it and updates it after dispatch and verification. Machine gate executions route through the shared shell-native gate execution helper (`scripts/execute-gate.sh` or `scripts/execute-gate.ps1`), preserving the command, exit code, and diagnostic evidence in `evidence_paths`. This is a bounded run record, not a new service or persistent scheduler. Use a top-level `schema_version` of 1 and an `attempts` array.
 
 Each attempt records:
 
@@ -159,12 +159,14 @@ Each attempt records:
 | `started_at`, `ended_at`, `duration_seconds` | UTC timestamps and observed elapsed time; ending values are null while running. |
 | `exit_code` | Actual process exit code, or null when unavailable. |
 | `state` | `running`, `completed`, `failed`, or `interrupted`. This is process state, not a quality verdict. |
-| `failure_class` | `none`, `quality`, `timeout`, `tool_error`, `quota`, or `unknown`. |
+| `failure_class` | `none`, `quality`, `timeout`, `tool_error`, `quota`, `unrunnable`, or `unknown`. A gate exit 126/127 is `unrunnable` and does not consume a retry. |
 | `verification` | `pending`, `passed`, `failed`, or `not_performed`, using the applicable mode's checks. |
 | `evidence_paths` | Output, error, gate, review, or audit artifact references that support the outcome. |
 | `usage` | Null when unavailable; otherwise source-attributed reported measurements with explicit units. |
 
 Pending assignments that never dispatched belong in the final handoff/report, not in fabricated attempt records. Failed dispatches still belong in the report with their configuration or availability diagnostics.
+
+The retry ceiling is per logical worker: `(worker_id, attempt)` pairs are unique, each worker has at most two attempts, and attempt 2 reuses the same stable `worker_id`. An explicit `accepted_attempt` must resolve to that same worker's existing verified artifact; a newer or wildcard artifact is never selected implicitly.
 
 Record tokens, elapsed time, quota counters, or other usage measurements only when actually observed. Token counts and wall time are not interchangeable with AGY quota consumption. Missing usage stays null. Do not copy secrets or entire prompts into the routing record.
 
