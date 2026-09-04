@@ -6,8 +6,8 @@ Dispatches `agy` workers to implement file and code changes across independent g
 
 Select the helper family matching your current host shell:
 
-- **POSIX shells (Bash 3.2+)**: Use `scripts/run-agy-json.sh`, `scripts/check-execution-scope.sh`, `scripts/execute-gate.sh`, and `scripts/execution-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
-- **PowerShell (PowerShell 7+)**: Use `scripts/run-agy-json.ps1`, `scripts/check-execution-scope.ps1`, `scripts/execute-gate.ps1`, and `scripts/execution-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+- **POSIX shells (Bash 3.2+)**: Use `scripts/dispatch-worker.sh`, `scripts/run-agy-json.sh`, `scripts/check-execution-scope.sh`, `scripts/execute-gate.sh`, and `scripts/execution-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
+- **PowerShell (PowerShell 7+)**: Use `scripts/dispatch-worker.ps1`, `scripts/run-agy-json.ps1`, `scripts/check-execution-scope.ps1`, `scripts/execute-gate.ps1`, and `scripts/execution-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 Check these before dispatching writing tasks:
 
@@ -19,21 +19,36 @@ Check these before dispatching writing tasks:
    - PowerShell: `$Baseline = (git rev-parse HEAD).Trim()`
 5. **Model policy and preflight check.** Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching the first worker. All workers route through `model-policy.json`.
 6. **Workspace isolation principle.** Writing workers are never dispatched directly into the caller's main checkout (`<repo root>`). All candidate mutations occur in isolated candidate worktrees created at the recorded baseline revision via `execution-workspace create`.
+7. **Orchestrator-owned admission.** Route every worker launch through `dispatch-worker` with a dispatch ledger and explicit `--max-depth`, `--max-width`, `--max-timeout-seconds`, and `--max-resource-units` on the root assignment. The dispatcher creates the worktree and invokes the launcher. A worker's structured request for more work remains data until the orchestrator deliberately admits it as a new bounded assignment.
+
+Every execution dispatch supplies the shared lifecycle metadata to `run-agy-json`: `--assignment-id`, `--attempt`, `--mode execution`, `--verification-baseline`, `--resource-ledger`, and a distinct `--lifecycle` path. The launcher records the common state machine, waits for the worker to exit before cleanup, and records the exit result. Timeout and cancellation terminate the worker before cleanup; quota exhaustion hands off unfinished work immediately. Retries and resume read the resource ledger and preserve the pinned assignment, model, effort, verification baseline, and attempt limit.
 
 ## Roles and models
 
-Workers are dispatched by role using `run-agy-json` with `--role <role>`. The launcher resolves models dynamically from `model-policy.json`. Do not pass `--model` or `--effort` directly. Refer to [`SKILL.md`](../SKILL.md) for the shared model routing, preflight, and recovery contract.
+Workers are admitted by role using `dispatch-worker` with `--role <role>` and a bounded budget. The dispatcher invokes `run-agy-json`, which resolves models dynamically from `model-policy.json`. Do not pass `--model` or `--effort` directly. Refer to [`SKILL.md`](../SKILL.md) for the shared model routing, preflight, and recovery contract.
 
-| Role | Wave | Default model | Effort | Mode | Job |
+The command examples below show the `agy` arguments passed after the dispatcher's `--` delimiter. In a real run, put the state path, assignment identity, parent identity when applicable, source revision, owned and frozen paths, output and error paths, workspace path, budget, and root limits on the `dispatch-worker` invocation. Do not invoke `run-agy-json` directly for an execution assignment.
+
+The examples use one assignment per ledger. For a parallel wave, share the ledger and set its root child-width and total resource limits to cover the whole wave.
+
+| Role | Wave | Preference | Effort | Mode | Job |
 |---|---|---|---|---|---|
-| scout | 1 | `gemini-3.8-flash-low` | low | `plan` | Report repository-relative file paths a task touches. |
-| gate-author | 2 | `gemini-3.8-flash-high` | high | `accept-edits` | Author an executable test file from acceptance criteria. |
-| implementer | 3 | `gemini-3.8-flash-high` | high | `accept-edits` | Implement the task within owned files in candidate workspace. |
-| reviewer | 4 | `gemini-3.8-flash-high` | high | `plan` | Evaluate the recorded review artifact against criteria for diff-gated tasks. |
+| scout | 1 | fast | low | `plan` | Report repository-relative file paths a task touches. |
+| gate-author | 2 | balanced | high | `accept-edits` | Author an executable test file from acceptance criteria. |
+| implementer | 3 | balanced | high | `accept-edits` | Implement the task within owned files in candidate workspace. |
+| reviewer | 4 | deep | high | `plan` | Evaluate the recorded review artifact against criteria for diff-gated tasks. |
 
 `--mode plan` is a version-sensitive behavioral hint, not a write barrier. On `agy 1.1.25`, the compatibility probe blocked the tested direct write outside the permitted artifact area, but this is not a guarantee. `--add-dir` grants access without confining writes. Protection relies on isolated candidate worktrees, mechanical execution scope checks with explicit baselines, frozen path checks, and test gates.
 
 Acceptance is distinct from process completion: exit 0, a top-level success status, or prose is insufficient. Require a parsed envelope, valid substantive structured output, execution-scope and gate evidence, and an explicit accepted attempt. A gate exit 126 or 127 is classified as `unrunnable` with `verification: not_performed`; preserve the command, exit code, and diagnostic evidence, and do not schedule a quality retry.
+
+Worker processes run through the vendor-neutral adapter boundary in
+[`docs/worker-adapter-contract.md`](../docs/worker-adapter-contract.md).
+Validate its normalized result with `scripts/check-worker-adapter.sh` or
+`scripts/check-worker-adapter.ps1`, using the helper matching the host, before
+accepting artifacts. The adapter reports process, worktree, and artifact
+ownership. The orchestrator alone decides whether verification, publication,
+or cleanup is allowed.
 
 ## Step 1: Split and scout
 
@@ -50,16 +65,28 @@ Assign each task exactly one gate:
 
 ### Scout
 
-For provisional writing tasks, dispatch scouts in parallel using the matching launcher helper with `--role scout`. Scouts run in an isolated worktree at the recorded baseline:
+For provisional writing tasks, dispatch scouts in parallel through `dispatch-worker` with `--role scout`. Scouts run in an isolated worktree at the recorded baseline:
 
 #### Bash
 ```bash
 OFFLOAD_ROOT="<path to installed _offload skill>"
+DISPATCH_STATE="<scratch dir>/offload/dispatch.json"
 SCOUT_WORKSPACE="<scratch dir>/offload/scout"
-git worktree add --detach "$SCOUT_WORKSPACE" "$BASELINE"
 SCOUT_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
-"$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+"$OFFLOAD_ROOT/scripts/dispatch-worker.sh" \
+  --state "$DISPATCH_STATE" \
+  --assignment-id "scout-<slug>" \
   --role scout \
+  --source-repo "<repo root>" \
+  --baseline "$BASELINE" \
+  --owned "README.md" \
+  --workspace-dir "$SCOUT_WORKSPACE" \
+  --max-depth 0 \
+  --max-width 1 \
+  --max-timeout-seconds 1200 \
+  --max-resource-units 1 \
+  --timeout-seconds 1200 \
+  --resource-units 1 \
   --output "<scratch dir>/offload/<slug>.attempt1.scout.json" \
   --error "<scratch dir>/offload/<slug>.attempt1.scout.err" \
   -- \
@@ -74,11 +101,23 @@ SCOUT_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"t
 #### PowerShell
 ```powershell
 $OffloadRoot = "<path to installed _offload skill>"
+$DispatchState = "<scratch dir>/offload/dispatch.json"
 $ScoutWorkspace = "<scratch dir>/offload/scout"
-git worktree add --detach $ScoutWorkspace $Baseline
 $ScoutSchema = '{"type":"object","properties":{"files":{"type":"array","items":{"type":"string"}}},"required":["files"]}'
-& "$OffloadRoot/scripts/run-agy-json.ps1" `
+& "$OffloadRoot/scripts/dispatch-worker.ps1" `
+  --state $DispatchState `
+  --assignment-id "scout-<slug>" `
   --role scout `
+  --source-repo "<repo root>" `
+  --baseline $Baseline `
+  --owned "README.md" `
+  --workspace-dir $ScoutWorkspace `
+  --max-depth 0 `
+  --max-width 1 `
+  --max-timeout-seconds 1200 `
+  --max-resource-units 1 `
+  --timeout-seconds 1200 `
+  --resource-units 1 `
   --output "<scratch dir>/offload/<slug>.attempt1.scout.json" `
   --error "<scratch dir>/offload/<slug>.attempt1.scout.err" `
   '--' `
@@ -108,16 +147,22 @@ For each machine-gated task, create an isolated candidate worktree at the record
 
 #### Bash
 ```bash
-GATE_WORKSPACE=$("$OFFLOAD_ROOT/scripts/execution-workspace.sh" create \
+GATE_WORKSPACE="<scratch dir>/offload/gate-<slug>"
+"$OFFLOAD_ROOT/scripts/dispatch-worker.sh" \
+  --state "<scratch dir>/offload/dispatch.json" \
+  --assignment-id "gate-<slug>" \
   --source-repo "<repo root>" \
-  --task-id "gate-<slug>" \
   --baseline "$BASELINE" \
   --owned "<exact gate path>" \
   --frozen "<source path 1>" \
   --frozen "<source path 2>" \
-  --manifest "<scratch dir>/offload/gate-<slug>.manifest.json")
-
-"$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --workspace-dir "$GATE_WORKSPACE" \
+  --max-depth 0 \
+  --max-width 1 \
+  --max-timeout-seconds 1200 \
+  --max-resource-units 1 \
+  --timeout-seconds 1200 \
+  --resource-units 1 \
   --role gate-author \
   --output "<scratch dir>/offload/<slug>.attempt1.gate.json" \
   --error "<scratch dir>/offload/<slug>.attempt1.gate.err" \
@@ -131,16 +176,22 @@ GATE_WORKSPACE=$("$OFFLOAD_ROOT/scripts/execution-workspace.sh" create \
 
 #### PowerShell
 ```powershell
-$GateWorkspace = (& "$OffloadRoot/scripts/execution-workspace.ps1" create `
+$GateWorkspace = "<scratch dir>/offload/gate-<slug>"
+& "$OffloadRoot/scripts/dispatch-worker.ps1" `
+  --state "<scratch dir>/offload/dispatch.json" `
+  --assignment-id "gate-<slug>" `
   --source-repo "<repo root>" `
-  --task-id "gate-<slug>" `
   --baseline $Baseline `
   --owned "<exact gate path>" `
   --frozen "<source path 1>" `
   --frozen "<source path 2>" `
-  --manifest "<scratch dir>/offload/gate-<slug>.manifest.json").Trim()
-
-& "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --workspace-dir $GateWorkspace `
+  --max-depth 0 `
+  --max-width 1 `
+  --max-timeout-seconds 1200 `
+  --max-resource-units 1 `
+  --timeout-seconds 1200 `
+  --resource-units 1 `
   --role gate-author `
   --output "<scratch dir>/offload/<slug>.attempt1.gate.json" `
   --error "<scratch dir>/offload/<slug>.attempt1.gate.err" `
@@ -180,16 +231,22 @@ For each task, create an isolated candidate worktree from the approved `$GATE_BA
 
 #### Bash
 ```bash
-TASK_WORKSPACE=$("$OFFLOAD_ROOT/scripts/execution-workspace.sh" create \
+TASK_WORKSPACE="<scratch dir>/offload/<slug>"
+"$OFFLOAD_ROOT/scripts/dispatch-worker.sh" \
+  --state "<scratch dir>/offload/dispatch.json" \
+  --assignment-id "<slug>" \
   --source-repo "<repo root>" \
-  --task-id "<slug>" \
   --baseline "$GATE_BASELINE" \
   --owned "<owned path 1>" \
   --owned "<owned path 2>" \
   --frozen "<exact gate path>" \
-  --manifest "<scratch dir>/offload/<slug>.manifest.json")
-
-"$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
+  --workspace-dir "$TASK_WORKSPACE" \
+  --max-depth 0 \
+  --max-width 1 \
+  --max-timeout-seconds 1200 \
+  --max-resource-units 1 \
+  --timeout-seconds 1200 \
+  --resource-units 1 \
   --role implementer \
   --output "<scratch dir>/offload/<slug>.attempt1.json" \
   --error "<scratch dir>/offload/<slug>.attempt1.err" \
@@ -203,16 +260,22 @@ TASK_WORKSPACE=$("$OFFLOAD_ROOT/scripts/execution-workspace.sh" create \
 
 #### PowerShell
 ```powershell
-$TaskWorkspace = (& "$OffloadRoot/scripts/execution-workspace.ps1" create `
+$TaskWorkspace = "<scratch dir>/offload/<slug>"
+& "$OffloadRoot/scripts/dispatch-worker.ps1" `
+  --state "<scratch dir>/offload/dispatch.json" `
+  --assignment-id "<slug>" `
   --source-repo "<repo root>" `
-  --task-id "<slug>" `
   --baseline $GateBaseline `
   --owned "<owned path 1>" `
   --owned "<owned path 2>" `
   --frozen "<exact gate path>" `
-  --manifest "<scratch dir>/offload/<slug>.manifest.json").Trim()
-
-& "$OffloadRoot/scripts/run-agy-json.ps1" `
+  --workspace-dir $TaskWorkspace `
+  --max-depth 0 `
+  --max-width 1 `
+  --max-timeout-seconds 1200 `
+  --max-resource-units 1 `
+  --timeout-seconds 1200 `
+  --resource-units 1 `
   --role implementer `
   --output "<scratch dir>/offload/<slug>.attempt1.json" `
   --error "<scratch dir>/offload/<slug>.attempt1.err" `
@@ -235,7 +298,7 @@ Read worker JSON responses and record outcomes in `routing-outcomes.json`:
 - `status: SUCCESS`: Worker completed execution. Proceed to verification in Step 5.
 - Non-zero exit code or unparsable output: Worker crashed or encountered an operational failure. Record the attempt and follow Step 6.
 - Timeout (no output written before 20m timeout): Operational failure. Record the timeout and follow Step 6.
-- **Immediate quota handoff**: If explicit Gemini quota exhaustion is detected on any worker, record still-running candidates and all existing artifacts in `routing-outcomes.json` immediately without waiting for sibling completion, and hand off unfinished work directly to the calling orchestrator.
+- **Immediate quota handoff**: If explicit adapter-reported quota exhaustion is detected on any worker, record still-running candidates and all existing artifacts in `routing-outcomes.json` immediately without waiting for sibling completion, and hand off unfinished work directly to the calling orchestrator.
 
 ## Step 5: Verify and integrate
 
@@ -306,34 +369,60 @@ Verify every worker reporting `SUCCESS`:
      - `failure_class: "quality"` (`verification_status: "failed"`, `allow_retry: true`, other non-zero exit codes): The test assertions failed. Record the diagnostic artifact path and schedule a quality retry if attempt budget remains.
    - Diff gate: Dispatch an adversarial reviewer worker to inspect the recorded artifact using `--role reviewer`:
 
-     #### Bash
-     ```bash
-     REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion_id":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion_id","verdict","quote"]}}},"required":["criteria"]}'
-     "$OFFLOAD_ROOT/scripts/run-agy-json.sh" \
-       --role reviewer \
+      #### Bash
+      ```bash
+      REVIEW_SCHEMA='{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion_id":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion_id","verdict","quote"]}}},"required":["criteria"]}'
+      REVIEW_WORKSPACE="<scratch dir>/offload/<slug>-reviewer"
+      "$OFFLOAD_ROOT/scripts/dispatch-worker.sh" \
+        --state "<scratch dir>/offload/dispatch.json" \
+        --assignment-id "<slug>-reviewer" \
+        --role reviewer \
+        --source-repo "<repo root>" \
+        --baseline "$GATE_BASELINE" \
+        --owned "README.md" \
+        --workspace-dir "$REVIEW_WORKSPACE" \
+        --max-depth 0 \
+        --max-width 1 \
+        --max-timeout-seconds 1200 \
+        --max-resource-units 1 \
+        --timeout-seconds 1200 \
+        --resource-units 1 \
         --output "<scratch dir>/offload/<slug>.attempt1.review.json" \
         --error "<scratch dir>/offload/<slug>.attempt1.review.err" \
-       -- \
+        -- \
         -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Return exactly one verdict object for every criterion in <criteria>, copying each criterion_id exactly. Decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one complete line verbatim from the artifact that proves it. Criteria: <criteria>" \
-       --output-format json \
-       --mode plan \
+        --output-format json \
+        --mode plan \
        --json-schema "$REVIEW_SCHEMA" \
        --add-dir "<repo root>" \
        --add-dir "<patch parent>" \
        --print-timeout 20m
      ```
 
-     #### PowerShell
-     ```powershell
-     $ReviewSchema = '{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion_id":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion_id","verdict","quote"]}}},"required":["criteria"]}'
-     & "$OffloadRoot/scripts/run-agy-json.ps1" `
-       --role reviewer `
+      #### PowerShell
+      ```powershell
+      $ReviewSchema = '{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"object","properties":{"criterion_id":{"type":"string"},"verdict":{"type":"string","enum":["pass","fail","hedge"]},"quote":{"type":"string"}},"required":["criterion_id","verdict","quote"]}}},"required":["criteria"]}'
+      $ReviewWorkspace = "<scratch dir>/offload/<slug>-reviewer"
+      & "$OffloadRoot/scripts/dispatch-worker.ps1" `
+        --state "<scratch dir>/offload/dispatch.json" `
+        --assignment-id "<slug>-reviewer" `
+        --role reviewer `
+        --source-repo "<repo root>" `
+        --baseline $GateBaseline `
+        --owned "README.md" `
+        --workspace-dir $ReviewWorkspace `
+        --max-depth 0 `
+        --max-width 1 `
+        --max-timeout-seconds 1200 `
+        --max-resource-units 1 `
+        --timeout-seconds 1200 `
+        --resource-units 1 `
         --output "<scratch dir>/offload/<slug>.attempt1.review.json" `
         --error "<scratch dir>/offload/<slug>.attempt1.review.err" `
-       '--' `
+        '--' `
         -p "Read the recorded review artifact at <patch_file>. Verify its bytes against <patch_digest> before reviewing. Do not inspect the candidate checkout or generate another diff. Return exactly one verdict object for every criterion in <criteria>, copying each criterion_id exactly. Decide pass, fail, or hedge if unsure. Look for reasons the criterion FAILS before accepting pass. For every pass, quote one complete line verbatim from the artifact that proves it. Criteria: <criteria>" `
-       --output-format json `
-       --mode plan `
+        --output-format json `
+        --mode plan `
 
        --json-schema $ReviewSchema `
        --add-dir "<repo root>" `
@@ -366,12 +455,17 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 - **Stable worker IDs and retry ceiling.** Assign a stable `worker_id` to each logical task. Attempt 1 is initial dispatch; attempt 2 is its only possible retry. Maximum two attempts total per task.
 - **Outcome tracking.** Record each attempt and verification outcome in `routing-outcomes.json`.
 - **Baseline retention on retry.** Retries must retain the original verification baseline for that writing stage (e.g. `$GATE_BASELINE`). A failed attempt never becomes an implicitly trusted baseline. Create a fresh candidate worktree at the original baseline for attempt 2.
-- **Implementer quality failure.** If an execution scope check violation occurs or a machine gate normalizes to `failure_class: "quality"` (non-zero exit code other than 126/127), this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output and diagnostic evidence. Use `--route quality-retry` only if an evidence-backed escalation target is configured for `implementer` in `model-policy.json`; otherwise use `--route default`. If attempt 2 fails, halt that task.
+- **Implementer quality failure.** If an execution scope check violation occurs or a machine gate normalizes to `failure_class: "quality"` (non-zero exit code other than 126/127), this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output and diagnostic evidence using the pinned selection. If the pinned model is unavailable, record the explicit fallback or handoff and do not switch silently. If attempt 2 fails, halt that task.
 - **Unrunnable gate execution.** If a gate command exits 126 or 127, it normalizes to `failure_class: "unrunnable"` with `verification_status: "not_performed"` and `allow_retry: false`. Gate exits 126 and 127 are not quality retries; preserve the command, exit code, and diagnostic evidence in `routing-outcomes.json` without spending or scheduling a quality retry.
 - **Scout or gate-author operational failure.** If a scout or gate-author crashes, times out, or produces unparsable output, retry once using `--route default`. If the retry fails, complete that step directly as the orchestrator (`orchestrator (fallback)`).
 - **Reviewer failure.** If reviewer output is unparsable or fails digest or quote verification, inspect the recorded artifact directly as the orchestrator (`agy→orchestrator`).
-- **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Record still-running candidates immediately without waiting for siblings, preserve completed artifacts, and return unfinished work to the calling orchestrator.
+- **Quota exhaustion.** Explicit adapter-reported quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Record still-running candidates immediately without waiting for siblings, preserve completed artifacts, and return unfinished work to the calling orchestrator.
 - **Workspace cleanup.** After workers have terminated, clean up candidate worktrees:
   - Bash: `"$OFFLOAD_ROOT/scripts/execution-workspace.sh" cleanup --manifest "<manifest>" --status success|failed|retain`
   - PowerShell: `& "$OffloadRoot/scripts/execution-workspace.ps1" cleanup --manifest "<manifest>" --status success|failed|retain`
   Wait for active worker processes to terminate before calling cleanup. Pass `--status retain` if preserving a candidate workspace for orchestrator inspection.
+
+- **Ownership ledger and crash recovery.** Candidate worktrees, research workspaces, and worker processes are recorded in an orchestrator-owned ledger outside their resource paths. Register a resource before or immediately after creation, update it as the lifecycle changes (`active`, `failed`, `timed_out`, `cancelled`, `quota_handoff`, `cleanup_pending`, or `completed`), and run reconciliation at the start of a later run:
+  - Bash: `"$OFFLOAD_ROOT/scripts/resource-ledger.sh" reconcile --ledger "<ledger>" --source-repo "<repo>"`
+  - PowerShell: `& "$OffloadRoot/scripts/resource-ledger.ps1" reconcile --ledger "<ledger>" --source-repo "<repo>"`
+  Cleanup terminates and waits for an owned worker process before touching its resources. It removes only records whose owner marker, parent relationship, and Git/worktree safety checks pass. Dirty, unmerged, unknown, ambiguous, or otherwise unprovable resources remain on disk and in the ledger for review. Never place the ledger inside a worker checkout.

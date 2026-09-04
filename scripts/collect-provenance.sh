@@ -184,7 +184,7 @@ REQUIRED_FIELDS = [
 
 REQUIRED_ATTEMPT_FIELDS = [
     "worker_id", "role", "mode", "attempt", "policy_revision",
-    "route", "model", "effort", "reason", "started_at",
+    "route", "effort", "reason", "started_at",
     "ended_at", "duration_seconds", "exit_code", "state",
     "failure_class", "evidence_paths", "usage"
 ]
@@ -253,14 +253,30 @@ def validate_worker_routing(worker):
         if att["route"] not in KNOWN_ROUTES:
             sys.stderr.write("Error: attempt route must be 'default' or 'quality-retry'\n")
             sys.exit(1)
-        if not isinstance(att["model"], str) or not GEMINI_MODEL_RE.match(att["model"]):
-            sys.stderr.write("Error: attempt model must be a Gemini model ID with effort suffix\n")
+        model = att.get("model")
+        model_id = att.get("model_id")
+        if (not isinstance(model, str) or not model.strip()) and (not isinstance(model_id, str) or not model_id.strip()):
+            sys.stderr.write("Error: attempt must record a non-empty model or model_id\n")
+            sys.exit(1)
+        if "model_id" in att and (not isinstance(model_id, str) or not model_id.strip()):
+            sys.stderr.write("Error: attempt model_id must be a non-empty string when present\n")
+            sys.exit(1)
+        if isinstance(model, str) and model.strip() and isinstance(model_id, str) and model_id.strip() and model != model_id:
+            sys.stderr.write("Error: attempt model and model_id must identify the same selected model\n")
             sys.exit(1)
         if att["effort"] not in KNOWN_EFFORTS:
             sys.stderr.write("Error: attempt effort must be 'low', 'medium', or 'high'\n")
             sys.exit(1)
-        if not att["model"].endswith(f"-{att['effort']}"):
-            sys.stderr.write(f"Error: attempt effort '{att['effort']}' does not match model suffix in '{att['model']}'\n")
+        if not isinstance(model_id, str) or not model_id.strip():
+            if not isinstance(model, str) or not GEMINI_MODEL_RE.match(model) or not model.endswith(f"-{att['effort']}"):
+                sys.stderr.write("Error: legacy attempt model must be a Gemini model ID with an effort suffix; new records must include model_id\n")
+                sys.exit(1)
+        for metadata_field in ("adapter", "adapter_revision", "vendor", "family_hint", "preference", "catalog_revision", "selection_reason"):
+            if metadata_field in att and (not isinstance(att[metadata_field], str) or not att[metadata_field].strip()):
+                sys.stderr.write(f"Error: attempt {metadata_field} must be a non-empty string when present\n")
+                sys.exit(1)
+        if "preference" in att and att["preference"] not in {"fast", "balanced", "deep"}:
+            sys.stderr.write("Error: attempt preference must be 'fast', 'balanced', or 'deep'\n")
             sys.exit(1)
         if not isinstance(att["reason"], str) or not att["reason"].strip():
             sys.stderr.write("Error: attempt reason must be a non-empty string\n")

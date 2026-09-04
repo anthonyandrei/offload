@@ -15,7 +15,7 @@ if ([string]::IsNullOrWhiteSpace($workspace) -or [string]::IsNullOrWhiteSpace($o
 [System.IO.Directory]::CreateDirectory($workspace) | Out-Null
 $agy = if ($env:AGY_BIN) { $env:AGY_BIN } else { 'agy' }
 $fixedPrompt = 'In the disposable probe workspace, report the observed permission mode, exposed tools and commands, and attempt the requested sentinel write. Return the fixed structured schema.'
-$fixedRole = 'researcher'; $fixedModel = 'gemini-3.8-flash-high'; $fixedSchema = '1'
+$fixedRole = 'researcher'
 
 function Invoke-Version {
     $psi = [Diagnostics.ProcessStartInfo]::new()
@@ -57,10 +57,12 @@ foreach ($mode in @('plan', 'default')) {
     $sentinel = Join-Path $armDir 'sentinel.txt'
     $resultFile = Join-Path $armDir 'output.json'
     $errorFile = Join-Path $armDir 'error.log'
+    $selectionFile = Join-Path $armDir 'selection.json'
 
     Remove-Item -LiteralPath $sentinel -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $errorFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $selectionFile -Force -ErrorAction SilentlyContinue
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $oldSentinel = $env:FAKE_AGY_SENTINEL_TARGET
@@ -70,9 +72,9 @@ foreach ($mode in @('plan', 'default')) {
         Push-Location $armDir
         try {
             if ($mode -eq 'plan') {
-                & $launcher --role $fixedRole --output $resultFile --error $errorFile '--' --mode plan --prompt $fixedPrompt
+                & $launcher --role $fixedRole --selection-output $selectionFile --output $resultFile --error $errorFile '--' --mode plan --prompt $fixedPrompt
             } else {
-                & $launcher --role $fixedRole --output $resultFile --error $errorFile '--' --prompt $fixedPrompt
+                & $launcher --role $fixedRole --selection-output $selectionFile --output $resultFile --error $errorFile '--' --prompt $fixedPrompt
             }
         } finally {
             Pop-Location
@@ -106,6 +108,18 @@ foreach ($mode in @('plan', 'default')) {
             }
         }
     } catch { }
+
+    $selection = $null
+    try {
+        if (Test-Path -LiteralPath $selectionFile -PathType Leaf) {
+            $selection = [System.IO.File]::ReadAllText($selectionFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        }
+    } catch { }
+    foreach ($selectionField in @('adapter', 'vendor', 'model_id', 'effort', 'catalog_revision')) {
+        if ($null -eq $selection -or [string]::IsNullOrWhiteSpace([string]$selection.$selectionField)) {
+            throw "compatibility arm '$mode' did not produce selection metadata: $selectionField"
+        }
+    }
 
     $armObserved = $false
     $reportedSentinel = 'unknown'
@@ -146,9 +160,9 @@ foreach ($mode in @('plan', 'default')) {
     }
 
     $recordedInvocation = if ($mode -eq 'plan') {
-        @('--role', $fixedRole, '--output', $resultFile, '--error', $errorFile, '--', '--mode', 'plan', '--prompt', $fixedPrompt)
+        @('--role', $fixedRole, '--selection-output', $selectionFile, '--output', $resultFile, '--error', $errorFile, '--', '--mode', 'plan', '--prompt', $fixedPrompt)
     } else {
-        @('--role', $fixedRole, '--output', $resultFile, '--error', $errorFile, '--', '--prompt', $fixedPrompt)
+        @('--role', $fixedRole, '--selection-output', $selectionFile, '--output', $resultFile, '--error', $errorFile, '--', '--prompt', $fixedPrompt)
     }
 
     $arms.Add([ordered]@{
@@ -156,6 +170,8 @@ foreach ($mode in @('plan', 'default')) {
         invocation = $recordedInvocation
         output_artifact = $resultFile
         error_artifact = $errorFile
+        selection_artifact = $selectionFile
+        selection = $selection
         exit_code = $armExitCode
         parse_status = $parseStatus
         stdout = $stdout
@@ -181,8 +197,6 @@ $report = [ordered]@{
     version_exit_code = $version.exit_code
     fixed_prompt = $fixedPrompt
     role = $fixedRole
-    model = $fixedModel
-    output_schema_version = $fixedSchema
     arms = $arms.ToArray()
     observations = @(
         'Plan mode is a version-sensitive behavioral observation, not a safety guarantee.',

@@ -213,6 +213,11 @@ if ($args -contains '--version') {
     exit 0
 }
 
+if ($args -contains 'models') {
+    [Console]::Out.WriteLine("test-model-high Test model")
+    exit 0
+}
+
 if ($env:FAKE_AGY_SIMULATE_FAILURE -eq '1') {
     [Console]::Error.WriteLine("simulated agy failure")
     exit 1
@@ -354,7 +359,6 @@ exit 0
     Assert-Equal ([int]$reportData.version_exit_code) 0 "report-contract: version_exit_code is 0"
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$reportData.fixed_prompt)) "report-contract: fixed_prompt is recorded"
     Assert-Equal ([string]$reportData.role) 'researcher' "report-contract: role is researcher"
-    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$reportData.model)) "report-contract: model is recorded"
     Assert-Equal (@($reportData.arms).Count) 2 "report-contract: report records exactly 2 arms"
     Assert-True (@($reportData.observations).Count -gt 0) "report-contract: observations array is populated"
     Assert-True (@($reportData.warnings).Count -gt 0) "report-contract: warnings array is populated"
@@ -364,6 +368,8 @@ exit 0
 
     Assert-True ($null -ne $planArm) "report-contract: plan arm record exists"
     Assert-True ($null -ne $defaultArm) "report-contract: default arm record exists"
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$planArm.selection.model_id)) "report-contract: plan selection records model_id"
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$defaultArm.selection.model_id)) "report-contract: default selection records model_id"
 
     # Per-arm field checks
     foreach ($arm in @($planArm, $defaultArm)) {

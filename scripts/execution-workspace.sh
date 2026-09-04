@@ -12,6 +12,7 @@ MANIFEST_MARKER="offload-execution-manifest-v1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 OFFLOAD_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 SCOPE_CHECKER="$SCRIPT_DIR/check-execution-scope.sh"
+RESOURCE_LEDGER="$SCRIPT_DIR/resource-ledger.sh"
 
 fail() {
   printf 'Error: %s\n' "$1" >&2
@@ -21,7 +22,7 @@ fail() {
 usage() {
   cat <<'EOF' >&2
 Usage:
-  execution-workspace.sh create --source-repo <path> --task-id <id> --baseline <rev> --owned <path> [--owned <path> ...] [--frozen <path> ...] [--manifest <path>] [--workspace-dir <path>]
+  execution-workspace.sh create --source-repo <path> --task-id <id> --baseline <rev> --owned <path> [--owned <path> ...] [--frozen <path> ...] [--manifest <path>] [--workspace-dir <path>] [--ledger <path>]
   execution-workspace.sh verify-export --manifest <path> [--patch-output <path>]
   execution-workspace.sh integrate --manifest <path> [--target-repo <path>]
   execution-workspace.sh cleanup --manifest <path> [--status <success|failed|retain>]
@@ -150,6 +151,7 @@ cmd_create() {
   local frozen=()
   local manifest_path=""
   local workspace_dir=""
+  local ledger_path=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -214,6 +216,15 @@ cmd_create() {
         ;;
       --workspace-dir=*)
         workspace_dir="${1#*=}"
+        shift
+        ;;
+      --ledger)
+        [ $# -ge 2 ] || fail "--ledger requires a path"
+        ledger_path="$2"
+        shift 2
+        ;;
+      --ledger=*)
+        ledger_path="${1#*=}"
         shift
         ;;
       -h|--help)
@@ -319,6 +330,15 @@ cmd_create() {
     fail "manifest path must be outside the worker checkout: $manifest_path"
   fi
 
+  if [ -z "$ledger_path" ]; then
+    ledger_path="$(dirname "$canon_manifest")/resource-ledger.json"
+  fi
+  local canon_ledger
+  canon_ledger="$(canonicalize_path "$ledger_path")"
+  if [[ "$canon_ledger" == "$canon_workspace/"* || "$canon_ledger" == "$canon_workspace" ]]; then
+    fail "ledger path must be outside the worker checkout: $ledger_path"
+  fi
+
   mkdir -p "$(dirname "$canon_manifest")"
   mkdir -p "$(dirname "$canon_workspace")"
 
@@ -326,6 +346,9 @@ cmd_create() {
   if [ -d "$canon_workspace" ] && [ "$(ls -A "$canon_workspace" 2>/dev/null | wc -l)" -gt 0 ]; then
     fail "workspace directory already exists and is not empty: $workspace_dir"
   fi
+
+  local resource_id="worktree:$task_id"
+  bash "$RESOURCE_LEDGER" register --ledger "$canon_ledger" --assignment-id "$task_id" --parent-id "$canon_repo" --parent-path "$canon_repo" --resource-type git-worktree --path "$canon_workspace" --owner-marker "$MARKER_NAME=$MARKER_CONTENT" --resource-id "$resource_id" --state registered >/dev/null
 
   # Create Git worktree
   if ! git -C "$canon_repo" worktree add --detach "$canon_workspace" "$resolved_baseline" >/dev/null 2>&1; then
@@ -347,6 +370,8 @@ cmd_create() {
       printf '\n%s\n' "$MARKER_NAME" >> "$exclude_file"
     fi
   fi
+
+  bash "$RESOURCE_LEDGER" update --ledger "$canon_ledger" --resource-id "$resource_id" --state active >/dev/null
 
   # Build JSON manifest
   local created_at
@@ -387,6 +412,8 @@ cmd_create() {
   "baseline": "$resolved_baseline",
   "owned_paths": [$owned_json],
   "frozen_paths": [$frozen_json],
+  "ledger_path": "$canon_ledger",
+  "resource_id": "$resource_id",
   "status": "created",
   "created_at": "$created_at"
 }
@@ -684,12 +711,14 @@ cmd_integrate() {
   marker="$(json_extract_string "$canon_manifest" "marker")"
   [ "$marker" = "$MANIFEST_MARKER" ] || fail "invalid manifest marker in $manifest_path"
 
-  local status patch_file patch_digest source_repo task_id
+  local status patch_file patch_digest source_repo task_id ledger_path resource_id
   status="$(json_extract_string "$canon_manifest" "status")"
   patch_file="$(json_extract_string "$canon_manifest" "patch_file")"
   patch_digest="$(json_extract_string "$canon_manifest" "patch_digest")"
   source_repo="$(json_extract_string "$canon_manifest" "source_repo")"
   task_id="$(json_extract_string "$canon_manifest" "task_id")"
+  ledger_path="$(json_extract_string "$canon_manifest" "ledger_path")"
+  resource_id="$(json_extract_string "$canon_manifest" "resource_id")"
 
   [ -n "$patch_file" ] || fail "manifest does not record an exported patch file; run verify-export first"
   [ -n "$patch_digest" ] || fail "manifest does not record a patch digest; run verify-export first"
@@ -769,6 +798,10 @@ cmd_integrate() {
     rm -f "$canon_manifest.bak"
   fi
 
+  if [ -n "$ledger_path" ] && [ -n "$resource_id" ]; then
+    bash "$RESOURCE_LEDGER" update --ledger "$ledger_path" --resource-id "$resource_id" --state completed --allow-dirty true >/dev/null
+  fi
+
   printf 'Successfully integrated candidate %s into %s\n' "$task_id" "$canon_target"
 }
 
@@ -818,11 +851,13 @@ cmd_cleanup() {
   marker="$(json_extract_string "$canon_manifest" "marker")"
   [ "$marker" = "$MANIFEST_MARKER" ] || fail "invalid manifest marker in $manifest_path"
 
-  local workspace_dir source_repo task_id patch_file
+  local workspace_dir source_repo task_id patch_file ledger_path resource_id
   workspace_dir="$(json_extract_string "$canon_manifest" "workspace_dir")"
   source_repo="$(json_extract_string "$canon_manifest" "source_repo")"
   task_id="$(json_extract_string "$canon_manifest" "task_id")"
   patch_file="$(json_extract_string "$canon_manifest" "patch_file")"
+  ledger_path="$(json_extract_string "$canon_manifest" "ledger_path")"
+  resource_id="$(json_extract_string "$canon_manifest" "resource_id")"
 
   [ -n "$workspace_dir" ] || fail "manifest does not specify workspace_dir"
   [ -n "$source_repo" ] || fail "manifest does not specify source_repo"
@@ -831,6 +866,9 @@ cmd_cleanup() {
     success)
       ;;
     failed|retain)
+      if [ -n "$ledger_path" ] && [ -n "$resource_id" ]; then
+        bash "$RESOURCE_LEDGER" update --ledger "$ledger_path" --resource-id "$resource_id" --state retained >/dev/null
+      fi
       printf 'Candidate %s marked %s; retaining workspace at %s\n' "$task_id" "$status" "$workspace_dir"
       exit 0
       ;;
@@ -838,6 +876,16 @@ cmd_cleanup() {
       fail "invalid cleanup status: $status (must be success, failed, or retain)"
       ;;
   esac
+
+  if [ -n "$ledger_path" ] && [ -n "$resource_id" ]; then
+    bash "$RESOURCE_LEDGER" update --ledger "$ledger_path" --resource-id "$resource_id" --state cleanup_pending >/dev/null
+    local ledger_result
+    ledger_result="$(bash "$RESOURCE_LEDGER" cleanup --ledger "$ledger_path" --resource-id "$resource_id")"
+    if command -v jq >/dev/null 2>&1 && jq -e '.retained == true' <<<"$ledger_result" >/dev/null; then
+      printf 'Retained execution workspace for review: %s\n' "$workspace_dir" >&2
+      exit 1
+    fi
+  fi
 
   # If workspace directory is already gone, prune and remove manifest
   if [ ! -d "$workspace_dir" ]; then
@@ -940,6 +988,14 @@ cmd_cleanup() {
 
 command_verb="$1"
 shift
+
+case "$command_verb" in
+  create|verify-export|export|integrate|cleanup)
+    if [ "${OFFLOAD_WORKER_CONTEXT:-}" = '1' ]; then
+      fail 'worker context cannot create or mutate execution worktrees; only the orchestrator may invoke this lifecycle helper' 126
+    fi
+    ;;
+esac
 
 case "$command_verb" in
   create)

@@ -3,6 +3,10 @@ set -euo pipefail
 
 workspace=""
 status=""
+ledger_path=""
+resource_id=""
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+resource_ledger="$script_dir/resource-ledger.sh"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -14,8 +18,16 @@ while [[ $# -gt 0 ]]; do
       status="$2"
       shift 2
       ;;
+    --ledger)
+      ledger_path="$2"
+      shift 2
+      ;;
+    --resource-id)
+      resource_id="$2"
+      shift 2
+      ;;
     -h|--help)
-      printf 'Usage: %s --workspace <path> --status <success|partial|failed>\n' "$0" >&2
+      printf 'Usage: %s --workspace <path> --status <success|partial|failed> [--ledger <path> --resource-id <id>]\n' "$0" >&2
       exit 0
       ;;
     *)
@@ -24,6 +36,19 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$ledger_path" && -z "$resource_id" ]] || [[ -z "$ledger_path" && -n "$resource_id" ]]; then
+  printf 'Error: --ledger and --resource-id must be supplied together\n' >&2
+  exit 1
+fi
+
+ledger_update() {
+  local state="$1"
+  local error_message="${2:-}"
+  if [[ -n "$ledger_path" && -n "$resource_id" && -f "$ledger_path" ]]; then
+    bash "$resource_ledger" update --ledger "$ledger_path" --resource-id "$resource_id" --state "$state" --error "$error_message" >/dev/null 2>&1 || true
+  fi
+}
 
 if [[ -z "$workspace" || -z "$status" ]]; then
   printf 'Error: --workspace and --status are required\n' >&2
@@ -116,6 +141,7 @@ fi
 
 # For partial and failed, all validation passed, preserve all contents
 if [[ "$status" == "partial" || "$status" == "failed" ]]; then
+  ledger_update retained 'research workspace retained as evidence'
   exit 0
 fi
 
@@ -151,10 +177,12 @@ validate_routing_record() {
       and (.mode | IN("execution", "repo-research", "web-research"))
       and string_field("policy_revision")
       and (.route | IN("default", "quality-retry"))
-      and string_field("model")
       and (.effort | IN("low", "medium", "high"))
-      and (.model | test("^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$"))
-      and ((.model as $model | .effort as $effort | $model | endswith("-" + $effort)))
+      and ((.model? // .model_id?) | type == "string" and length > 0)
+      and (if ((.model_id? | type) == "string" and (.model_id | length) > 0)
+           then ((.model == null) or .model == .model_id)
+           else (.model | test("^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$")) and (.model as $model | .effort as $effort | $model | endswith("-" + $effort))
+           end)
       and string_field("reason")
       and (.state | IN("running", "completed", "failed", "interrupted"))
       and string_field("started_at")
@@ -355,3 +383,5 @@ if [[ "$status" == "success" ]]; then
   done
   shopt -u nullglob dotglob
 fi
+
+ledger_update retained 'research workspace retained as evidence'

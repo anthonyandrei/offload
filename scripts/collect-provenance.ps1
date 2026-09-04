@@ -238,7 +238,7 @@ function Validate-WorkerRouting([System.Text.Json.Nodes.JsonNode]$workerNode) {
     $knownStates = @('running', 'completed', 'failed', 'interrupted')
     $knownFailureClasses = @('none', 'quality', 'timeout', 'tool_error', 'quota', 'unrunnable', 'unknown')
     $knownVerStatuses = @('pending', 'passed', 'failed', 'not_performed')
-    $geminiModelRegex = '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$'
+    $legacyModelRegex = '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$'
 
     $seenAttemptPairs = [System.Collections.Generic.HashSet[string]]::new()
     $attemptCounts = @{}
@@ -251,7 +251,7 @@ function Validate-WorkerRouting([System.Text.Json.Nodes.JsonNode]$workerNode) {
 
         $requiredAttemptKeys = @(
             'worker_id', 'role', 'mode', 'attempt', 'policy_revision',
-            'route', 'model', 'effort', 'reason', 'started_at',
+            'route', 'effort', 'reason', 'started_at',
             'ended_at', 'duration_seconds', 'exit_code', 'state',
             'failure_class', 'evidence_paths', 'usage'
         )
@@ -315,16 +315,31 @@ function Validate-WorkerRouting([System.Text.Json.Nodes.JsonNode]$workerNode) {
         }
 
         $modelVal = Get-NodeString $attObj["model"]
-        if ($modelVal -eq $null -or $modelVal -notmatch $geminiModelRegex) {
-            Fail "attempt model must be a Gemini model ID with effort suffix (matching '$geminiModelRegex')"
+        $modelIdVal = if ($attObj.ContainsKey('model_id')) { Get-NodeString $attObj['model_id'] } else { $null }
+        if ([string]::IsNullOrWhiteSpace($modelVal) -and [string]::IsNullOrWhiteSpace($modelIdVal)) {
+            Fail "attempt must record a non-empty model or model_id"
+        }
+        if ($attObj.ContainsKey('model_id') -and [string]::IsNullOrWhiteSpace($modelIdVal)) {
+            Fail "attempt model_id must be a non-empty string when present"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($modelVal) -and -not [string]::IsNullOrWhiteSpace($modelIdVal) -and $modelVal -ne $modelIdVal) {
+            Fail "attempt model and model_id must identify the same selected model"
         }
 
         $effortVal = Get-NodeString $attObj["effort"]
         if ($effortVal -notin @('low', 'medium', 'high')) {
             Fail "attempt effort must be 'low', 'medium', or 'high'"
         }
-        if (-not $modelVal.EndsWith("-$effortVal")) {
-            Fail "attempt effort '$effortVal' does not match model suffix in '$modelVal'"
+        foreach ($metadataField in @('adapter', 'adapter_revision', 'vendor', 'family_hint', 'preference', 'catalog_revision', 'selection_reason')) {
+            if ($attObj.ContainsKey($metadataField) -and [string]::IsNullOrWhiteSpace((Get-NodeString $attObj[$metadataField]))) {
+                Fail "attempt $metadataField must be a non-empty string when present"
+            }
+        }
+        if ($attObj.ContainsKey('preference') -and (Get-NodeString $attObj['preference']) -notin @('fast', 'balanced', 'deep')) {
+            Fail "attempt preference must be 'fast', 'balanced', or 'deep'"
+        }
+        if ([string]::IsNullOrWhiteSpace($modelIdVal) -and ($modelVal -notmatch $legacyModelRegex -or -not $modelVal.EndsWith("-$effortVal"))) {
+            Fail "legacy attempt model must be a Gemini model ID with an effort suffix; new records must include model_id"
         }
 
         $reasonVal = Get-NodeString $attObj["reason"]

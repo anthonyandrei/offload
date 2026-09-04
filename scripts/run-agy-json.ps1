@@ -1,510 +1,187 @@
 #!/usr/bin/env pwsh
-# scripts/run-agy-json.ps1
-# Offload worker launcher for PowerShell orchestrators.
-# Runs agy with isolated stdout and stderr redirection.
+# Vendor-neutral worker launcher. Model syntax belongs to the selected adapter.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
-function Show-Usage {
-    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] --output FILE --error FILE '--' agy-arguments...")
-    [Console]::Error.WriteLine("In PowerShell command expressions, quote '--' because PowerShell consumes the bare delimiter before the helper receives it.")
-}
-
-function Fail([string]$message, [int]$exitCode = 2) {
-    [Console]::Error.WriteLine("ERROR: $message")
-    exit $exitCode
-}
-
-$outputPath = ""
-$errorPath = ""
-$role = ""
-$route = ""
-$seenOutput = $false
-$seenError = $false
-$seenRole = $false
-$seenRoute = $false
-$seenDashDash = $false
-$forwardedArgs = [System.Collections.Generic.List[string]]::new()
-
-$i = 0
-while ($i -lt $args.Count) {
-    $arg = [string]$args[$i]
-    if ($arg -eq '--') {
-        $seenDashDash = $true
-        $i++
-        while ($i -lt $args.Count) {
-            $forwardedArgs.Add([string]$args[$i])
-            $i++
-        }
-        break
-    } elseif ($arg -eq '--output') {
-        if ($seenOutput) {
-            Fail "duplicate --output option"
-        }
-        $i++
-        if ($i -ge $args.Count) {
-            Show-Usage
-            Fail "--output requires a path"
-        }
-        $outputPath = [string]$args[$i]
-        $seenOutput = $true
-    } elseif ($arg.StartsWith('--output=')) {
-        if ($seenOutput) {
-            Fail "duplicate --output option"
-        }
-        $outputPath = $arg.Substring(9)
-        if ([string]::IsNullOrWhiteSpace($outputPath)) {
-            Show-Usage
-            Fail "--output requires a path"
-        }
-        $seenOutput = $true
-    } elseif ($arg -eq '--error') {
-        if ($seenError) {
-            Fail "duplicate --error option"
-        }
-        $i++
-        if ($i -ge $args.Count) {
-            Show-Usage
-            Fail "--error requires a path"
-        }
-        $errorPath = [string]$args[$i]
-        $seenError = $true
-    } elseif ($arg.StartsWith('--error=')) {
-        if ($seenError) {
-            Fail "duplicate --error option"
-        }
-        $errorPath = $arg.Substring(8)
-        if ([string]::IsNullOrWhiteSpace($errorPath)) {
-            Show-Usage
-            Fail "--error requires a path"
-        }
-        $seenError = $true
-    } elseif ($arg -eq '--role') {
-        if ($seenRole) {
-            Fail "duplicate --role option"
-        }
-        $i++
-        if ($i -ge $args.Count) {
-            Show-Usage
-            Fail "--role requires a role name"
-        }
-        $role = [string]$args[$i]
-        $seenRole = $true
-    } elseif ($arg.StartsWith('--role=')) {
-        if ($seenRole) {
-            Fail "duplicate --role option"
-        }
-        $role = $arg.Substring(7)
-        if ([string]::IsNullOrWhiteSpace($role)) {
-            Show-Usage
-            Fail "--role requires a role name"
-        }
-        $seenRole = $true
-    } elseif ($arg -eq '--route') {
-        if ($seenRoute) {
-            Fail "duplicate --route option"
-        }
-        $i++
-        if ($i -ge $args.Count) {
-            Show-Usage
-            Fail "--route requires a route name"
-        }
-        $route = [string]$args[$i]
-        $seenRoute = $true
-    } elseif ($arg.StartsWith('--route=')) {
-        if ($seenRoute) {
-            Fail "duplicate --route option"
-        }
-        $route = $arg.Substring(8)
-        if ([string]::IsNullOrWhiteSpace($route)) {
-            Show-Usage
-            Fail "--route requires a route name"
-        }
-        $seenRoute = $true
-    } else {
-        Show-Usage
-        Fail "unknown launcher option: $arg"
+function Fail([string]$message, [int]$exitCode = 2) { [Console]::Error.WriteLine("ERROR: $message"); exit $exitCode }
+function Usage { [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] [--adapter FILE] [--selection-output FILE] [--pin FILE] [lifecycle options] --output FILE --error FILE '--' worker-arguments..."); [Console]::Error.WriteLine('The role selects policy preference and effort; the adapter catalog selects the exact model.') }
+function Property($object, [string]$name) { if ($null -eq $object) { return $null }; $p=$object.PSObject.Properties[$name]; if ($null -eq $p) { return $null }; return $p.Value }
+function Read-Json([string]$path, [string]$label) { try { return ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path)) -Depth 30 -ErrorAction Stop } catch { Fail "$label is not valid JSON: $($_.Exception.Message)" } }
+function Read-OptionalText([string]$path) { if (Test-Path -LiteralPath $path -PathType Leaf) { return [System.IO.File]::ReadAllText($path) }; return '' }
+function Resolve-Program([string]$path) {
+    if ([string]::IsNullOrWhiteSpace($path)) { Fail 'adapter path is empty' }
+    $candidate=$path
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) { $candidate=Join-Path (Get-Location).ProviderPath $candidate }
+    $candidate=[System.IO.Path]::GetFullPath($candidate)
+    if ($candidate.EndsWith('.ps1',[System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { Fail "adapter script not found: $candidate" 127 }
+        return @{File=(Get-Command pwsh -ErrorAction Stop).Source;Prefix=@('-NoProfile','-NonInteractive','-File',$candidate)}
     }
-    $i++
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { Fail "adapter not found: $candidate" 127 }
+    return @{File=$candidate;Prefix=@()}
 }
+function Start-Program([hashtable]$program, [string[]]$arguments, [string]$workingDirectory) {
+    $psi=[System.Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$program.File; $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true; $psi.WorkingDirectory=$workingDirectory; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true; $psi.Environment['OFFLOAD_WORKER_CONTEXT']='1'
+    foreach($argument in ($program.Prefix+$arguments)){[void]$psi.ArgumentList.Add([string]$argument)}
+    $process=[System.Diagnostics.Process]::new(); $process.StartInfo=$psi
+    try { if(-not $process.Start()){Fail "failed to start adapter: $($program.File)" 127}; return $process } catch {$process.Dispose(); Fail "adapter invocation failed: $($_.Exception.Message)" 127}
+}
+function Ensure-WorkerJobType {
+    if (-not $IsWindows -or $null -ne ('Offload.JobObjectNative' -as [type])) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
 
-if (-not $seenDashDash) {
-    Show-Usage
-    Fail "-- delimiter is required"
-}
-if (-not $seenOutput -or [string]::IsNullOrWhiteSpace($outputPath)) {
-    Show-Usage
-    Fail "--output is required"
-}
-if (-not $seenError -or [string]::IsNullOrWhiteSpace($errorPath)) {
-    Show-Usage
-    Fail "--error is required"
-}
-if (-not $seenRole -or [string]::IsNullOrWhiteSpace($role)) {
-    Show-Usage
-    Fail "--role is required; specify a role and remove any caller --model flag"
-}
+namespace Offload {
+    public static class JobObjectNative {
+        public const uint KillOnJobClose = 0x2000;
+        public const int JobObjectExtendedLimitInformation = 9;
 
-$knownRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
-if ($knownRoles -notcontains $role) {
-    Fail "unknown role: '$role'; must be one of $($knownRoles -join ', ')"
-}
-
-if ([string]::IsNullOrEmpty($route)) {
-    $route = 'default'
-}
-if ($route -ne 'default' -and $route -ne 'quality-retry') {
-    Fail "unknown route: '$route'; must be 'default' or 'quality-retry'"
-}
-
-if ($forwardedArgs.Count -eq 0) {
-    Show-Usage
-    Fail "agy arguments are required after --"
-}
-
-$callerLocation = Get-Location
-if ($null -eq $callerLocation.Provider -or $callerLocation.Provider.Name -ne 'FileSystem') {
-    Fail "current location must use the FileSystem provider; refusing to launch agy from '$($callerLocation.Path)'"
-}
-$callerWorkingDirectory = $callerLocation.ProviderPath
-if ([string]::IsNullOrWhiteSpace($callerWorkingDirectory) -or -not [System.IO.Directory]::Exists($callerWorkingDirectory)) {
-    Fail "current filesystem location is not an existing directory: $($callerLocation.Path)"
-}
-$callerWorkingDirectory = [System.IO.Path]::GetFullPath($callerWorkingDirectory)
-
-$knownValueTakingOptions = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-@('-p', '--prompt', '--print', '--prompt-interactive', '-i', '--path', '--output-format', '--mode', '--json-schema', '--add-dir', '--agent', '--conversation', '--log-file', '--print-timeout', '--project', '--input-format') | ForEach-Object { $knownValueTakingOptions.Add($_) | Out-Null }
-
-$idx = 0
-while ($idx -lt $forwardedArgs.Count) {
-    $fa = $forwardedArgs[$idx]
-    if ($fa -eq '--output' -or $fa.StartsWith('--output=')) {
-        Fail "do not pass --output to agy; use the launcher --output path instead"
-    } elseif ($fa -eq '--model' -or $fa.StartsWith('--model=')) {
-        Fail "caller cannot specify --model; model routing is controlled by --role"
-    } elseif ($fa -eq '--effort' -or $fa.StartsWith('--effort=')) {
-        Fail "caller cannot specify --effort; reasoning effort is controlled by policy"
-    } elseif ($knownValueTakingOptions.Contains($fa)) {
-        if ($idx + 1 -lt $forwardedArgs.Count) {
-            $idx++
-        }
-    }
-    $idx++
-}
-
-# Resolve policy file repository-root relative to launcher location
-$scriptDir = $PSScriptRoot
-if (-not $scriptDir) {
-    $scriptDir = Split-Path -Parent (Resolve-Path $MyInvocation.MyCommand.Path)
-}
-$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..'))
-$policyFile = Join-Path $repoRoot 'model-policy.json'
-
-if (-not (Test-Path -LiteralPath $policyFile -PathType Leaf)) {
-    Fail "model policy file not found at: $policyFile"
-}
-
-$policyRaw = ""
-try {
-    $policyRaw = [System.IO.File]::ReadAllText($policyFile, [System.Text.Encoding]::UTF8)
-} catch {
-    Fail "failed to read model policy file: $policyFile ($($_.Exception.Message))"
-}
-
-$policy = $null
-try {
-    $policy = ConvertFrom-Json -InputObject $policyRaw -Depth 20 -ErrorAction Stop
-} catch {
-    Fail "model policy file is not valid JSON: $policyFile ($($_.Exception.Message))"
-}
-
-if ($null -eq $policy -or $policy -isnot [System.Management.Automation.PSCustomObject]) {
-    Fail "model policy must be a JSON object: $policyFile"
-}
-
-$schemaProp = $policy.PSObject.Properties['schema_version']
-if ($null -eq $schemaProp -or ($schemaProp.Value -isnot [int] -and $schemaProp.Value -isnot [long]) -or $schemaProp.Value -ne 1) {
-    Fail "unsupported schema_version in model policy: must be integer 1"
-}
-
-$revProp = $policy.PSObject.Properties['policy_revision']
-if ($null -eq $revProp -or $revProp.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($revProp.Value)) {
-    Fail "policy_revision in model policy must be a non-empty string"
-}
-
-$effortProp = $policy.PSObject.Properties['max_effort']
-if ($null -eq $effortProp -or $effortProp.Value -ne 'high') {
-    Fail "invalid max_effort in model policy: must be 'high'"
-}
-
-$retriesProp = $policy.PSObject.Properties['max_retries_per_worker']
-if ($null -eq $retriesProp -or ($retriesProp.Value -isnot [int] -and $retriesProp.Value -isnot [long]) -or $retriesProp.Value -ne 1) {
-    Fail "unsupported max_retries_per_worker in model policy: must be integer 1"
-}
-
-$quotaProp = $policy.PSObject.Properties['quota_action']
-if ($null -eq $quotaProp -or $quotaProp.Value -ne 'handoff') {
-    Fail "invalid quota_action in model policy: must be 'handoff'"
-}
-
-$rolesProp = $policy.PSObject.Properties['roles']
-if ($null -eq $rolesProp -or $null -eq $rolesProp.Value -or $rolesProp.Value -isnot [System.Management.Automation.PSCustomObject]) {
-    Fail "roles in model policy must be a JSON object"
-}
-
-$expectedRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
-$actualRoleNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-foreach ($rp in $rolesProp.Value.PSObject.Properties) {
-    $actualRoleNames.Add($rp.Name) | Out-Null
-}
-
-foreach ($reqRole in $expectedRoles) {
-    if (-not $actualRoleNames.Contains($reqRole)) {
-        Fail "model policy roles missing required role: $reqRole"
-    }
-}
-foreach ($actRole in $actualRoleNames) {
-    if ($expectedRoles -notcontains $actRole) {
-        Fail "model policy roles contains unknown role: $actRole"
-    }
-}
-
-$geminiModelRegex = '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$'
-
-foreach ($rname in $expectedRoles) {
-    $roleEntry = $rolesProp.Value.PSObject.Properties[$rname]
-    if ($null -eq $roleEntry -or $null -eq $roleEntry.Value -or $roleEntry.Value -isnot [System.Management.Automation.PSCustomObject]) {
-        Fail "role '$rname' in model policy must be an object"
-    }
-    $rObj = $roleEntry.Value
-
-    $dmProp = $rObj.PSObject.Properties['default_model']
-    if ($null -eq $dmProp -or $dmProp.Value -isnot [string] -or $dmProp.Value -notmatch $geminiModelRegex) {
-        Fail "role '$rname' has invalid default_model (must match '$geminiModelRegex')"
-    }
-    $defaultModel = [string]$dmProp.Value
-
-    $escProp = $rObj.PSObject.Properties['quality_escalation']
-    if ($null -eq $escProp) {
-        Fail "role '$rname' in model policy missing quality_escalation"
-    }
-    if ($null -ne $escProp.Value) {
-        if ($escProp.Value -isnot [System.Management.Automation.PSCustomObject]) {
-            Fail "role '$rname' quality_escalation must be null or an object"
-        }
-        $escObj = $escProp.Value
-
-        $escModelProp = $escObj.PSObject.Properties['model']
-        if ($null -eq $escModelProp -or $escModelProp.Value -isnot [string] -or $escModelProp.Value -notmatch $geminiModelRegex) {
-            Fail "role '$rname' quality_escalation model is invalid (must match '$geminiModelRegex')"
-        }
-        if ($escModelProp.Value -eq $defaultModel) {
-            Fail "role '$rname' quality_escalation model identical to default_model"
+        [StructLayout(LayoutKind.Sequential)]
+        public struct BasicLimitInformation {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public IntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
         }
 
-        $evPathProp = $escObj.PSObject.Properties['evidence_path']
-        if ($null -eq $evPathProp -or $evPathProp.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($evPathProp.Value)) {
-            Fail "role '$rname' quality_escalation evidence_path must be non-empty string"
+        [StructLayout(LayoutKind.Sequential)]
+        public struct IoCounters {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
         }
-        $evPath = [string]$evPathProp.Value
-        if ($evPath.StartsWith('/') -or $evPath.StartsWith('\') -or $evPath.Contains(':') -or $evPath.Contains('..')) {
-            Fail "role '$rname' quality_escalation evidence_path must not escape repository root: $evPath"
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct ExtendedLimitInformation {
+            public BasicLimitInformation BasicLimitInformation;
+            public IoCounters IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
         }
-        $fullEvPath = Join-Path $repoRoot $evPath
-        if (-not (Test-Path -LiteralPath $fullEvPath -PathType Leaf)) {
-            Fail "missing escalation evidence path: $evPath"
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool SetInformationJobObject(
+            IntPtr job,
+            int informationClass,
+            ref ExtendedLimitInformation information,
+            uint informationLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool CloseHandle(IntPtr handle);
+
+        public static int LastError() {
+            return Marshal.GetLastWin32Error();
         }
     }
 }
-
-# Resolve model for role and route
-$resolvedModel = $null
-if ($route -eq 'default') {
-    $resolvedModel = [string]$rolesProp.Value.PSObject.Properties[$role].Value.PSObject.Properties['default_model'].Value
-} elseif ($route -eq 'quality-retry') {
-    $escVal = $rolesProp.Value.PSObject.Properties[$role].Value.PSObject.Properties['quality_escalation'].Value
-    if ($null -eq $escVal) {
-        Fail "role '$role' has no quality escalation target configured for quality-retry route"
-    }
-    $escModel = $escVal.PSObject.Properties['model']
-    if ($null -eq $escModel -or [string]::IsNullOrWhiteSpace($escModel.Value)) {
-        Fail "role '$role' has no quality escalation target configured for quality-retry route"
-    }
-    $resolvedModel = [string]$escModel.Value
+'@
 }
-
-if ([string]::IsNullOrWhiteSpace($resolvedModel)) {
-    Fail "failed to resolve model for role '$role' and route '$route'"
-}
-
-# Resolve agy executable
-$resolvedAgy = $null
-
-if ($env:AGY_BIN) {
-    $explicit = $env:AGY_BIN.Trim()
-    if ($explicit.Length -gt 0) {
-        $cmd = Get-Command $explicit -ErrorAction SilentlyContinue
-        if ($cmd) {
-            $resolvedAgy = if ($cmd.Source) { $cmd.Source } else { $cmd.Name }
-        } elseif (Test-Path -LiteralPath $explicit -PathType Leaf) {
-            $resolvedAgy = (Resolve-Path -LiteralPath $explicit).Path
-        } else {
-            Fail "explicit AGY_BIN does not resolve to an executable file or command: $explicit" 1
-        }
-    }
-}
-
-if (-not $resolvedAgy) {
-    $cmd = Get-Command agy -ErrorAction SilentlyContinue
-    if ($cmd) {
-        $resolvedAgy = if ($cmd.Source) { $cmd.Source } else { $cmd.Name }
-    }
-}
-
-if (-not $resolvedAgy) {
-    $userProfile = if ($env:USERPROFILE) { $env:USERPROFILE } else { $env:HOME }
-    if ($userProfile) {
-        $candidate1 = Join-Path $userProfile '.local\bin\agy.exe'
-        $candidate2 = Join-Path $userProfile '.local/bin/agy'
-        if (Test-Path -LiteralPath $candidate1 -PathType Leaf) {
-            $resolvedAgy = $candidate1
-        } elseif (Test-Path -LiteralPath $candidate2 -PathType Leaf) {
-            $resolvedAgy = $candidate2
-        }
-    }
-}
-
-if (-not $resolvedAgy) {
-    Fail "agy was not found (checked AGY_BIN, Get-Command agy, %USERPROFILE%\.local\bin\agy.exe)" 1
-}
-
-# Resolve paths and validate output/error destinations
-$resolvedOutputPath = [System.IO.Path]::GetFullPath($outputPath)
-$resolvedErrorPath = [System.IO.Path]::GetFullPath($errorPath)
-
-$pathComparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
-
-if ([string]::Equals($resolvedOutputPath, $resolvedErrorPath, $pathComparison)) {
-    Fail "output and error paths must not be identical: $resolvedOutputPath"
-}
-
-if ([System.IO.Directory]::Exists($resolvedOutputPath)) {
-    Fail "output destination is an existing directory: $resolvedOutputPath"
-}
-
-if ([System.IO.Directory]::Exists($resolvedErrorPath)) {
-    Fail "error destination is an existing directory: $resolvedErrorPath"
-}
-
-try {
-    $outDir = [System.IO.Path]::GetDirectoryName($resolvedOutputPath)
-    if (-not [string]::IsNullOrEmpty($outDir) -and -not [System.IO.Directory]::Exists($outDir)) {
-        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
-    }
-
-    $errDir = [System.IO.Path]::GetDirectoryName($resolvedErrorPath)
-    if (-not [string]::IsNullOrEmpty($errDir) -and -not [System.IO.Directory]::Exists($errDir)) {
-        [System.IO.Directory]::CreateDirectory($errDir) | Out-Null
-    }
-} catch {
-    Fail "failed to create parent directory for output or error: $($_.Exception.Message)" 1
-}
-
-$outFs = $null
-$errFs = $null
-$proc = $null
-$launcherSuccess = $false
-$workerExitCode = 1
-
-try {
+function New-WorkerJob {
+    if (-not $IsWindows) { return [IntPtr]::Zero }
+    Ensure-WorkerJobType
+    $job=[Offload.JobObjectNative]::CreateJobObject([IntPtr]::Zero,$null)
+    if($job -eq [IntPtr]::Zero){throw "CreateJobObject failed with Win32 error $([Offload.JobObjectNative]::LastError())"}
     try {
-        $outFs = [System.IO.File]::Create($resolvedOutputPath)
+        $limits=[Offload.JobObjectNative+ExtendedLimitInformation]::new()
+        $basic=$limits.BasicLimitInformation
+        $basic.LimitFlags=[Offload.JobObjectNative]::KillOnJobClose
+        $limits.BasicLimitInformation=$basic
+        $size=[System.Runtime.InteropServices.Marshal]::SizeOf($limits)
+        if(-not [Offload.JobObjectNative]::SetInformationJobObject($job,[Offload.JobObjectNative]::JobObjectExtendedLimitInformation,[ref]$limits,[uint32]$size)){throw "SetInformationJobObject failed with Win32 error $([Offload.JobObjectNative]::LastError())"}
+        return $job
     } catch {
-        Fail "failed to open output destination '$resolvedOutputPath': $($_.Exception.Message)" 1
-    }
-
-    try {
-        $errFs = [System.IO.File]::Create($resolvedErrorPath)
-    } catch {
-        Fail "failed to open error destination '$resolvedErrorPath': $($_.Exception.Message)" 1
-    }
-
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    if ($resolvedAgy.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
-        $pwshBin = (Get-Process -Id $PID).Path
-        $psi.FileName = $pwshBin
-        $psi.ArgumentList.Add('-NoProfile')
-        $psi.ArgumentList.Add('-File')
-        $psi.ArgumentList.Add($resolvedAgy)
-    } else {
-        $psi.FileName = $resolvedAgy
-    }
-
-    $psi.UseShellExecute = $false
-    $psi.WorkingDirectory = $callerWorkingDirectory
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.ArgumentList.Add('--model')
-    $psi.ArgumentList.Add($resolvedModel)
-    foreach ($arg in $forwardedArgs) {
-        $psi.ArgumentList.Add($arg)
-    }
-
-    try {
-        $proc = [System.Diagnostics.Process]::Start($psi)
-    } catch {
-        Fail "failed to start agy: $($_.Exception.Message)" 1
-    }
-
-    try {
-        if ($env:FAKE_LAUNCHER_FAIL_POST_START -or $env:OFFLOAD_TEST_FAIL_POST_START) {
-            if ($env:FAKE_AGY_STARTED_MARKER) {
-                $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                while (-not (Test-Path -LiteralPath $env:FAKE_AGY_STARTED_MARKER) -and $sw.ElapsedMilliseconds -lt 5000) {
-                    [System.Threading.Thread]::Sleep(20)
-                }
-            }
-            throw "simulated post-start failure"
-        }
-
-        $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
-        $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
-        $proc.WaitForExit()
-        [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
-        $workerExitCode = $proc.ExitCode
-        $launcherSuccess = $true
-    } catch {
-        Fail "launcher failed after starting worker: $($_.Exception.Message)" 1
-    }
-} finally {
-    if ($null -ne $proc -and -not $launcherSuccess) {
-        try {
-            if (-not $proc.HasExited) {
-                $proc.Kill($true)
-                $proc.WaitForExit()
-            }
-        } catch [System.InvalidOperationException] {
-            # Process already exited
-        } catch {
-            # Best effort kill
-        }
-    }
-    if ($null -ne $outFs) {
-        try {
-            $outFs.Dispose()
-        } catch { }
-    }
-    if ($null -ne $errFs) {
-        try {
-            $errFs.Dispose()
-        } catch { }
-    }
-    if ($null -ne $proc) {
-        try {
-            $proc.Dispose()
-        } catch { }
+        [Offload.JobObjectNative]::CloseHandle($job)|Out-Null
+        throw
     }
 }
+function Add-ProcessToWorkerJob([IntPtr]$job,[System.Diagnostics.Process]$process) {
+    if($job -eq [IntPtr]::Zero){return $true}
+    return [Offload.JobObjectNative]::AssignProcessToJobObject($job,$process.Handle)
+}
+function Start-WorkerWatchdog([System.Diagnostics.Process]$process) {
+    $targetStartTicks=0L
+    try { $targetStartTicks=$process.StartTime.ToUniversalTime().Ticks } catch { }
+    $watchdogCode=@'
+$parent=Get-Process -Id __PARENT_PID__ -ErrorAction SilentlyContinue
+while($null -ne $parent -and -not $parent.HasExited){Start-Sleep -Milliseconds 100;$parent=Get-Process -Id __PARENT_PID__ -ErrorAction SilentlyContinue}
+try{$target=Get-Process -Id __TARGET_PID__ -ErrorAction Stop;$matches=__TARGET_START_TICKS__ -eq 0 -or $target.StartTime.ToUniversalTime().Ticks -eq __TARGET_START_TICKS__;if($matches -and -not $target.HasExited){$target.Kill($true);$target.WaitForExit()}}catch{}
+'@
+    $watchdogCode=$watchdogCode.Replace('__PARENT_PID__',[string]$PID).Replace('__TARGET_PID__',[string]$process.Id).Replace('__TARGET_START_TICKS__',[string]$targetStartTicks)
+    $encoded=[Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($watchdogCode))
+    $psi=[System.Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Get-Command pwsh -ErrorAction Stop).Source;$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.WorkingDirectory=(Get-Location).ProviderPath
+    [void]$psi.ArgumentList.Add('-NoProfile');[void]$psi.ArgumentList.Add('-NonInteractive');[void]$psi.ArgumentList.Add('-EncodedCommand');[void]$psi.ArgumentList.Add($encoded)
+    $watchdog=[System.Diagnostics.Process]::new();$watchdog.StartInfo=$psi
+    try { if(-not $watchdog.Start()){$watchdog.Dispose();return $null};return $watchdog } catch {$watchdog.Dispose();return $null}
+}
+function Stop-WorkerWatchdog([System.Diagnostics.Process]$watchdog) {
+    if($null -eq $watchdog){return}
+    try { if(-not $watchdog.HasExited){$watchdog.Kill($true);$watchdog.WaitForExit()} } catch { }
+    try {$watchdog.Dispose()} catch { }
+}
+function Stop-Worker([IntPtr]$job,[System.Diagnostics.Process]$process) {
+    $terminated=$false
+    if($job -ne [IntPtr]::Zero){$terminated=[Offload.JobObjectNative]::TerminateJobObject($job,1)}
+    if(-not $terminated -and $process -and -not $process.HasExited){$process.Kill($true)}
+    if($process -and -not $process.HasExited){$process.WaitForExit()}
+}
+function Close-WorkerJob([IntPtr]$job) {
+    if($job -ne [IntPtr]::Zero){[Offload.JobObjectNative]::CloseHandle($job)|Out-Null}
+}
+function Invoke-Program([hashtable]$program, [string[]]$arguments, [string]$workingDirectory, [string]$stdoutPath, [string]$stderrPath) {
+    $process=$null;$workerJob=[IntPtr]::Zero;$workerWatchdog=$null
+    try { $process=Start-Program $program $arguments $workingDirectory;$workerJob=New-WorkerJob;if(-not (Add-ProcessToWorkerJob $workerJob $process)){Close-WorkerJob $workerJob;$workerJob=[IntPtr]::Zero};$workerWatchdog=Start-WorkerWatchdog $process;if($workerJob -eq [IntPtr]::Zero -and $null -eq $workerWatchdog){Stop-Worker $workerJob $process;throw 'worker containment could not be established'};$outTask=$process.StandardOutput.ReadToEndAsync(); $errTask=$process.StandardError.ReadToEndAsync(); $process.WaitForExit(); [System.IO.File]::WriteAllText($stdoutPath,$outTask.GetAwaiter().GetResult(),[System.Text.Encoding]::UTF8); [System.IO.File]::WriteAllText($stderrPath,$errTask.GetAwaiter().GetResult(),[System.Text.Encoding]::UTF8); return $process.ExitCode } finally {Stop-WorkerWatchdog $workerWatchdog;if($process -and -not $process.HasExited){try{Stop-Worker $workerJob $process}catch{}};Close-WorkerJob $workerJob;if($process){$process.Dispose()}}
+}
+function Ensure-Path([string]$path,[string]$label,[string]$caller) {
+    if([string]::IsNullOrWhiteSpace($path)){Fail "$label is required"}; if(-not [System.IO.Path]::IsPathRooted($path)){$path=Join-Path $caller $path}; try{$path=[System.IO.Path]::GetFullPath($path)}catch{Fail "$label is not a valid path: $path"}; $parent=[System.IO.Path]::GetDirectoryName($path); if($parent -and -not [System.IO.Directory]::Exists($parent)){[System.IO.Directory]::CreateDirectory($parent)|Out-Null}; return $path
+}
+function Invoke-ResourceLedger([string]$verb,[string[]]$arguments) {
+    $ledgerScript=[System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'resource-ledger.ps1'));$psi=[System.Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Get-Command pwsh -ErrorAction Stop).Source;$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.WorkingDirectory=(Get-Location).ProviderPath;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
+    foreach($argument in (@('-NoProfile','-NonInteractive','-File',$ledgerScript,$verb)+$arguments)){[void]$psi.ArgumentList.Add([string]$argument)}
+    $process=$null;try{$process=[System.Diagnostics.Process]::Start($psi);if($null -eq $process){throw 'resource ledger process did not start'};$stdout=$process.StandardOutput.ReadToEnd();$stderr=$process.StandardError.ReadToEnd();$process.WaitForExit();if($process.ExitCode -ne 0){$message=$stderr.Trim();if([string]::IsNullOrWhiteSpace($message)){$message=$stdout.Trim()};throw "resource ledger $verb failed$(if($message){": $message"})"};return $stdout}finally{if($process){$process.Dispose()}}
+}
 
-exit $workerExitCode
+$outputPath='';$errorPath='';$selectionOutputPath='';$pinPath='';$adapterPath='';$role='';$route='default';$lifecyclePath='';$attempt=1;$mode='unknown';$verificationBaseline='';$resourceLedgerPath='';$timeoutSeconds=0;$cancelFile='';$ledgerPath='';$assignmentId='';$parentId='';$resourceId=''
+$options=@{};$forwardedArgs=[System.Collections.Generic.List[string]]::new();$requiredCapabilities=[System.Collections.Generic.List[string]]::new();$delimiter=$false
+$valueOptions=@('--output','--error','--selection-output','--pin','--adapter','--role','--route','--lifecycle','--attempt','--mode','--verification-baseline','--resource-ledger','--timeout-seconds','--cancel-file','--ledger','--assignment-id','--parent-id','--resource-id')
+$i=0
+while($i -lt $args.Count){$arg=[string]$args[$i];if($arg -eq '--'){$delimiter=$true;$i++;while($i -lt $args.Count){$forwardedArgs.Add([string]$args[$i]);$i++};break};$name='';$value=$null;if($arg -match '^(--[^=]+)=(.*)$'){$name=$Matches[1];$value=$Matches[2]}elseif($valueOptions -contains $arg -or $arg -eq '--require-capability'){$name=$arg;$i++;if($i -ge $args.Count){Usage;Fail "$name requires a value"};$value=[string]$args[$i]}else{Usage;Fail "unknown launcher option: $arg"};if($name -eq '--require-capability'){if([string]::IsNullOrWhiteSpace($value)){Fail '--require-capability requires a non-empty value'};$requiredCapabilities.Add($value)}else{if($options.ContainsKey($name)){Fail "duplicate $name option"};$options[$name]=$value};$i++}
+if(-not $delimiter){Usage;Fail '-- delimiter is required'};if($forwardedArgs.Count -eq 0){Usage;Fail 'worker arguments are required after --'};foreach($name in @('--output','--error','--role')){if(-not ($options.ContainsKey($name)) -or [string]::IsNullOrWhiteSpace([string]$options[$name])){Usage;Fail "$name is required"}}
+$outputPath=[string]$options['--output'];$errorPath=[string]$options['--error'];$role=[string]$options['--role'];if($options.ContainsKey('--selection-output')){$selectionOutputPath=[string]$options['--selection-output']};if($options.ContainsKey('--pin')){$pinPath=[string]$options['--pin']};if($options.ContainsKey('--adapter')){$adapterPath=[string]$options['--adapter']};if($options.ContainsKey('--route')){$route=[string]$options['--route']};if($options.ContainsKey('--lifecycle')){$lifecyclePath=[string]$options['--lifecycle']};if($options.ContainsKey('--attempt')){if(-not [int]::TryParse([string]$options['--attempt'],[ref]$attempt)){Fail '--attempt requires an integer'}};if($options.ContainsKey('--mode')){$mode=[string]$options['--mode']};if($options.ContainsKey('--verification-baseline')){$verificationBaseline=[string]$options['--verification-baseline']};if($options.ContainsKey('--resource-ledger')){$resourceLedgerPath=[string]$options['--resource-ledger']};if($options.ContainsKey('--timeout-seconds')){if(-not [int]::TryParse([string]$options['--timeout-seconds'],[ref]$timeoutSeconds)){Fail '--timeout-seconds requires an integer'}};if($options.ContainsKey('--cancel-file')){$cancelFile=[string]$options['--cancel-file']};if($options.ContainsKey('--ledger')){$ledgerPath=[string]$options['--ledger']};if($options.ContainsKey('--assignment-id')){$assignmentId=[string]$options['--assignment-id']};if($options.ContainsKey('--parent-id')){$parentId=[string]$options['--parent-id']};if($options.ContainsKey('--resource-id')){$resourceId=[string]$options['--resource-id']}
+if($route -notin @('default','quality-retry')){Fail "unknown route: '$route'; must be default or quality-retry"};if($role -notin @('scout','gate-author','implementer','reviewer','researcher','synthesizer','auditor')){Fail "unknown role: '$role'"};if($env:OFFLOAD_WORKER_CONTEXT -eq '1'){Fail 'worker process cannot invoke the launcher; only the orchestrator may create worker processes' 126};foreach($forwarded in $forwardedArgs){if($forwarded -eq '--output' -or $forwarded.StartsWith('--output=') -or $forwarded -eq '--model' -or $forwarded.StartsWith('--model=') -or $forwarded -eq '--effort' -or $forwarded.StartsWith('--effort=')){Fail 'caller cannot pass --output, --model, or --effort to the worker'}};if($timeoutSeconds -lt 0){Fail '--timeout-seconds must be zero or a positive integer'}
+$currentLocation=Get-Location;if($currentLocation.Provider.Name -ne 'FileSystem'){Fail 'current location must use the FileSystem provider'};$callerDirectory=[System.IO.Path]::GetFullPath($currentLocation.ProviderPath);$outputPath=Ensure-Path $outputPath 'output path' $callerDirectory;$errorPath=Ensure-Path $errorPath 'error path' $callerDirectory;if($outputPath -eq $errorPath){Fail 'output and error paths must be different'};if($selectionOutputPath){$selectionOutputPath=Ensure-Path $selectionOutputPath 'selection output path' $callerDirectory};if($ledgerPath){$ledgerPath=Ensure-Path $ledgerPath 'ledger path' $callerDirectory;if($resourceLedgerPath){$resourceLedgerPath=Ensure-Path $resourceLedgerPath 'resource ledger path' $callerDirectory;if($ledgerPath -ne $resourceLedgerPath){Fail '--ledger and --resource-ledger must name the same path'}}else{$resourceLedgerPath=$ledgerPath}}elseif($resourceLedgerPath){$resourceLedgerPath=Ensure-Path $resourceLedgerPath 'resource ledger path' $callerDirectory}
+$scriptDir=[System.IO.Path]::GetFullPath($PSScriptRoot);$repoRoot=[System.IO.Path]::GetFullPath((Join-Path $scriptDir '..'));$policyFile=Join-Path $repoRoot 'model-policy.json';$policy=Read-Json $policyFile 'model policy file';if((Property $policy 'schema_version') -ne 2 -or (Property $policy 'max_effort') -ne 'high' -or (Property $policy 'max_retries_per_worker') -ne 1 -or (Property $policy 'quota_action') -ne 'handoff'){Fail 'model policy has unsupported schema or safety settings'}
+$roles=Property $policy 'roles';$rolePolicy=Property $roles $role;if($null -eq $rolePolicy -or (Property $rolePolicy 'preference') -notin @('fast','balanced','deep') -or (Property $rolePolicy 'effort') -notin @('low','medium','high')){Fail "role '$role' has invalid policy"};$preference=[string](Property $rolePolicy 'preference');$effort=[string](Property $rolePolicy 'effort');$policyCapabilities=@((Property $rolePolicy 'required_capabilities'))|Where-Object{ -not [string]::IsNullOrWhiteSpace([string]$_)};$allCapabilities=@($policyCapabilities+$requiredCapabilities.ToArray())|Sort-Object -Unique;if($route -eq 'quality-retry' -and [string]::IsNullOrWhiteSpace($pinPath)){Fail 'quality-retry requires --pin with the prior selection; use an explicit fallback or handoff when it is unavailable' 3}
+$adapterDefault=Join-Path $scriptDir 'agy-adapter.ps1';if([string]::IsNullOrWhiteSpace($adapterPath)){$adapterPath=[Environment]::GetEnvironmentVariable('OFFLOAD_ADAPTER_BIN')};if([string]::IsNullOrWhiteSpace($adapterPath)){$adapterPath=$adapterDefault};$adapter=Resolve-Program $adapterPath;$tempRequest=[System.IO.Path]::GetTempFileName();$tempCatalog=[System.IO.Path]::GetTempFileName();$tempAdapterError=[System.IO.Path]::GetTempFileName();$tempLaunchSelection=[System.IO.Path]::GetTempFileName()
+try {
+    $request=[ordered]@{protocol_version=1;operation='catalog';role=$role;preference=$preference;effort=$effort;required_capabilities=@($allCapabilities);policy_revision=[string](Property $policy 'policy_revision')};[System.IO.File]::WriteAllText($tempRequest,($request|ConvertTo-Json -Depth 20),[System.Text.Encoding]::UTF8);$catalogCode=Invoke-Program $adapter @('--operation','catalog','--request',$tempRequest) $callerDirectory $tempCatalog $tempAdapterError;if($catalogCode -ne 0){$diagnostic=[System.IO.File]::ReadAllText($tempAdapterError).Trim();Fail "adapter catalog discovery failed with exit code $catalogCode$(if($diagnostic){": $diagnostic"})" 127}
+    $catalog=Read-Json $tempCatalog 'adapter catalog';if((Property $catalog 'protocol_version') -ne 1){Fail 'adapter catalog has unsupported protocol_version' 127};$catalogAdapter=[string](Property $catalog 'adapter');$catalogVendor=[string](Property $catalog 'vendor');$catalogRevision=[string](Property $catalog 'catalog_revision');$adapterRevision=[string](Property $catalog 'adapter_revision');if(@($catalogAdapter,$catalogVendor,$catalogRevision,$adapterRevision|Where-Object{[string]::IsNullOrWhiteSpace([string]$_)}).Count -gt 0){Fail 'adapter catalog is missing required metadata' 127}
+    $eligible=[System.Collections.Generic.List[object]]::new();foreach($model in @((Property $catalog 'models'))){$id=[string](Property $model 'id');$supported=@((Property $model 'supported_efforts'))|ForEach-Object{[string]$_};$caps=@((Property $model 'capabilities'))|ForEach-Object{[string]$_};$scores=Property $model 'scores';$scoreValue=Property $scores $preference;if([string]::IsNullOrWhiteSpace($id) -or (Property $model 'available') -ne $true -or ((Property $model 'quota_available') -ne $null -and (Property $model 'quota_available') -ne $true) -or $supported -notcontains $effort){continue};if(@($allCapabilities|Where-Object{$caps -notcontains $_}).Count -gt 0){continue};if($null -eq $scoreValue){$scoreValue=1000000};try{$score=[double]$scoreValue}catch{continue};$vendor=[string](Property $model 'vendor');if([string]::IsNullOrWhiteSpace($vendor)){$vendor=$catalogVendor};$eligible.Add([pscustomobject]@{Model=$model;Id=$id;Vendor=$vendor;Score=$score})}
+    if($eligible.Count -eq 0){Fail "adapter catalog has no eligible model for role '$role', effort '$effort', and required capabilities" 4};$selected=$null;$selectionReason="catalog selection preference=$preference effort=$effort; filtered unavailable, quota, effort, capability, and static-policy-incompatible candidates";if($pinPath){if(-not(Test-Path -LiteralPath $pinPath -PathType Leaf)){Fail "pinned selection file not found: $pinPath" 3};$pin=Read-Json $pinPath 'pinned selection';$pinId=[string](Property $pin 'model_id');if(-not $pinId){$pinId=[string](Property $pin 'model')};if([string](Property $pin 'adapter') -ne $catalogAdapter -or [string](Property $pin 'vendor') -ne $catalogVendor -or [string](Property $pin 'effort') -ne $effort -or -not $pinId){Fail 'pinned selection does not match the current adapter, vendor, or policy effort; explicit fallback or handoff is required' 3};$selected=$eligible|Where-Object{$_.Id -eq $pinId -and $_.Vendor -eq $catalogVendor}|Select-Object -First 1;if($null -eq $selected){Fail "pinned model '$pinId' is unavailable in catalog revision '$catalogRevision'; explicit fallback or handoff is required" 3};$selectionReason="pinned selection adapter=$catalogAdapter vendor=$catalogVendor model_id=$pinId; catalog_revision=$catalogRevision"}else{$selected=$eligible|Sort-Object Score,Vendor,Id|Select-Object -First 1}
+    $selection=[ordered]@{protocol_version=1;adapter=$catalogAdapter;adapter_revision=$adapterRevision;vendor=$selected.Vendor;model_id=$selected.Id;model=$selected.Id;family_hint=[string](Property $selected.Model 'family_hint');preference=$preference;effort=$effort;catalog_revision=$catalogRevision;policy_revision=[string](Property $policy 'policy_revision');required_capabilities=@($allCapabilities);selection_reason=$selectionReason;route=$route};$selectionJson=$selection|ConvertTo-Json -Depth 20;if($selectionOutputPath){[System.IO.File]::WriteAllText($selectionOutputPath,$selectionJson,[System.Text.Encoding]::UTF8)}
+    $lifecycle=$options.ContainsKey('--lifecycle') -or $options.ContainsKey('--attempt') -or $options.ContainsKey('--resource-ledger') -or $options.ContainsKey('--ledger') -or $options.ContainsKey('--timeout-seconds') -or $options.ContainsKey('--cancel-file');if(-not $lifecycle){[System.IO.File]::WriteAllText($tempLaunchSelection,$selectionJson,[System.Text.Encoding]::UTF8);$code=Invoke-Program $adapter (@('--operation','launch','--request',$tempLaunchSelection,'--output',$outputPath,'--error',$errorPath,'--')+$forwardedArgs.ToArray()) $callerDirectory $tempCatalog $tempAdapterError;if($code -ne 0){$diag=[System.IO.File]::ReadAllText($tempAdapterError).Trim();if($diag){[Console]::Error.WriteLine("ERROR: adapter launch failed with exit code ${code}: $diag")}};exit $code}
+    if(-not $assignmentId){$assignmentId="$role-$(Get-Date -Format 'yyyyMMddHHmmssfff')"};if(-not $lifecyclePath){$lifecyclePath="$outputPath.lifecycle.json"};$lifecyclePath=Ensure-Path $lifecyclePath 'lifecycle path' $callerDirectory;if($attempt -lt 1 -or $attempt -gt 2){Fail 'attempt must be 1 or 2; policy allows at most one retry per assignment'};if($resourceLedgerPath){Invoke-ResourceLedger 'init' @('--ledger',$resourceLedgerPath)|Out-Null}
+    $workerResourceId=if($resourceId){$resourceId}else{"worker-process:$($assignmentId):attempt:$attempt"};$resourceParentId=if($parentId){$parentId}else{'orchestrator'};$resourceRegistered=$false;$resourceState='failed';$resourceError='';$script:Record=[ordered]@{schema_version=1;assignment_id=$assignmentId;attempt=$attempt;role=$role;mode=$mode;policy_revision=[string](Property $policy 'policy_revision');model=[string]$selection.model_id;effort=$effort;verification_baseline=if($verificationBaseline){$verificationBaseline}else{$null};resource_ledger=if($resourceLedgerPath){$resourceLedgerPath}else{$null};resource_id=if($resourceLedgerPath){$workerResourceId}else{$null};state='created';events=@();exit_code=$null;termination='none';failure_class='none';artifacts=[ordered]@{output=$outputPath;error=$errorPath;lifecycle=$lifecyclePath}}
+    function Save-Record{[System.IO.File]::WriteAllText($lifecyclePath,($script:Record|ConvertTo-Json -Depth 20),[System.Text.Encoding]::UTF8)};function State([string]$name,[hashtable]$details=@{}){$event=[ordered]@{state=$name;at=[DateTime]::UtcNow.ToString('o')};foreach($key in $details.Keys){$event[$key]=$details[$key]};$script:Record.events=@(@($script:Record.events)+@([pscustomobject]$event));$script:Record.state=$name;foreach($key in $details.Keys){if($script:Record.Contains($key)){$script:Record[$key]=$details[$key]}};Save-Record};Save-Record;State 'created'
+    $process=$null;$workerJob=[IntPtr]::Zero;$workerWatchdog=$null;try{[System.IO.File]::WriteAllText($tempLaunchSelection,$selectionJson,[System.Text.Encoding]::UTF8);$process=Start-Program $adapter (@('--operation','launch','--request',$tempLaunchSelection,'--output',$outputPath,'--error',$errorPath,'--')+$forwardedArgs.ToArray()) $callerDirectory;$workerJob=New-WorkerJob;if(-not (Add-ProcessToWorkerJob $workerJob $process)){Close-WorkerJob $workerJob;$workerJob=[IntPtr]::Zero};$workerWatchdog=Start-WorkerWatchdog $process;if($workerJob -eq [IntPtr]::Zero -and $null -eq $workerWatchdog){Stop-Worker $workerJob $process;throw 'worker containment could not be established'};$processStartTime='';try{$processStartTime=$process.StartTime.ToUniversalTime().ToString('o')}catch{};if($resourceLedgerPath){$registerArgs=[System.Collections.Generic.List[string]]::new();foreach($argument in @('--ledger',$resourceLedgerPath,'--assignment-id',$assignmentId,'--parent-id',$resourceParentId,'--resource-type','worker-process','--process-id',[string]$process.Id,'--owner-marker','agy-worker=agy-worker-v1','--resource-id',$workerResourceId,'--state','active')){$registerArgs.Add($argument)};if($processStartTime){$registerArgs.Add('--process-start-time');$registerArgs.Add($processStartTime)};Invoke-ResourceLedger 'register' $registerArgs.ToArray()|Out-Null;$resourceRegistered=$true};State 'started' @{pid=$process.Id};$outTask=$process.StandardOutput.ReadToEndAsync();$errTask=$process.StandardError.ReadToEndAsync();State 'running';$termination='natural';$deadline=if($timeoutSeconds -gt 0){[DateTime]::UtcNow.AddSeconds($timeoutSeconds)}else{$null};while(-not $process.HasExited){if($cancelFile -and (Test-Path -LiteralPath $cancelFile -PathType Leaf)){$termination='canceled';break};if($deadline -and [DateTime]::UtcNow -ge $deadline){$termination='timeout';break};Start-Sleep -Milliseconds 50};if(-not $process.HasExited){Stop-Worker $workerJob $process}else{$process.WaitForExit()};[System.Threading.Tasks.Task]::WaitAll(@($outTask,$errTask));$code=$process.ExitCode;$valid=$false;try{$parsed=ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($outputPath))-Depth 30 -ErrorAction Stop;$valid=($parsed.status -eq 'success' -and $parsed.PSObject.Properties['structured_output'] -and $parsed.structured_output -is [System.Management.Automation.PSCustomObject])}catch{$valid=$false};$text=(Read-OptionalText $outputPath)+"`n"+(Read-OptionalText $errorPath);if($termination -eq 'canceled'){$code=130;$resourceState='cancelled';$resourceError='worker cancelled';State 'canceled' @{exit_code=$code;termination='canceled';failure_class='canceled'}}elseif($termination -eq 'timeout'){$code=124;$resourceState='timed_out';$resourceError='worker timed out';State 'failed' @{exit_code=$code;termination='timeout';failure_class='timeout'}}elseif($code -eq 75 -or $text -match '(?i)quota|resource[_ -]?exhausted|rate limit|\b429\b'){$code=75;$resourceState='quota_handoff';$resourceError='worker quota exhausted';State 'quota-handoff' @{exit_code=$code;termination='quota';failure_class='quota'}}elseif($code -eq 0 -and $valid){$resourceState='completed';State 'completed' @{exit_code=0;termination='natural';failure_class='none'}}else{$code=if($code -eq 0){1}else{$code};$resourceState='failed';$resourceError='malformed worker output';State 'failed' @{exit_code=$code;termination='natural';failure_class='malformed_output'}};State 'retained';State 'cleaned';exit $code}finally{Stop-WorkerWatchdog $workerWatchdog;if($process -and -not $process.HasExited){try{Stop-Worker $workerJob $process}catch{}};if($resourceRegistered){try{$updateArgs=[System.Collections.Generic.List[string]]::new();foreach($argument in @('--ledger',$resourceLedgerPath,'--resource-id',$workerResourceId,'--state',$resourceState)){$updateArgs.Add($argument)};if($resourceError){$updateArgs.Add('--error');$updateArgs.Add($resourceError)};Invoke-ResourceLedger 'update' $updateArgs.ToArray()|Out-Null}catch{[Console]::Error.WriteLine("WARNING: could not update resource ledger: $($_.Exception.Message)")}};Close-WorkerJob $workerJob;if($process){$process.Dispose()}}
+} finally { Remove-Item -LiteralPath $tempRequest,$tempCatalog,$tempAdapterError,$tempLaunchSelection -Force -ErrorAction SilentlyContinue }

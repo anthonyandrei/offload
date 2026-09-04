@@ -2,6 +2,21 @@
 
 Offload delegates bounded work to `agy` processes while the calling agent remains responsible for scope, verification, and reporting.
 
+## Publication boundary
+
+Published source skills remain vendor-neutral. `grill-with-docs` owns its
+interview and documentation workflow and can run without offload. Offload is
+an optional delegation layer, while adapters own vendor launch syntax, model
+catalogs, capability probes, and output parsing. Consumers depend on stable
+capabilities, model preferences, separate reasoning effort, and normalized
+results, not vendor names or exact model IDs.
+
+Capability support does not enforce security. The orchestrator remains
+responsible for isolation, ownership, cleanup, execution scope checks, and
+acceptance gates. The source repository is authoritative; generated and
+installed copies are release outputs. See
+`docs/contracts/publication-compatibility.md` and ADR 0007.
+
 ## Language
 
 **Orchestrator**:
@@ -9,8 +24,12 @@ The calling agent that plans assignments, dispatches workers, and verifies their
 _Avoid_: Controller, parent agent
 
 **Worker**:
-An `agy` process assigned one bounded role and prohibited from dispatching more workers.
+An `agy` process assigned one bounded role. Its process environment is marked as worker context, so the dispatch, launcher, and execution-workspace lifecycle interfaces reject nested assignment, process, or worktree creation.
 _Avoid_: Subagent, child agent
+
+**Dispatch ledger**:
+The orchestrator-owned `offload-dispatch-state-v1` record for admitted assignments. It records parentage, depth, child IDs, budgets, owned and frozen paths, lifecycle state, artifacts, and rejected nested-dispatch events.
+_Avoid_: Worker tree, implicit scheduler state
 
 **Helper family**:
 A shell-native set of scripts that implements the same offload operations and command contracts for one supported shell.
@@ -37,11 +56,11 @@ The host-independent rule that defines when an orchestrator offers offloading, h
 _Avoid_: Hook, Claude hook
 
 **Model routing**:
-The policy that selects a Gemini model and reasoning effort for an offload worker assignment. It uses role defaults and explicit escalation rules, prioritizing verified task success, then elapsed time and quota use.
+The policy and adapter process that selects an available model and independent reasoning effort for an offload worker assignment. It uses a role preference, task capabilities, live availability, static security rules, and quota state.
 _Avoid_: Mode routing, unrestricted model selection
 
 **Role default**:
-The model and reasoning effort assigned to an offload role unless a documented escalation rule applies.
+The internal preference, reasoning effort, and required capabilities assigned to an offload role. The adapter resolves those requirements to a current model.
 _Avoid_: Best model, permanent model assignment
 
 **Model policy**:

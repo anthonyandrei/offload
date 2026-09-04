@@ -6,16 +6,26 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: cleanup-research-workspace.ps1 --workspace <path> --status <success|partial|failed>")
+    [Console]::Error.WriteLine("Usage: cleanup-research-workspace.ps1 --workspace <path> --status <success|partial|failed> [--ledger <path> --resource-id <id>]")
 }
+
+$script:LedgerPath = ""
+$script:ResourceId = ""
 
 function Fail([string]$message, [int]$exitCode = 1) {
     [Console]::Error.WriteLine("Error: $message")
+    if ($script:LedgerPath -and $script:ResourceId -and (Test-Path -LiteralPath $script:LedgerPath -PathType Leaf)) {
+        try {
+            & pwsh -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'resource-ledger.ps1') update --ledger $script:LedgerPath --resource-id $script:ResourceId --state failed --error $message | Out-Null
+        } catch { }
+    }
     exit $exitCode
 }
 
 $workspace = ""
 $status = ""
+$ledgerPath = ""
+$resourceId = ""
 
 $i = 0
 while ($i -lt $args.Count) {
@@ -34,6 +44,14 @@ while ($i -lt $args.Count) {
             Fail "--status requires a value"
         }
         $status = [string]$args[$i]
+    } elseif ($arg -eq '--ledger') {
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--ledger requires a path" }
+        $ledgerPath = [string]$args[$i]
+    } elseif ($arg -eq '--resource-id') {
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--resource-id requires a value" }
+        $resourceId = [string]$args[$i]
     } elseif ($arg -eq '-h' -or $arg -eq '--help') {
         Show-Usage
         exit 0
@@ -43,6 +61,12 @@ while ($i -lt $args.Count) {
     }
     $i++
 }
+
+if (($ledgerPath -and -not $resourceId) -or ($resourceId -and -not $ledgerPath)) {
+    Fail "--ledger and --resource-id must be supplied together"
+}
+$script:LedgerPath = if ($ledgerPath) { [System.IO.Path]::GetFullPath($ledgerPath) } else { "" }
+$script:ResourceId = $resourceId
 
 if ([string]::IsNullOrWhiteSpace($workspace) -or [string]::IsNullOrWhiteSpace($status)) {
     Show-Usage
@@ -168,12 +192,12 @@ function Assert-RoutingRecord($record, [string]$path) {
             Fail "routing record contains a non-object attempt: $path"
         }
 
-        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'model', 'effort', 'reason', 'state', 'started_at', 'ended_at', 'duration_seconds', 'exit_code', 'failure_class', 'evidence_paths', 'usage')) {
+        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'effort', 'reason', 'state', 'started_at', 'ended_at', 'duration_seconds', 'exit_code', 'failure_class', 'evidence_paths', 'usage')) {
             if ($null -eq $attempt.PSObject.Properties[$field]) {
                 Fail "routing record attempt is missing field '$field': $path"
             }
         }
-        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'model', 'effort', 'reason', 'state', 'failure_class')) {
+        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'effort', 'reason', 'state', 'failure_class')) {
             $value = Get-JsonProperty $attempt $field
             if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
                 Fail "routing record attempt is missing string field '$field': $path"
@@ -223,8 +247,18 @@ function Assert-RoutingRecord($record, [string]$path) {
         }
         $model = [string](Get-JsonProperty $attempt 'model')
         $effort = [string](Get-JsonProperty $attempt 'effort')
-        if ($model -notmatch '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$' -or $effort -notin @('low', 'medium', 'high') -or -not $model.EndsWith("-$effort")) {
-            Fail "routing record attempt has an invalid model or effort: $path"
+        $modelId = [string](Get-JsonProperty $attempt 'model_id')
+        if ([string]::IsNullOrWhiteSpace($model) -and [string]::IsNullOrWhiteSpace($modelId)) {
+            Fail "routing record attempt has no model or model_id: $path"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($modelId) -and -not [string]::IsNullOrWhiteSpace($model) -and $model -ne $modelId) {
+            Fail "routing record attempt model and model_id disagree: $path"
+        }
+        if ($effort -notin @('low', 'medium', 'high')) {
+            Fail "routing record attempt has invalid effort: $path"
+        }
+        if ([string]::IsNullOrWhiteSpace($modelId) -and ($model -notmatch '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$' -or -not $model.EndsWith("-$effort"))) {
+            Fail "legacy routing record model must be a Gemini model ID with an effort suffix: $path"
         }
         if ((Get-JsonProperty $attempt 'state') -notin @('running', 'completed', 'failed', 'interrupted')) {
             Fail "routing record attempt has an invalid state: $path"
@@ -456,6 +490,14 @@ if ($status -eq 'success') {
 
         # Check every entry before descending so nested links are never followed.
         Remove-EntryWithoutFollowingReparsePoint $entry
+    }
+}
+
+if ($script:LedgerPath -and $script:ResourceId) {
+    try {
+        & pwsh -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'resource-ledger.ps1') update --ledger $script:LedgerPath --resource-id $script:ResourceId --state retained --error "research workspace retained as evidence" | Out-Null
+    } catch {
+        Fail "could not update resource ledger: $($_.Exception.Message)"
     }
 }
 

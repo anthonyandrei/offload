@@ -427,6 +427,12 @@ printf '{"status":"success","response":"%s","structured_output":{"attempt":"%s"}
 FAKE_RETRY_AGY
 chmod +x "$retry_fake_bin/agy"
 
+retry_catalog="$TMP_ROOT/retry-catalog.json"
+printf '%s\n' '{"protocol_version":1,"adapter":"fake","adapter_revision":"test-adapter-1","vendor":"test-vendor","catalog_revision":"test-catalog-1","models":[{"id":"test-model","family_hint":"test-family","available":true,"quota_available":true,"supported_efforts":["low","medium","high"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}' > "$retry_catalog"
+export OFFLOAD_ADAPTER_BIN="$ROOT/tests/fixtures/fake-worker-adapter.sh"
+export FAKE_ADAPTER_CATALOG="$retry_catalog"
+export AGY_BIN="$retry_fake_bin/agy"
+
 retry_dir="$TMP_ROOT/retry-artifacts"
 retry_worker_id='researcher-web-1'
 retry_attempt1_output="$retry_dir/$retry_worker_id.attempt1.json"

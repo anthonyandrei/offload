@@ -1,281 +1,77 @@
 #!/usr/bin/env bash
+# Vendor-neutral worker launcher. Model syntax belongs to the selected adapter.
 set -euo pipefail
 
-usage() {
-  printf 'Usage: %s --role ROLE [--route default|quality-retry] --output FILE --error FILE -- agy-arguments...\n' "$0" >&2
-}
+usage() { printf 'Usage: %s --role ROLE [--route default|quality-retry] [--adapter FILE] [--selection-output FILE] [--pin FILE] [lifecycle options] --output FILE --error FILE -- worker-arguments...\n' "$0" >&2; }
+fail() { printf 'ERROR: %s\n' "$1" >&2; exit "${2:-2}"; }
+mark_seen() { local name="$1" message="$2"; case "$seen_options" in *"|$name|"*) fail "$message" ;; *) seen_options="${seen_options}${name}|" ;; esac; }
+was_seen() { case "$seen_options" in *"|$1|"*) return 0 ;; *) return 1 ;; esac; }
+kill_process_tree() { local target_pid="$1" signal="$2" child_pid; [ -n "$target_pid" ] || return 0; for child_pid in $(ps -eo pid=,ppid= 2>/dev/null | awk -v parent="$target_pid" '$2 == parent {print $1}'); do kill_process_tree "$child_pid" "$signal"; done; kill "-$signal" "$target_pid" 2>/dev/null || true; }
+stop_worker() { if [ -n "$watchdog_pid" ]; then kill "$watchdog_pid" 2>/dev/null || true; set +e; wait "$watchdog_pid" 2>/dev/null; set -e; watchdog_pid=''; fi; if [ -n "$worker_pgid" ]; then kill -TERM -- "-$worker_pgid" 2>/dev/null || true; sleep 0.1; kill -KILL -- "-$worker_pgid" 2>/dev/null || true; elif [ -n "$adapter_pid" ]; then kill_process_tree "$adapter_pid" TERM; sleep 0.1; kill_process_tree "$adapter_pid" KILL; fi; adapter_pid='';worker_pgid=''; }
+watch_worker() { while kill -0 "$launcher_pid" 2>/dev/null; do sleep 0.2; done; if [ -n "$worker_pgid" ]; then kill -TERM -- "-$worker_pgid" 2>/dev/null || true; sleep 0.1; kill -KILL -- "-$worker_pgid" 2>/dev/null || true; elif [ -n "$adapter_pid" ]; then kill_process_tree "$adapter_pid" TERM; sleep 0.1; kill_process_tree "$adapter_pid" KILL; fi; }
 
-fail() {
-  printf 'ERROR: %s\n' "$1" >&2
-  exit "${2:-2}"
-}
-
-output_path=''
-error_path=''
-role=''
-route=''
-
-seen_output=false
-seen_error=false
-seen_role=false
-seen_route=false
-seen_delimiter=false
-worker_args=()
-
+launcher_pid=$$;adapter_pid='';worker_pgid='';watchdog_pid='';resource_registered=false;worker_resource_id='';resource_state='failed';resource_error='';output_path=''; error_path=''; selection_output_path=''; pin_path=''; adapter_path=''; role=''; route='default'; lifecycle_path=''; attempt=1; mode='unknown'; verification_baseline=''; resource_ledger_path=''; timeout_seconds=0; cancel_file=''; ledger_path=''; assignment_id=''; parent_id=''; resource_id=''
+seen_output=false; seen_error=false; seen_role=false; seen_delimiter=false; worker_args=(); required_caps=(); required_cap_count=0; seen_options='|'
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --output)
-      $seen_output && fail 'duplicate --output option'
-      [ "$#" -ge 2 ] || { usage; fail '--output requires a path'; }
-      output_path="$2"
-      seen_output=true
-      shift 2
-      ;;
-    --output=*)
-      $seen_output && fail 'duplicate --output option'
-      output_path="${1#--output=}"
-      [ -n "$output_path" ] || { usage; fail '--output requires a path'; }
-      seen_output=true
-      shift
-      ;;
-    --error)
-      $seen_error && fail 'duplicate --error option'
-      [ "$#" -ge 2 ] || { usage; fail '--error requires a path'; }
-      error_path="$2"
-      seen_error=true
-      shift 2
-      ;;
-    --error=*)
-      $seen_error && fail 'duplicate --error option'
-      error_path="${1#--error=}"
-      [ -n "$error_path" ] || { usage; fail '--error requires a path'; }
-      seen_error=true
-      shift
-      ;;
-    --role)
-      $seen_role && fail 'duplicate --role option'
-      [ "$#" -ge 2 ] || { usage; fail '--role requires a role name'; }
-      role="$2"
-      seen_role=true
-      shift 2
-      ;;
-    --role=*)
-      $seen_role && fail 'duplicate --role option'
-      role="${1#--role=}"
-      [ -n "$role" ] || { usage; fail '--role requires a role name'; }
-      seen_role=true
-      shift
-      ;;
-    --route)
-      $seen_route && fail 'duplicate --route option'
-      [ "$#" -ge 2 ] || { usage; fail '--route requires a route name'; }
-      route="$2"
-      seen_route=true
-      shift 2
-      ;;
-    --route=*)
-      $seen_route && fail 'duplicate --route option'
-      route="${1#--route=}"
-      [ -n "$route" ] || { usage; fail '--route requires a route name'; }
-      seen_route=true
-      shift
-      ;;
-    --)
-      seen_delimiter=true
-      shift
-      worker_args=("$@")
-      break
-      ;;
-    *)
-      usage
-      fail "unknown launcher option: $1"
-      ;;
+    --) seen_delimiter=true; shift; worker_args=("$@"); break ;;
+    --require-capability) [ "$#" -ge 2 ] || { usage; fail "$1 requires a value"; }; required_caps+=("$2"); required_cap_count=$((required_cap_count + 1)); shift 2; continue ;;
+    --require-capability=*) capability="${1#*=}"; [ -n "$capability" ] || fail '--require-capability requires a non-empty value'; required_caps+=("$capability"); required_cap_count=$((required_cap_count + 1)); shift; continue ;;
+    --output|--error|--selection-output|--pin|--adapter|--role|--route|--lifecycle|--attempt|--mode|--verification-baseline|--resource-ledger|--timeout-seconds|--cancel-file|--ledger|--assignment-id|--parent-id|--resource-id)
+      option="$1"; [ "$#" -ge 2 ] || { usage; fail "$option requires a value"; }; value="$2"; shift 2 ;;
+    --output=*|--error=*|--selection-output=*|--pin=*|--adapter=*|--role=*|--route=*|--lifecycle=*|--attempt=*|--mode=*|--verification-baseline=*|--resource-ledger=*|--timeout-seconds=*|--cancel-file=*|--ledger=*|--assignment-id=*|--parent-id=*|--resource-id=*) option="${1%%=*}"; value="${1#*=}"; [ -n "$value" ] || fail "$option requires a value"; shift ;;
+    *) usage; fail "unknown launcher option: $1" ;;
+  esac
+  case "$option" in
+    --output) $seen_output && fail 'duplicate --output option'; output_path="$value"; seen_output=true ;;
+    --error) $seen_error && fail 'duplicate --error option'; error_path="$value"; seen_error=true ;;
+    --selection-output) mark_seen selection_output 'duplicate --selection-output option'; selection_output_path="$value" ;;
+    --pin) mark_seen pin 'duplicate --pin option'; pin_path="$value" ;;
+    --adapter) mark_seen adapter 'duplicate --adapter option'; adapter_path="$value" ;;
+    --role) $seen_role && fail 'duplicate --role option'; role="$value"; seen_role=true ;;
+    --route) mark_seen route 'duplicate --route option'; route="$value" ;;
+    --lifecycle) mark_seen lifecycle 'duplicate --lifecycle option'; lifecycle_path="$value" ;;
+    --attempt) mark_seen attempt 'duplicate --attempt option'; attempt="$value" ;;
+    --mode) mark_seen mode 'duplicate --mode option'; mode="$value" ;;
+    --verification-baseline) mark_seen baseline 'duplicate --verification-baseline option'; verification_baseline="$value" ;;
+    --resource-ledger) mark_seen resource_ledger 'duplicate --resource-ledger option'; resource_ledger_path="$value" ;;
+    --timeout-seconds) mark_seen timeout 'duplicate --timeout-seconds option'; timeout_seconds="$value" ;;
+    --cancel-file) mark_seen cancel 'duplicate --cancel-file option'; cancel_file="$value" ;;
+    --ledger) mark_seen ledger 'duplicate --ledger option'; ledger_path="$value" ;;
+    --assignment-id) mark_seen assignment 'duplicate --assignment-id option'; assignment_id="$value" ;;
+    --parent-id) mark_seen parent 'duplicate --parent-id option'; parent_id="$value" ;;
+    --resource-id) mark_seen resource 'duplicate --resource-id option'; resource_id="$value" ;;
   esac
 done
-
-if ! $seen_delimiter; then
-  usage
-  fail '-- delimiter is required'
-fi
-
-if ! $seen_output || [ -z "$output_path" ]; then
-  usage
-  fail '--output is required'
-fi
-
-if ! $seen_error || [ -z "$error_path" ]; then
-  usage
-  fail '--error is required'
-fi
-
-if ! $seen_role || [ -z "$role" ]; then
-  usage
-  fail '--role is required; specify a role and remove any caller --model flag'
-fi
-
-case "$role" in
-  scout|gate-author|implementer|reviewer|researcher|synthesizer|auditor) ;;
-  *)
-    fail "unknown role: '$role'; must be one of scout, gate-author, implementer, reviewer, researcher, synthesizer, auditor"
-    ;;
-esac
-
-route="${route:-default}"
-case "$route" in
-  default|quality-retry) ;;
-  *)
-    fail "unknown route: '$route'; must be 'default' or 'quality-retry'"
-    ;;
-esac
-
-if [ "${#worker_args[@]}" -eq 0 ]; then
-  usage
-  fail 'agy arguments are required after --'
-fi
-
-# Validate worker arguments after delimiter:
-# Distinguish options from argument values for value-taking options
-i=0
-while [ "$i" -lt "${#worker_args[@]}" ]; do
-  arg="${worker_args[$i]}"
-  case "$arg" in
-    --output|--output=*)
-      fail 'do not pass --output to agy; use the launcher --output path instead'
-      ;;
-    --model|--model=*)
-      fail 'caller cannot specify --model; model routing is controlled by --role'
-      ;;
-    --effort|--effort=*)
-      fail 'caller cannot specify --effort; reasoning effort is controlled by policy'
-      ;;
-    -p|--prompt|--print|--prompt-interactive|-i|--path|--output-format|--mode|--json-schema|--add-dir|--agent|--conversation|--log-file|--print-timeout|--project|--input-format)
-      if [ $((i + 1)) -lt "${#worker_args[@]}" ]; then
-        i=$((i + 1))
-      fi
-      ;;
-  esac
-  i=$((i + 1))
-done
-
-# Resolve policy file repository-root relative to launcher location
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-policy_file="$repo_root/model-policy.json"
-
-if [ ! -f "$policy_file" ]; then
-  fail "model policy file not found at: $policy_file"
-fi
-
-if ! jq empty "$policy_file" >/dev/null 2>&1; then
-  fail "model policy file is not valid JSON: $policy_file"
-fi
-
-# Comprehensive policy schema and value validation
-validation_err=$(jq -r '
-  def is_gemini_model:
-    (type == "string") and test("^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$");
-
-  if type != "object" then
-    "policy must be a JSON object"
-  elif ((.schema_version | type) != "number" or .schema_version != 1 or (.schema_version | floor) != 1) then
-    "schema_version must be integer 1"
-  elif ((.policy_revision | type) != "string" or (.policy_revision | length) == 0) then
-    "policy_revision must be a non-empty string"
-  elif (.max_effort != "high") then
-    "invalid max_effort: must be high"
-  elif ((.max_retries_per_worker | type) != "number" or .max_retries_per_worker != 1 or (.max_retries_per_worker | floor) != 1) then
-    "max_retries_per_worker must be integer 1"
-  elif (.quota_action != "handoff") then
-    "quota_action must be handoff"
-  elif ((.roles | type) != "object") then
-    "roles must be an object"
-  else
-    ["scout", "gate-author", "implementer", "reviewer", "researcher", "synthesizer", "auditor"] as $req |
-    (.roles | keys) as $actual |
-    if ([$req[] | select(. as $r | ($actual | index($r) | not))] | length) > 0 then
-      "roles missing required role"
-    elif ([$actual[] | select(. as $r | ($req | index($r) | not))] | length) > 0 then
-      "roles contains unknown role"
-    else
-      ([.roles | to_entries[] | (
-        .key as $rname |
-        .value as $rval |
-        if ($rval | type) != "object" then
-          "role " + $rname + " must be an object"
-        elif ($rval.default_model | is_gemini_model | not) then
-          "role " + $rname + " has invalid default_model"
-        elif ($rval | has("quality_escalation") | not) then
-          "role " + $rname + " missing quality_escalation"
-        elif ($rval.quality_escalation != null) then
-          if ($rval.quality_escalation | type) != "object" then
-            "role " + $rname + " quality_escalation must be null or an object"
-          elif ($rval.quality_escalation.model | is_gemini_model | not) then
-            "role " + $rname + " quality_escalation model is invalid"
-          elif ($rval.quality_escalation.model == $rval.default_model) then
-            "role " + $rname + " quality_escalation model identical to default_model"
-          elif (($rval.quality_escalation.evidence_path | type) != "string" or ($rval.quality_escalation.evidence_path | length) == 0) then
-            "role " + $rname + " quality_escalation evidence_path must be non-empty string"
-          elif ($rval.quality_escalation.evidence_path | (startswith("/") or startswith("\\") or contains(":") or contains(".."))) then
-            "role " + $rname + " quality_escalation evidence_path must not escape repository root"
-          else
-            empty
-          end
-        else
-          empty
-        end
-      )] | first) // empty
-    end
-  end
-' "$policy_file" 2>&1) || fail "model policy validation failed: $validation_err"
-
-if [ -n "$validation_err" ]; then
-  fail "model policy validation error: $validation_err"
-fi
-
-# Check existence of escalation evidence files
-ev_paths=$(jq -r '.roles[] | select(.quality_escalation != null) | .quality_escalation.evidence_path' "$policy_file")
-if [ -n "$ev_paths" ]; then
-  while IFS= read -r ev_path; do
-    [ -z "$ev_path" ] && continue
-    if [ ! -f "$repo_root/$ev_path" ]; then
-      fail "missing escalation evidence path: $ev_path"
-    fi
-  done <<EOF
-$ev_paths
-EOF
-fi
-
-# Resolve model for role and route
-if [ "$route" = "default" ]; then
-  resolved_model=$(jq -r --arg r "$role" '.roles[$r].default_model' "$policy_file")
-elif [ "$route" = "quality-retry" ]; then
-  escalation_model=$(jq -r --arg r "$role" '.roles[$r].quality_escalation.model // empty' "$policy_file")
-  if [ -z "$escalation_model" ] || [ "$escalation_model" = "null" ]; then
-    fail "role '$role' has no quality escalation target configured for quality-retry route"
-  fi
-  resolved_model="$escalation_model"
-fi
-
-[ -n "$resolved_model" ] || fail "failed to resolve model for role '$role' and route '$route'"
-
-# Resolve agy executable
-if [ -n "${AGY_BIN:-}" ]; then
-  agy_bin=$AGY_BIN
-elif command -v agy >/dev/null 2>&1; then
-  agy_bin=$(command -v agy)
-elif [ -x "$HOME/.local/bin/agy" ]; then
-  agy_bin="$HOME/.local/bin/agy"
-else
-  fail 'agy was not found on PATH or at ~/.local/bin/agy' 1
-fi
-
-[ -x "$agy_bin" ] || fail "agy is not executable: $agy_bin" 1
-
-mkdir -p "$(dirname "$output_path")" "$(dirname "$error_path")"
-
-set +e
-"$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path"
-worker_exit=$?
-set -e
-
-exit "$worker_exit"
+$seen_delimiter || { usage; fail '-- delimiter is required'; }; $seen_output && [ -n "$output_path" ] || { usage; fail '--output is required'; }; $seen_error && [ -n "$error_path" ] || { usage; fail '--error is required'; }; $seen_role && [ -n "$role" ] || { usage; fail '--role is required'; }; [ "${#worker_args[@]}" -gt 0 ] || { usage; fail 'worker arguments are required after --'; }
+case "$route" in default|quality-retry) ;; *) fail "unknown route: '$route'" ;; esac
+case "$role" in scout|gate-author|implementer|reviewer|researcher|synthesizer|auditor) ;; *) fail "unknown role: '$role'" ;; esac
+[ "${OFFLOAD_WORKER_CONTEXT:-}" = 1 ] && fail 'worker process cannot invoke the launcher; only the orchestrator may create worker processes' 126
+for arg in "${worker_args[@]}"; do case "$arg" in --output|--output=*|--model|--model=*|--effort|--effort=*) fail 'caller cannot pass --output, --model, or --effort to the worker' ;; esac; done
+case "$timeout_seconds" in ''|*[!0-9]*) fail '--timeout-seconds must be zero or a positive integer' ;; esac
+caller_dir="$(pwd -P)"; resolve_path(){ local p="$1" label="$2"; case "$p" in /*) ;; *) p="$caller_dir/$p" ;; esac; mkdir -p "$(dirname "$p")" || fail "could not create $label parent directory"; printf '%s/%s' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"; }
+output_path="$(resolve_path "$output_path" output)"; error_path="$(resolve_path "$error_path" error)"; [ "$output_path" != "$error_path" ] || fail 'output and error paths must be different'; [ -z "$selection_output_path" ] || selection_output_path="$(resolve_path "$selection_output_path" 'selection output')"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"; resource_ledger_script="$script_dir/resource-ledger.sh"; [ -f "$resource_ledger_script" ] || fail "resource ledger helper not found: $resource_ledger_script"; if [ -n "$ledger_path" ]; then ledger_path="$(resolve_path "$ledger_path" ledger)"; if [ -n "$resource_ledger_path" ]; then resource_ledger_path="$(resolve_path "$resource_ledger_path" 'resource ledger')"; [ "$ledger_path" = "$resource_ledger_path" ] || fail '--ledger and --resource-ledger must name the same path'; else resource_ledger_path="$ledger_path"; fi; elif [ -n "$resource_ledger_path" ]; then resource_ledger_path="$(resolve_path "$resource_ledger_path" 'resource ledger')"; fi
+init_resource_ledger(){ [ -n "$resource_ledger_path" ] || return 0; bash "$resource_ledger_script" init --ledger "$resource_ledger_path" >/dev/null || fail 'could not initialize resource ledger'; }
+register_resource(){ [ -n "$resource_ledger_path" ] || return 0; local register_args=(register --ledger "$resource_ledger_path" --assignment-id "$assignment_id" --parent-id "${parent_id:-orchestrator}" --resource-type worker-process --process-id "$adapter_pid" --owner-marker 'agy-worker=agy-worker-v1' --resource-id "$worker_resource_id" --state active); bash "$resource_ledger_script" "${register_args[@]}" >/dev/null || fail 'could not register worker process in resource ledger'; resource_registered=true; }
+update_resource(){ [ "$resource_registered" = true ] || return 0; local update_args=(update --ledger "$resource_ledger_path" --resource-id "$worker_resource_id" --state "$resource_state"); if [ -n "$resource_error" ]; then update_args+=(--error "$resource_error"); fi; if ! bash "$resource_ledger_script" "${update_args[@]}" >/dev/null 2>&1; then printf 'WARNING: could not update resource ledger for %s\n' "$worker_resource_id" >&2; fi; }
+repo_root="$(cd "$script_dir/.." && pwd -P)"; policy_file="$repo_root/model-policy.json"; [ -f "$policy_file" ] || fail "model policy file not found at: $policy_file"; jq empty "$policy_file" >/dev/null 2>&1 || fail 'model policy file is not valid JSON'
+validation_err=$(jq -r 'if .schema_version != 2 then "schema_version must be integer 2" elif .max_effort != "high" then "max_effort must be high" elif .max_retries_per_worker != 1 then "max_retries_per_worker must be integer 1" elif .quota_action != "handoff" then "quota_action must be handoff" elif ((.roles|type)!="object") then "roles must be an object" elif ([.roles[] | select((.preference|IN("fast","balanced","deep"))|not)]|length)>0 then "role preference is invalid" elif ([.roles[] | select((.effort|IN("low","medium","high"))|not)]|length)>0 then "role effort is invalid" else "" end' "$policy_file"); [ -z "$validation_err" ] || fail "$validation_err"
+preference=$(jq -er --arg role "$role" '.roles[$role].preference' "$policy_file") || fail "role not found in policy: $role"; effort=$(jq -er --arg role "$role" '.roles[$role].effort' "$policy_file") || fail "role not found in policy: $role"; required_caps_json=$(jq -c --arg role "$role" '.roles[$role].required_capabilities' "$policy_file"); if [ "$required_cap_count" -gt 0 ]; then for cap in "${required_caps[@]}"; do required_caps_json=$(jq -c --arg cap "$cap" '.+[$cap]|unique' <<<"$required_caps_json"); done; fi
+[ "$route" != quality-retry ] || [ -n "$pin_path" ] || fail 'quality-retry requires --pin with the prior selection; use an explicit fallback or handoff when it is unavailable' 3
+[ -n "$adapter_path" ] || adapter_path="${OFFLOAD_ADAPTER_BIN:-$script_dir/agy-adapter.sh}"; case "$adapter_path" in /*) ;; *) adapter_path="$caller_dir/$adapter_path" ;; esac; [ -f "$adapter_path" ] || fail "adapter not found: $adapter_path" 127; if [[ "$adapter_path" == *.ps1 ]]; then adapter_cmd=(pwsh -NoProfile -NonInteractive -File "$adapter_path"); else adapter_cmd=("$adapter_path"); fi
+request_tmp=$(mktemp);catalog_tmp=$(mktemp);adapter_err_tmp=$(mktemp);selection_tmp=$(mktemp);adapter_out_tmp=$(mktemp);adapter_stderr_tmp=$(mktemp);cleanup(){ stop_worker; rm -f "$request_tmp" "$catalog_tmp" "$adapter_err_tmp" "$selection_tmp" "$adapter_out_tmp" "$adapter_stderr_tmp"; };trap cleanup EXIT;trap 'exit 143' HUP TERM;trap 'exit 130' INT
+jq -n --arg role "$role" --arg preference "$preference" --arg effort "$effort" --arg revision "$(jq -er '.policy_revision' "$policy_file")" --argjson caps "$required_caps_json" '{protocol_version:1,operation:"catalog",role:$role,preference:$preference,effort:$effort,required_capabilities:$caps,policy_revision:$revision}' >"$request_tmp"
+set +e; "${adapter_cmd[@]}" --operation catalog --request "$request_tmp" >"$catalog_tmp" 2>"$adapter_err_tmp"; catalog_code=$?; set -e; [ "$catalog_code" -eq 0 ] || { diagnostic=$(tr '\n' ' ' <"$adapter_err_tmp"); fail "adapter catalog discovery failed with exit code $catalog_code${diagnostic:+: $diagnostic}" 127; }; jq empty "$catalog_tmp" >/dev/null 2>&1 || fail 'adapter catalog is not valid JSON' 127
+catalog_adapter=$(jq -er '.adapter|strings|select(length>0)' "$catalog_tmp") || fail 'adapter catalog is missing adapter' 127;catalog_vendor=$(jq -er '.vendor|strings|select(length>0)' "$catalog_tmp") || fail 'adapter catalog is missing vendor' 127;catalog_revision=$(jq -er '.catalog_revision|strings|select(length>0)' "$catalog_tmp") || fail 'adapter catalog is missing catalog_revision' 127;adapter_revision=$(jq -er '.adapter_revision|strings|select(length>0)' "$catalog_tmp") || fail 'adapter catalog is missing adapter_revision' 127;[ "$(jq -er '.protocol_version' "$catalog_tmp")" = 1 ] || fail 'adapter catalog has unsupported protocol_version' 127
+selected=$(jq -c --arg pref "$preference" --arg effort "$effort" --argjson caps "$required_caps_json" --arg vendor "$catalog_vendor" '[.models[]? | select((.id|type)=="string" and (.id|length)>0) | select(.available==true and (.quota_available!=false)) | select((.supported_efforts//[])|index($effort)) | select(([$caps[] as $cap | select(((.capabilities//[])|index($cap))==null)]|length)==0) | {model:.,id:.id,vendor:(.vendor//$vendor),score:(((.scores//{})[$pref])//1000000)}] | sort_by(.score,.vendor,.id)|.[0]//empty' "$catalog_tmp") || true; [ -n "$selected" ] || fail "adapter catalog has no eligible model for role '$role', effort '$effort', and required capabilities" 4
+selection_reason="catalog selection preference=$preference effort=$effort; filtered unavailable, quota, effort, capability, and static-policy-incompatible candidates";if [ -n "$pin_path" ];then [ -f "$pin_path" ]||fail "pinned selection file not found: $pin_path" 3;pin_adapter=$(jq -er '.adapter//empty' "$pin_path")||fail 'pinned selection is invalid' 3;pin_vendor=$(jq -er '.vendor//empty' "$pin_path")||fail 'pinned selection is missing vendor' 3;pin_id=$(jq -er '.model_id//.model//empty' "$pin_path")||fail 'pinned selection is missing model_id' 3;pin_effort=$(jq -er '.effort//empty' "$pin_path")||fail 'pinned selection is missing effort' 3;[ "$pin_adapter" = "$catalog_adapter" ]&&[ "$pin_vendor" = "$catalog_vendor" ]&&[ "$pin_effort" = "$effort" ]||fail 'pinned selection does not match the current adapter, vendor, or policy effort; explicit fallback or handoff is required' 3;pinned=$(jq -c --arg id "$pin_id" --arg vendor "$pin_vendor" --arg effort "$effort" --argjson caps "$required_caps_json" '[.models[]? | select(.id==$id and ((.vendor// $vendor)==$vendor) and .available==true and (.quota_available!=false) and ((.supported_efforts//[])|index($effort)) and ([$caps[] as $cap|select(((.capabilities//[])|index($cap))==null)]|length)==0)]|.[0]//empty' "$catalog_tmp");[ -n "$pinned" ]||fail "pinned model '$pin_id' is unavailable in catalog revision '$catalog_revision'; explicit fallback or handoff is required" 3;selected=$(jq -c --argjson model "$pinned" --arg id "$pin_id" --arg vendor "$pin_vendor" '{model:$model,id:$id,vendor:$vendor,score:0}' <<<"$selected");selection_reason="pinned selection adapter=$catalog_adapter vendor=$catalog_vendor model_id=$pin_id; catalog_revision=$catalog_revision";fi
+jq -n --arg adapter "$catalog_adapter" --arg adapter_revision "$adapter_revision" --arg vendor "$(jq -r '.vendor' <<<"$selected")" --arg model_id "$(jq -r '.id' <<<"$selected")" --arg family_hint "$(jq -r '.model.family_hint // empty' <<<"$selected")" --arg preference "$preference" --arg effort "$effort" --arg catalog_revision "$catalog_revision" --arg policy_revision "$(jq -er '.policy_revision' "$policy_file")" --arg reason "$selection_reason" --arg route "$route" --argjson caps "$required_caps_json" '{protocol_version:1,adapter:$adapter,adapter_revision:$adapter_revision,vendor:$vendor,model_id:$model_id,model:$model_id,family_hint:$family_hint,preference:$preference,effort:$effort,catalog_revision:$catalog_revision,policy_revision:$policy_revision,required_capabilities:$caps,selection_reason:$reason,route:$route}' >"$selection_tmp"; [ -z "$selection_output_path" ] || cp "$selection_tmp" "$selection_output_path"
+lifecycle=false; if was_seen lifecycle || was_seen attempt || was_seen resource_ledger || was_seen ledger || was_seen timeout || was_seen cancel; then lifecycle=true; fi
+if ! $lifecycle; then set +e; "${adapter_cmd[@]}" --operation launch --request "$selection_tmp" --output "$output_path" --error "$error_path" -- "${worker_args[@]}" >"$catalog_tmp" 2>"$adapter_err_tmp"; code=$?; set -e; if [ "$code" -ne 0 ] && [ -s "$adapter_err_tmp" ]; then printf 'ERROR: adapter launch failed with exit code %s: %s\n' "$code" "$(tr '\n' ' ' <"$adapter_err_tmp")" >&2; fi; exit "$code"; fi
+case "$attempt" in 1|2) ;; *) fail 'attempt must be 1 or 2; policy allows at most one retry per assignment' ;; esac;[ -n "$assignment_id" ]||assignment_id="$role-$(date -u +%Y%m%d%H%M%S)";[ -n "$lifecycle_path" ]||lifecycle_path="$output_path.lifecycle.json";lifecycle_path="$(resolve_path "$lifecycle_path" lifecycle)";worker_resource_id="${resource_id:-worker-process:$assignment_id:attempt:$attempt}";init_resource_ledger
+jq -n --arg assignment "$assignment_id" --argjson attempt "$attempt" --arg role "$role" --arg mode "$mode" --arg policy_revision "$(jq -er '.policy_revision' "$policy_file")" --arg model "$(jq -r '.model_id' "$selection_tmp")" --arg effort "$effort" --arg baseline "${verification_baseline:-}" --arg ledger "${resource_ledger_path:-}" --arg resource_id "${resource_ledger_path:+$worker_resource_id}" --arg output "$output_path" --arg error "$error_path" --arg lifecycle "$lifecycle_path" '{schema_version:1,assignment_id:$assignment,attempt:$attempt,role:$role,mode:$mode,policy_revision:$policy_revision,model:$model,effort:$effort,verification_baseline:($baseline|if length>0 then . else null end),resource_ledger:($ledger|if length>0 then . else null end),resource_id:($resource_id|if length>0 then . else null end),state:"created",events:[],exit_code:null,termination:"none",failure_class:"none",artifacts:{output:$output,error:$error,lifecycle:$lifecycle}}' >"$lifecycle_path"
+state(){ local name="$1";jq --arg state "$name" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.events += [{state:$state,at:$at}]|.state=$state' "$lifecycle_path" >"$lifecycle_path.tmp";mv -f "$lifecycle_path.tmp" "$lifecycle_path"; };state created
+set +e;if command -v setsid >/dev/null 2>&1;then setsid "${adapter_cmd[@]}" --operation launch --request "$selection_tmp" --output "$output_path" --error "$error_path" -- "${worker_args[@]}" >"$adapter_out_tmp" 2>"$adapter_stderr_tmp" & adapter_pid=$!;worker_pgid="$adapter_pid";else "${adapter_cmd[@]}" --operation launch --request "$selection_tmp" --output "$output_path" --error "$error_path" -- "${worker_args[@]}" >"$adapter_out_tmp" 2>"$adapter_stderr_tmp" & adapter_pid=$!;fi;set -e;watch_worker >/dev/null 2>&1 & watchdog_pid=$!;register_resource;state started;state running;termination=natural;deadline=0;[ "$timeout_seconds" -gt 0 ]&&deadline=$(( $(date +%s) + timeout_seconds ));while kill -0 "$adapter_pid" 2>/dev/null;do if [ -n "$cancel_file" ]&&[ -f "$cancel_file" ];then termination=canceled;break;fi;if [ "$deadline" -gt 0 ]&&[ "$(date +%s)" -ge "$deadline" ];then termination=timeout;break;fi;sleep 0.05;done;wait_pid="$adapter_pid";if [ "$termination" != natural ];then stop_worker;fi;set +e;wait "$wait_pid";code=$?;set -e
+if [ "$termination" = canceled ];then code=130;failure=canceled;terminal_state=canceled;resource_state=cancelled;resource_error='worker cancelled';elif [ "$termination" = timeout ];then code=124;failure=timeout;terminal_state=failed;resource_state=timed_out;resource_error='worker timed out';elif [ "$code" -eq 75 ]||grep -Eiq 'quota|resource[_ -]?exhausted|rate limit|\b429\b' "$output_path" "$error_path" 2>/dev/null;then code=75;failure=quota;terminal_state=quota-handoff;resource_state=quota_handoff;resource_error='worker quota exhausted';elif [ "$code" -eq 0 ]&&jq -e '(.status=="success") and (.structured_output|type=="object")' "$output_path" >/dev/null 2>&1;then code=0;failure=none;terminal_state=completed;resource_state=completed;else [ "$code" -eq 0 ]&&code=1;failure=malformed_output;terminal_state=failed;resource_state=failed;resource_error='malformed worker output';fi
+ jq --arg state "$terminal_state" --arg failure "$failure" --arg termination "$termination" --argjson code "$code" '.exit_code=$code|.failure_class=$failure|.termination=$termination' "$lifecycle_path" >"$lifecycle_path.tmp";mv -f "$lifecycle_path.tmp" "$lifecycle_path";state "$terminal_state";state retained;state cleaned;update_resource;exit "$code"

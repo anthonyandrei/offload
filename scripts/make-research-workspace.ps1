@@ -6,11 +6,19 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: make-research-workspace.ps1 [--source-repo <path>] [--path <declared-path> ...]")
+    [Console]::Error.WriteLine("Usage: make-research-workspace.ps1 [--source-repo <path>] [--path <declared-path> ...] [--ledger <path>] [--assignment-id <id>] [--parent-id <id>]")
+}
+
+function Fail([string]$message, [int]$exitCode = 1) {
+    [Console]::Error.WriteLine("Error: $message")
+    exit $exitCode
 }
 
 function Cleanup-And-Fail([string]$ws, [string]$message, [int]$exitCode = 1) {
     [Console]::Error.WriteLine("Error: $message")
+    if ($script:LedgerPath -and $script:ResourceId -and (Test-Path -LiteralPath $script:LedgerPath -PathType Leaf)) {
+        & pwsh -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'resource-ledger.ps1') update --ledger $script:LedgerPath --resource-id $script:ResourceId --state failed --error $message | Out-Null
+    }
     if ($ws -and (Test-Path -LiteralPath $ws)) {
         Remove-Item -LiteralPath $ws -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -19,6 +27,11 @@ function Cleanup-And-Fail([string]$ws, [string]$message, [int]$exitCode = 1) {
 
 $sourceRepo = ""
 $declaredPaths = [System.Collections.Generic.List[string]]::new()
+$ledgerPath = ""
+$assignmentId = ""
+$parentId = ""
+$script:LedgerPath = ""
+$script:ResourceId = ""
 
 $i = 0
 while ($i -lt $args.Count) {
@@ -39,6 +52,18 @@ while ($i -lt $args.Count) {
             exit 1
         }
         $declaredPaths.Add([string]$args[$i])
+    } elseif ($arg -eq '--ledger') {
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--ledger requires a path" }
+        $ledgerPath = [string]$args[$i]
+    } elseif ($arg -eq '--assignment-id') {
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--assignment-id requires a value" }
+        $assignmentId = [string]$args[$i]
+    } elseif ($arg -eq '--parent-id') {
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--parent-id requires a value" }
+        $parentId = [string]$args[$i]
     } elseif ($arg -eq '-h' -or $arg -eq '--help') {
         Show-Usage
         exit 0
@@ -62,6 +87,15 @@ try {
 } catch {
     Cleanup-And-Fail $workspace "failed to initialize workspace: $($_.Exception.Message)"
 }
+
+if ([string]::IsNullOrWhiteSpace($ledgerPath)) { $ledgerPath = [System.IO.Path]::Combine($tempDir, 'offload-resource-ledger.json') }
+if ([string]::IsNullOrWhiteSpace($assignmentId)) { $assignmentId = $workspaceName }
+if ([string]::IsNullOrWhiteSpace($parentId)) { $parentId = if ($sourceRepo) { $sourceRepo } else { 'orchestrator' } }
+$script:LedgerPath = [System.IO.Path]::GetFullPath($ledgerPath)
+$script:ResourceId = "research-workspace:$assignmentId"
+$ledgerScript = Join-Path $PSScriptRoot 'resource-ledger.ps1'
+& pwsh -NoProfile -NonInteractive -File $ledgerScript register --ledger $script:LedgerPath --assignment-id $assignmentId --parent-id $parentId --resource-type research-workspace --path $workspace --owner-marker '.offload-research-workspace=offload-research-workspace-v1' --resource-id $script:ResourceId --state active | Out-Null
+if ($LASTEXITCODE -ne 0) { Cleanup-And-Fail $workspace 'failed to register research workspace in resource ledger' }
 
 if (-not [string]::IsNullOrEmpty($sourceRepo)) {
     if (-not (Test-Path -LiteralPath $sourceRepo -PathType Container)) {

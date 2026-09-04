@@ -38,6 +38,10 @@ $WebMd = Join-Path $RootDir 'modes/web-research.md'
 $ReadmeMd = Join-Path $RootDir 'README.md'
 $AgentsMd = Join-Path $RootDir 'AGENTS.md'
 $PolicyJson = Join-Path $RootDir 'model-policy.json'
+$PublicationMd = Join-Path $RootDir 'docs/contracts/publication-compatibility.md'
+$PublicationAdr = Join-Path $RootDir 'docs/adr/0007-cross-library-publication-boundaries.md'
+$PublicationPs1 = Join-Path $RootDir 'scripts/check-publication-compatibility.ps1'
+$PublicationSh = Join-Path $RootDir 'scripts/check-publication-compatibility.sh'
 
 # 1. Line count check: SKILL.md must remain strictly under 500 lines
 $skillLines = (Get-Content -LiteralPath $SkillMd).Count
@@ -52,7 +56,10 @@ Assert-True ($skillContent -match 'Shared recovery, retry accounting, and failur
 Assert-True ($skillContent -match 'Stable worker IDs and retry ceiling') "skill: documents stable worker IDs and retry ceiling"
 Assert-True ($skillContent -match 'Immediate quota handoff') "skill: documents immediate quota handoff"
 Assert-True ($skillContent -match 'routing-outcomes\.json') "skill: documents routing-outcomes.json schema and fields"
-Assert-True ($skillContent -match 'gemini-3.8-flash-low' -and $skillContent -match 'gemini-3.8-flash-high') "skill: specifies Gemini 3.8 Flash baseline defaults"
+Assert-True ($skillContent -match 'adapter catalog' -and $skillContent -match 'catalog_revision') "skill: specifies adapter catalog selection and provenance"
+Assert-False ($skillContent -match 'gemini-3\.8-flash-(low|high)') "skill: has no published exact vendor model defaults"
+Assert-False (($skillContent -split "`r?`n")[2] -match '\bagy\b') "skill: public description has no vendor-specific trigger"
+Assert-False ($skillContent -match '(?m)^If you are `agy`') "skill: worker guard is vendor-neutral"
 
 # 2a. Diff-gated reviews use one recorded artifact, not the live checkout
 $executionContent = Get-Content -LiteralPath $ExecMd -Raw
@@ -129,14 +136,16 @@ foreach ($pair in @(
 
 # 7. Model policy matches role definitions
 $policy = Get-Content -LiteralPath $PolicyJson -Raw | ConvertFrom-Json
-Assert-Equal $policy.schema_version 1 "policy: schema_version is 1"
-Assert-Equal $policy.roles.scout.default_model "gemini-3.8-flash-low" "policy: scout default model"
-Assert-Equal $policy.roles.'gate-author'.default_model "gemini-3.8-flash-high" "policy: gate-author default model"
-Assert-Equal $policy.roles.implementer.default_model "gemini-3.8-flash-high" "policy: implementer default model"
-Assert-Equal $policy.roles.reviewer.default_model "gemini-3.8-flash-high" "policy: reviewer default model"
-Assert-Equal $policy.roles.researcher.default_model "gemini-3.8-flash-high" "policy: researcher default model"
-Assert-Equal $policy.roles.synthesizer.default_model "gemini-3.8-flash-high" "policy: synthesizer default model"
-Assert-Equal $policy.roles.auditor.default_model "gemini-3.8-flash-high" "policy: auditor default model"
+Assert-Equal $policy.schema_version 2 "policy: schema_version is 2"
+Assert-True ($null -eq $policy.PSObject.Properties['default_model']) "policy: has no top-level default model"
+Assert-True ($null -eq $policy.PSObject.Properties['quality_escalation']) "policy: has no top-level quality escalation model"
+$expectedPreferences = @{ scout = 'fast'; 'gate-author' = 'balanced'; implementer = 'balanced'; reviewer = 'deep'; researcher = 'balanced'; synthesizer = 'deep'; auditor = 'deep' }
+foreach ($roleName in $expectedPreferences.Keys) {
+    Assert-Equal $policy.roles.$roleName.preference $expectedPreferences[$roleName] "policy: $roleName internal preference"
+    Assert-True ($policy.roles.$roleName.effort -in @('low', 'medium', 'high')) "policy: $roleName keeps effort separate from model selection"
+    Assert-True ($null -ne $policy.roles.$roleName.PSObject.Properties['required_capabilities']) "policy: $roleName declares required capabilities"
+    Assert-False ($policy.roles.$roleName.PSObject.Properties.Name -contains 'default_model') "policy: $roleName has no exact model default"
+}
 
 # 8. Web research documents check-citation-audit helpers and exact coverage rules
 $webContent = Get-Content -LiteralPath $WebMd -Raw
@@ -192,13 +201,60 @@ foreach ($mode in @(
 Assert-False ($webContent -match 'synthesizer\.json') "web-research.md does not reuse synthesizer.json"
 Assert-False ($webContent -match 'auditor\.json') "web-research.md does not reuse auditor.json"
 
-# 11. Routing provenance fixture and documentation alignment (Issue #13)
+# 11. Published skills use the vendor-neutral publication boundary.
+Assert-True (Test-Path -LiteralPath $PublicationMd -PathType Leaf) "publication contract document exists"
+Assert-True (Test-Path -LiteralPath $PublicationAdr -PathType Leaf) "publication boundary ADR exists"
+Assert-True (Test-Path -LiteralPath $PublicationPs1 -PathType Leaf) "PowerShell publication checker exists"
+Assert-True (Test-Path -LiteralPath $PublicationSh -PathType Leaf) "Bash publication checker exists"
+$publicationContent = Get-Content -LiteralPath $PublicationMd -Raw
+Assert-True ($publicationContent -match 'grill-with-docs' -and $publicationContent -match 'vendor-neutral') "publication contract names the source skill and neutral contract"
+Assert-True ($publicationContent -match 'optional adapter' -and $publicationContent -match 'execution scope check') "publication contract separates optional delegation and verification"
+Assert-True ($publicationContent -match 'capability support' -and $publicationContent -match 'security enforcement') "publication contract separates capability support from security enforcement"
+Assert-True ($publicationContent -match 'source of truth' -and $publicationContent -match 'generated|installed copies') "publication contract documents release ownership"
+Assert-True ($skillContent -match 'publication boundary' -and $skillContent -match 'vendor-neutral') "SKILL.md links the publication boundary"
+Assert-True ((Get-Content -LiteralPath $ReadmeMd -Raw) -match 'publication boundary') "README links the publication boundary"
+
+# 12. Routing provenance fixture and documentation alignment (Issue #13)
 $FixtureJson = Join-Path $RootDir 'tests/fixtures/routing-worker.json'
 Assert-True (Test-Path -LiteralPath $FixtureJson -PathType Leaf) "workflow-static: routing fixture exists"
 Assert-True ($skillContent -match 'tests/fixtures/routing-worker\.json') "SKILL.md links to routing fixture"
 Assert-True ($skillContent -match 'schema_version: 1, attempts:') "SKILL.md documents routing container contract"
 Assert-True ($webContent -match 'tests/fixtures/routing-worker\.json') "web-research.md links to routing fixture"
 Assert-True ($webContent -match 'schema_version: 1, attempts:') "web-research.md documents routing container contract"
+
+# 12. Vendor-neutral worker adapter boundary (Issue #31)
+$AdapterDoc = Join-Path $RootDir 'docs/worker-adapter-contract.md'
+$AdapterCheckerPs = Join-Path $RootDir 'scripts/check-worker-adapter.ps1'
+$AdapterCheckerSh = Join-Path $RootDir 'scripts/check-worker-adapter.sh'
+Assert-True (Test-Path -LiteralPath $AdapterDoc -PathType Leaf) "adapter: contract document exists"
+Assert-True (Test-Path -LiteralPath $AdapterCheckerPs -PathType Leaf) "adapter: PowerShell checker exists"
+Assert-True (Test-Path -LiteralPath $AdapterCheckerSh -PathType Leaf) "adapter: Bash checker exists"
+$adapterContent = Get-Content -LiteralPath $AdapterDoc -Raw
+foreach ($term in @('orchestrator', 'worker', 'adapter', 'execution scope check')) {
+    Assert-True ($adapterContent -match [regex]::Escape($term)) "adapter: contract uses '$term'"
+}
+foreach ($phrase in @(
+    'discover-capabilities',
+    'discover-models',
+    'constraint_snapshot',
+    'model_selection',
+    'ownership',
+    'unpublished',
+    'cannot widen'
+)) {
+    Assert-True ($adapterContent -match [regex]::Escape($phrase)) "adapter: contract documents '$phrase'"
+}
+Assert-True ($skillContent -match 'worker-adapter-contract\.md') "skill: links to worker adapter contract"
+Assert-True ($execContent -match 'check-worker-adapter\.ps1' -and $execContent -match 'check-worker-adapter\.sh') "execution.md validates normalized adapter results"
+Assert-False ($adapterContent -match '(?i)grill-with-docs[^\n]*(agy|gemini|codex|claude)') "adapter: host skill guidance is vendor-neutral"
+# 13. Routing attempts record the selected adapter and catalog decision
+$fixture = Get-Content -LiteralPath $FixtureJson -Raw | ConvertFrom-Json
+foreach ($attempt in $fixture.routing.attempts) {
+    foreach ($field in @('adapter', 'adapter_revision', 'vendor', 'model_id', 'model', 'family_hint', 'preference', 'effort', 'catalog_revision', 'selection_reason')) {
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$attempt.$field)) "fixture: attempt records $field"
+    }
+}
+Assert-True ($skillContent -match 'pinned') "skill: documents pinned retry selections"
 
 [Console]::Out.WriteLine("all workflow static checks passed ($script:TotalTests tests)")
 exit 0

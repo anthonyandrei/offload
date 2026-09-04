@@ -1,37 +1,44 @@
 {
-  "schema_version": 1,
-  "policy_revision": "2026-09-03.1",
+  "schema_version": 2,
+  "policy_revision": "2026-09-04.1",
   "max_effort": "high",
   "max_retries_per_worker": 1,
   "quota_action": "handoff",
   "roles": {
     "scout": {
-      "default_model": "gemini-3.8-flash-low",
-      "quality_escalation": null
+      "preference": "fast",
+      "effort": "low",
+      "required_capabilities": []
     },
     "gate-author": {
-      "default_model": "gemini-3.8-flash-high",
-      "quality_escalation": null
+      "preference": "balanced",
+      "effort": "high",
+      "required_capabilities": []
     },
     "implementer": {
-      "default_model": "gemini-3.8-flash-high",
-      "quality_escalation": null
+      "preference": "balanced",
+      "effort": "high",
+      "required_capabilities": []
     },
     "reviewer": {
-      "default_model": "gemini-3.8-flash-high",
-      "quality_escalation": null
+      "preference": "deep",
+      "effort": "high",
+      "required_capabilities": []
     },
     "researcher": {
-      "default_model": "gemini-3.8-flash-high",
-      "quality_escalation": null
+      "preference": "balanced",
+      "effort": "high",
+      "required_capabilities": []
     },
     "synthesizer": {
-      "default_model": "gemini-3.8-flash-high",
-      "quality_escalation": null
+      "preference": "deep",
+      "effort": "high",
+      "required_capabilities": []
     },
     "auditor": {
-      "default_model": "gemini-3.8-flash-high",
-      "quality_escalation": null
+      "preference": "deep",
+      "effort": "high",
+      "required_capabilities": []
     }
   }
 }
