@@ -62,6 +62,15 @@ function Invoke-Process {
     }
 }
 
+function Read-LifecycleState([string]$path) {
+    try {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+        return [string]((Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).state)
+    } catch {
+        return ''
+    }
+}
+
 $rootDir = Split-Path -Parent $PSScriptRoot
 $launcher = Join-Path $rootDir 'scripts/run-agy-json.ps1'
 $shLauncher = Join-Path $rootDir 'scripts/run-agy-json.sh'
@@ -88,6 +97,9 @@ if ($env:FAKE_AGY_MALFORMED) {
 if ($env:FAKE_AGY_SCALAR) {
     [Console]::Out.WriteLine('{"status":"success","structured_output":"not-an-object"}')
     exit 0
+}
+if ($env:FAKE_AGY_PID_FILE) {
+    [System.IO.File]::WriteAllText($env:FAKE_AGY_PID_FILE, [string]$PID)
 }
 if ($env:FAKE_AGY_SLEEP_SECONDS) {
     Start-Sleep -Seconds ([int]$env:FAKE_AGY_SLEEP_SECONDS)
@@ -121,6 +133,7 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
     $errorPath = Join-Path $tmpRoot 'attempt-1.err'
     $lifecyclePath = Join-Path $tmpRoot 'attempt-1.lifecycle.json'
     $ledgerPath = Join-Path $tmpRoot 'resource-ledger.json'
+    $selectionPath = Join-Path $tmpRoot 'attempt-1.selection.json'
     $result = Invoke-Process -FilePath 'pwsh' -ArgumentList @(
         '-NoProfile', '-NonInteractive', '-File', $launcher,
         '--role', 'implementer',
@@ -131,7 +144,8 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
         '--attempt', '1',
         '--mode', 'execution',
         '--verification-baseline', 'baseline-1',
-        '--resource-ledger', $ledgerPath,
+        '--selection-output', $selectionPath,
+        '--ledger', $ledgerPath,
         '--', '-p', 'lifecycle test'
     ) -Environment @{ AGY_BIN = $fakeAgy }
 
@@ -148,7 +162,15 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
     Assert-Equal $lifecycle.exit_code 0 'lifecycle records worker exit result'
     Assert-True (Test-Path -LiteralPath $outputPath) 'normal worker retains stdout artifact'
     Assert-True (Test-Path -LiteralPath $errorPath) 'normal worker retains stderr artifact'
+    Assert-True (Test-Path -LiteralPath $selectionPath) 'normal worker retains selection artifact'
     Assert-True (Test-Path -LiteralPath $ledgerPath) 'normal worker records resource ledger'
+    $ledger = Get-Content -LiteralPath $ledgerPath -Raw | ConvertFrom-Json
+    Assert-Equal $ledger.marker 'offload-resource-ledger-v1' 'normal worker uses the canonical resource ledger'
+    Assert-True ($null -eq $ledger.PSObject.Properties['attempts']) 'resource ledger does not use the private attempts format'
+    Assert-Equal @($ledger.resources).Count 1 'resource ledger records one normal worker resource'
+    Assert-Equal $ledger.resources[0].assignment_id 'assignment-1' 'resource ledger records worker assignment identity'
+    Assert-Equal $ledger.resources[0].resource_type 'worker-process' 'resource ledger records worker resource type'
+    Assert-Equal $ledger.resources[0].state 'completed' 'resource ledger closes a normal worker resource'
 
     $retryOutput = Join-Path $tmpRoot 'attempt-2.json'
     $retryError = Join-Path $tmpRoot 'attempt-2.err'
@@ -157,14 +179,17 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
         '-NoProfile', '-NonInteractive', '-File', $launcher,
         '--role', 'implementer', '--output', $retryOutput, '--error', $retryError,
         '--lifecycle', $retryLifecycle, '--assignment-id', 'assignment-1', '--attempt', '2',
+        '--verification-baseline', 'baseline-1', '--pin', $selectionPath,
         '--resource-ledger', $ledgerPath, '--', '-p', 'retry lifecycle test'
     ) -Environment @{ AGY_BIN = $fakeAgy }
     Assert-Equal $retry.ExitCode 0 'retry worker exits successfully'
     $retryRecord = Get-Content -LiteralPath $retryLifecycle -Raw | ConvertFrom-Json
-    Assert-Equal $retryRecord.model $lifecycle.model 'retry uses the ledger pinned model'
-    Assert-Equal $retryRecord.verification_baseline $lifecycle.verification_baseline 'retry inherits the ledger verification baseline'
+    Assert-Equal $retryRecord.model $lifecycle.model 'retry uses the selection pinned model'
+    Assert-Equal $retryRecord.verification_baseline 'baseline-1' 'retry records its explicit verification baseline'
     $ledger = Get-Content -LiteralPath $ledgerPath -Raw | ConvertFrom-Json
-    Assert-Equal @($ledger.attempts).Count 2 'resource ledger records both attempts'
+    Assert-Equal @($ledger.resources).Count 2 'resource ledger records both worker resources'
+    Assert-Equal (@($ledger.resources | Where-Object { $_.assignment_id -eq 'assignment-1' }).Count) 2 'resource ledger preserves both attempts for one assignment'
+    Assert-Equal $ledger.resources[1].state 'completed' 'resource ledger closes a retry worker resource'
 
     $thirdOutput = Join-Path $tmpRoot 'attempt-3.json'
     $third = Invoke-Process -FilePath 'pwsh' -ArgumentList @(
@@ -255,7 +280,7 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
     while (-not (Test-Path -LiteralPath $cancelLifecycle) -and [DateTime]::UtcNow -lt $cancelDeadline) {
         Start-Sleep -Milliseconds 20
     }
-    while ((Get-Content -LiteralPath $cancelLifecycle -Raw | ConvertFrom-Json).state -ne 'running' -and [DateTime]::UtcNow -lt $cancelDeadline) {
+    while ((Read-LifecycleState $cancelLifecycle) -ne 'running' -and [DateTime]::UtcNow -lt $cancelDeadline) {
         Start-Sleep -Milliseconds 20
     }
     [System.IO.File]::WriteAllText($cancelFile, 'cancel')
@@ -270,6 +295,59 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
     Assert-Equal $cancelRecord.state 'cleaned' 'canceled worker closes lifecycle'
     Assert-Equal $cancelRecord.failure_class 'canceled' 'cancellation records diagnosis'
     Assert-Equal ((@($cancelRecord.events | ForEach-Object { $_.state }) -join ',')) 'created,started,running,canceled,retained,cleaned' 'canceled worker is stopped before cleanup'
+
+    if ($IsWindows) {
+        $orphanOutput = Join-Path $tmpRoot 'orphan.json'
+        $orphanError = Join-Path $tmpRoot 'orphan.err'
+        $orphanLifecycle = Join-Path $tmpRoot 'orphan.lifecycle.json'
+        $orphanPidFile = Join-Path $tmpRoot 'orphan.agy.pid'
+        $orphanArgs = @(
+            '-NoProfile', '-NonInteractive', '-File', $launcher,
+            '--role', 'implementer', '--output', $orphanOutput, '--error', $orphanError,
+            '--lifecycle', $orphanLifecycle, '--assignment-id', 'assignment-orphan', '--attempt', '1',
+            '--', '-p', 'orphan lifecycle test'
+        )
+        $orphanPsi = [System.Diagnostics.ProcessStartInfo]::new()
+        $orphanPsi.FileName = 'pwsh'
+        $orphanPsi.UseShellExecute = $false
+        $orphanPsi.CreateNoWindow = $true
+        $orphanPsi.RedirectStandardOutput = $true
+        $orphanPsi.RedirectStandardError = $true
+        foreach ($arg in $orphanArgs) { $orphanPsi.ArgumentList.Add($arg) }
+        $orphanPsi.Environment['AGY_BIN'] = $fakeAgy
+        $orphanPsi.Environment['FAKE_AGY_SLEEP_SECONDS'] = '30'
+        $orphanPsi.Environment['FAKE_AGY_PID_FILE'] = $orphanPidFile
+        $orphanProc = [System.Diagnostics.Process]::Start($orphanPsi)
+        $orphanStdout = $orphanProc.StandardOutput.ReadToEndAsync()
+        $orphanStderr = $orphanProc.StandardError.ReadToEndAsync()
+        try {
+            $orphanDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ((-not (Test-Path -LiteralPath $orphanPidFile -PathType Leaf) -or (Read-LifecycleState $orphanLifecycle) -ne 'running') -and [DateTime]::UtcNow -lt $orphanDeadline) {
+                Start-Sleep -Milliseconds 20
+            }
+            $agyPid = 0
+            if (Test-Path -LiteralPath $orphanPidFile -PathType Leaf) {
+                [void][int]::TryParse((Get-Content -LiteralPath $orphanPidFile -Raw).Trim(), [ref]$agyPid)
+            }
+            Assert-True ($agyPid -gt 0) 'orphan test records the worker process id'
+            Assert-Equal (Read-LifecycleState $orphanLifecycle) 'running' 'orphan test reaches running state'
+            Stop-Process -Id $orphanProc.Id -Force -ErrorAction SilentlyContinue
+            $orphanProc.WaitForExit()
+            $orphanDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ($null -ne (Get-Process -Id $agyPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $orphanDeadline) {
+                Start-Sleep -Milliseconds 50
+            }
+            $agyStillRunning = $null -ne (Get-Process -Id $agyPid -ErrorAction SilentlyContinue)
+            if ($agyStillRunning) { Stop-Process -Id $agyPid -Force -ErrorAction SilentlyContinue }
+            Assert-True (-not $agyStillRunning) 'forced launcher exit does not orphan the worker process'
+        } finally {
+            if (-not $orphanProc.HasExited) { Stop-Process -Id $orphanProc.Id -Force -ErrorAction SilentlyContinue }
+            if (-not $orphanProc.HasExited) { $orphanProc.WaitForExit() }
+            $orphanStdout.GetAwaiter().GetResult() | Out-Null
+            $orphanStderr.GetAwaiter().GetResult() | Out-Null
+            $orphanProc.Dispose()
+        }
+    }
 
     $bashCommand = $null
     if ($IsWindows) {
@@ -307,6 +385,12 @@ if [ "${FAKE_BASH_MODE:-}" = scalar ]; then
   printf '{"status":"success","structured_output":"not-an-object"}\n'
   exit 0
 fi
+if [ -n "${FAKE_BASH_PID_FILE:-}" ]; then
+  printf '%s\n' "$$" > "$FAKE_BASH_PID_FILE"
+fi
+if [ -n "${FAKE_BASH_SLEEP_SECONDS:-}" ]; then
+  sleep "$FAKE_BASH_SLEEP_SECONDS"
+fi
 printf '{"status":"success","response":"ok","structured_output":{"ok":true}}\n'
 '@ | Set-Content -LiteralPath $bashAgy -Encoding utf8
         $bashRunner = Join-Path $tmpRoot 'run-bash-lifecycle.sh'
@@ -317,6 +401,9 @@ export AGY_BIN="$1"
 export AGY_BIN="$(cygpath -u "$AGY_BIN")"
 export OFFLOAD_ADAPTER_BIN="$(cygpath -u "$7")"
 export FAKE_ADAPTER_CATALOG="$(cygpath -u "$FAKE_ADAPTER_CATALOG")"
+if [ "$#" -ge 8 ]; then
+  export FAKE_BASH_PID_FILE="$(cygpath -u "$8")"
+fi
 chmod +x "$AGY_BIN" "$OFFLOAD_ADAPTER_BIN"
 launcher="$(cygpath -u "$2")"
 out_file="$(cygpath -u "$3")"
@@ -343,6 +430,12 @@ ledger_file="$(cygpath -u "$6")"
         $bashRecord = Get-Content -LiteralPath $bashLifecycle -Raw | ConvertFrom-Json
         Assert-Equal ((@($bashRecord.events | ForEach-Object { $_.state }) -join ',')) 'created,started,running,completed,retained,cleaned' 'bash records the same shared lifecycle'
         Assert-Equal $bashRecord.model 'gemini-3.8-flash-high' 'bash records pinned model'
+        $bashLedgerRecord = Get-Content -LiteralPath $bashLedger -Raw | ConvertFrom-Json
+        Assert-Equal $bashLedgerRecord.marker 'offload-resource-ledger-v1' 'bash uses the canonical resource ledger'
+        Assert-True ($null -eq $bashLedgerRecord.PSObject.Properties['attempts']) 'bash resource ledger does not use the private attempts format'
+        Assert-Equal @($bashLedgerRecord.resources).Count 1 'bash resource ledger records one worker resource'
+        Assert-Equal $bashLedgerRecord.resources[0].resource_type 'worker-process' 'bash resource ledger records worker resource type'
+        Assert-Equal $bashLedgerRecord.resources[0].state 'completed' 'bash resource ledger closes a normal worker resource'
 
         $bashMalformedLifecycle = Join-Path $tmpRoot 'bash-malformed.lifecycle.json'
         $bashMalformed = Invoke-Process -FilePath $bashCommand -ArgumentList @(
@@ -378,6 +471,82 @@ ledger_file="$(cygpath -u "$6")"
         $bashQuotaRecord = Get-Content -LiteralPath $bashQuotaLifecycle -Raw | ConvertFrom-Json
         Assert-Equal $bashQuotaRecord.failure_class 'quota' 'bash quota handoff records diagnosis'
         Assert-True ((@($bashQuotaRecord.events | ForEach-Object { $_.state }) -contains 'quota-handoff')) 'bash quota exhaustion records quota-handoff state'
+
+        $bashOrphanRunner = Join-Path $tmpRoot 'run-bash-orphan.sh'
+        @'
+#!/usr/bin/env bash
+set -euo pipefail
+export AGY_BIN="$(cygpath -u "$1")"
+export OFFLOAD_ADAPTER_BIN="$(cygpath -u "$7")"
+export FAKE_ADAPTER_CATALOG="$(cygpath -u "$FAKE_ADAPTER_CATALOG")"
+export FAKE_BASH_PID_FILE="$(cygpath -u "$9")"
+chmod +x "$AGY_BIN" "$OFFLOAD_ADAPTER_BIN"
+launcher="$(cygpath -u "$2")"
+out_file="$(cygpath -u "$3")"
+err_file="$(cygpath -u "$4")"
+lifecycle_file="$(cygpath -u "$5")"
+ledger_file="$(cygpath -u "$6")"
+"$launcher" --role implementer --output "$out_file" --error "$err_file" --lifecycle "$lifecycle_file" --assignment-id assignment-bash-orphan --attempt 1 --resource-ledger "$ledger_file" -- -p 'bash orphan lifecycle test' &
+launcher_pid=$!
+printf '%s\n' "$launcher_pid" > "$(cygpath -u "$8")"
+wait "$launcher_pid"
+'@ | Set-Content -LiteralPath $bashOrphanRunner -Encoding utf8
+        $bashOrphanOutput = Join-Path $tmpRoot 'bash-orphan.json'
+        $bashOrphanError = Join-Path $tmpRoot 'bash-orphan.err'
+        $bashOrphanLifecycle = Join-Path $tmpRoot 'bash-orphan.lifecycle.json'
+        $bashOrphanLedger = Join-Path $tmpRoot 'bash-orphan.ledger.json'
+        $bashOrphanLauncherPidFile = Join-Path $tmpRoot 'bash-orphan.launcher.pid'
+        $bashOrphanAgyPidFile = Join-Path $tmpRoot 'bash-orphan.agy.pid'
+        if (-not $IsWindows) {
+            [System.IO.File]::SetUnixFileMode($bashOrphanRunner, [System.IO.UnixFileMode]509)
+            [System.IO.File]::SetUnixFileMode($bashAgy, [System.IO.UnixFileMode]509)
+        }
+        $bashOrphanPsi = [System.Diagnostics.ProcessStartInfo]::new()
+        $bashOrphanPsi.FileName = $bashCommand
+        $bashOrphanPsi.UseShellExecute = $false
+        $bashOrphanPsi.CreateNoWindow = $true
+        $bashOrphanPsi.RedirectStandardOutput = $true
+        $bashOrphanPsi.RedirectStandardError = $true
+        foreach ($arg in @(
+            ($bashOrphanRunner -replace '\\', '/'), ($bashAgy -replace '\\', '/'), ($shLauncher -replace '\\', '/'),
+            ($bashOrphanOutput -replace '\\', '/'), ($bashOrphanError -replace '\\', '/'), ($bashOrphanLifecycle -replace '\\', '/'),
+            ($bashOrphanLedger -replace '\\', '/'), ($bashAdapter -replace '\\', '/'), ($bashOrphanLauncherPidFile -replace '\\', '/'),
+            ($bashOrphanAgyPidFile -replace '\\', '/')
+        )) { $bashOrphanPsi.ArgumentList.Add($arg) }
+        $bashOrphanPsi.Environment['FAKE_BASH_SLEEP_SECONDS'] = '30'
+        $bashOrphanProc = [System.Diagnostics.Process]::Start($bashOrphanPsi)
+        $bashOrphanStdout = $bashOrphanProc.StandardOutput.ReadToEndAsync()
+        $bashOrphanStderr = $bashOrphanProc.StandardError.ReadToEndAsync()
+        try {
+            $bashOrphanDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ((-not (Test-Path -LiteralPath $bashOrphanLauncherPidFile -PathType Leaf) -or -not (Test-Path -LiteralPath $bashOrphanAgyPidFile -PathType Leaf) -or (Read-LifecycleState $bashOrphanLifecycle) -ne 'running') -and [DateTime]::UtcNow -lt $bashOrphanDeadline) {
+                Start-Sleep -Milliseconds 20
+            }
+            $bashLauncherPid = 0
+            $bashAgyPid = 0
+            if (Test-Path -LiteralPath $bashOrphanLauncherPidFile -PathType Leaf) {
+                [void][int]::TryParse((Get-Content -LiteralPath $bashOrphanLauncherPidFile -Raw).Trim(), [ref]$bashLauncherPid)
+            }
+            if (Test-Path -LiteralPath $bashOrphanAgyPidFile -PathType Leaf) {
+                [void][int]::TryParse((Get-Content -LiteralPath $bashOrphanAgyPidFile -Raw).Trim(), [ref]$bashAgyPid)
+            }
+            Assert-True ($bashLauncherPid -gt 0 -and $bashAgyPid -gt 0) 'bash orphan test records launcher and worker process ids'
+            Assert-Equal (Read-LifecycleState $bashOrphanLifecycle) 'running' 'bash orphan test reaches running state'
+            Stop-Process -Id $bashLauncherPid -Force -ErrorAction SilentlyContinue
+            $bashOrphanDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ($null -ne (Get-Process -Id $bashAgyPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $bashOrphanDeadline) {
+                Start-Sleep -Milliseconds 50
+            }
+            $bashAgyStillRunning = $null -ne (Get-Process -Id $bashAgyPid -ErrorAction SilentlyContinue)
+            if ($bashAgyStillRunning) { Stop-Process -Id $bashAgyPid -Force -ErrorAction SilentlyContinue }
+            Assert-True (-not $bashAgyStillRunning) 'forced bash launcher exit does not orphan the worker process'
+        } finally {
+            if (-not $bashOrphanProc.HasExited) { Stop-Process -Id $bashOrphanProc.Id -Force -ErrorAction SilentlyContinue }
+            if (-not $bashOrphanProc.HasExited) { $bashOrphanProc.WaitForExit() }
+            $bashOrphanStdout.GetAwaiter().GetResult() | Out-Null
+            $bashOrphanStderr.GetAwaiter().GetResult() | Out-Null
+            $bashOrphanProc.Dispose()
+        }
     } else {
         [Console]::Out.WriteLine('skip - bash not found on host; skipping worker lifecycle parity')
     }

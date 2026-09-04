@@ -1,61 +1,92 @@
 # Claude adapter contract
 
-The Claude adapter is one adapter for one bounded worker assignment. The
-orchestrator owns assignment constraints, verification, lifecycle, and cleanup.
-The adapter owns only Claude Code command syntax and response parsing.
+The Claude adapter is a vendor-neutral worker boundary for hosts that provide the
+Claude Code CLI (`claude`). It conforms to the worker adapter contract
+(`docs/adapter-contract.md`) and has PowerShell and Bash entry points:
 
-## Assignment
+```text
+scripts/run-claude-json.ps1 --operation catalog --request <request.json>
+scripts/run-claude-json.ps1 --operation launch --request <selection.json> --output <output.json> --error <error.log> -- <worker_args...>
 
-An assignment is a JSON object with `schema_version: 1` and these fields:
+bash scripts/run-claude-json.sh --operation catalog --request <request.json>
+bash scripts/run-claude-json.sh --operation launch --request <selection.json> --output <output.json> --error <error.log> -- <worker_args...>
+```
 
-- `assignment_id`, `prompt`, and `working_directory` are required.
-- `owned_paths`, `frozen_paths`, `baseline`, and `gate_command` describe the
-  execution scope and final gate. They are required for an execution run.
-- `preference` is `fast`, `balanced`, or `deep`. It is an internal preference,
-  not a Claude model name.
-- `model` and `effort` are optional pinned choices selected by the
-  orchestrator. The adapter never publishes a model ID or maps a family hint
-  to a permission.
-- `allowed_tools` and `disallowed_tools` are static assignment constraints.
-  The adapter always adds Claude's child-assignment tools to the denied set.
-- `timeout_seconds`, `resume_session_id`, `cancel_file`, and `ledger_path` are
-  optional lifecycle and ownership data.
+The orchestrator owns assignment constraints, execution-scope verification,
+final acceptance gates, resource ledgers, and lifecycle management. The adapter
+owns Claude Code command syntax and response normalization.
 
-The working directory must contain an `.offload-execution-workspace` or
-`.offload-research-workspace` marker. The adapter rejects the caller checkout,
-an unmarked directory, unsafe permission mode, path escapes, arbitrary Claude
-arguments, and attempts to pass `--model`, `--effort`, or permission flags from
-the caller.
+## Operations
 
-## Normalized result
+### Catalog discovery
 
-The adapter writes a JSON result with `schema_version`, `assignment_id`,
-`adapter`, `status`, `lifecycle`, `exit_code`, `response`, `structured_output`,
-`session_id`, `capabilities`, `model_selection`, `resources`, `artifacts`, and
-`verification`. A result reaches the caller as `completed` only after the
-execution scope check and final gate both pass.
+`--operation catalog --request <request.json>` verifies that the Claude CLI is
+available and advertises structured output support via `claude --help`. It reads
+model metadata from `CLAUDE_MODEL_CATALOG` or `OFFLOAD_ADAPTER_CATALOG` (or
+host-provided model list) and outputs a protocol version 1 catalog JSON document
+to standard output:
 
-The adapter reports capability discovery from `claude --version` and
-`claude --help`. A host-provided catalog may be supplied through
-`CLAUDE_MODEL_CATALOG` or `model_catalog_path`; when neither exists, model
-availability is `unknown`. A pinned model cannot run while availability is
-unknown. This fails closed instead of guessing.
+```json
+{
+  "protocol_version": 1,
+  "adapter": "claude",
+  "adapter_revision": "claude-1",
+  "vendor": "anthropic",
+  "catalog_revision": "catalog-revision-id",
+  "models": [
+    {
+      "id": "claude-3-5-sonnet-20241022",
+      "family_hint": "sonnet",
+      "available": true,
+      "quota_available": true,
+      "supported_efforts": ["low", "medium", "high"],
+      "capabilities": ["structured-output"],
+      "scores": { "fast": 2, "balanced": 1, "deep": 2 }
+    }
+  ]
+}
+```
 
-## Lifecycle and resources
+If the CLI or catalog is unavailable, the adapter fails closed and exits
+nonzero.
 
-The lifecycle is `created`, `started`, `running`, `completed`, `failed`,
-`canceled`, `quota-handoff`, `retained`, or `cleaned`. Cancellation and timeout
-terminate Claude, wait for process exit, and preserve stdout and stderr.
+### Worker launch
 
-Before launch, the adapter registers the worktree, process placeholder, raw
-output, raw error, normalized result, and verification artifacts in the
-orchestrator-owned ledger. It updates the process identity and terminal state.
-The adapter never deletes ledger resources. Cleanup and reconciliation remain
-orchestrator responsibilities.
+`--operation launch --request <selection.json> --output <output.json> --error <error.log> -- <worker_args...>`
+launches Claude Code with the exact model selected by the orchestrator. The
+adapter parses worker arguments following the `--` delimiter (such as
+`--prompt`, `--cd`, `--cancel-file`, `--timeout-seconds`, `--allowedTools`, and
+`--disallowedTools`), preserving argument and path boundaries when values
+contain spaces.
 
-Claude Code features tested by the fake suite are print mode, JSON output,
-model and permission flags, allowed and denied tools, resume IDs, process
-termination, malformed JSON handling, and post-run scope/gate verification.
-Native Windows Claude Code hosts need WSL, Git for Windows, or the supported
-native binary. Any host that cannot provide a marked isolated runtime must be
-rejected or run in a separately provisioned isolated environment.
+The adapter enforces isolated execution:
+- The working directory must contain an `.offload-execution-workspace` or
+  `.offload-research-workspace` marker. Unmarked workspaces fail closed.
+- Nested dispatch tools `Task` and `Agent` are automatically added to
+  `--disallowedTools`.
+- `--permission-mode` defaults to `acceptEdits`; `bypassPermissions` is rejected.
+- Structured JSON output is requested via `-p <prompt> --output-format json`.
+
+The normalized output written to `<output.json>` follows the launcher result
+contract:
+
+```json
+{
+  "status": "success",
+  "response": "ok",
+  "session_id": "s1",
+  "structured_output": { ... },
+  "model_id": "claude-3-5-sonnet-20241022"
+}
+```
+
+## Security and responsibility boundary
+
+The orchestrator owns assignment verification, execution scope checks, final
+gates, and resource ledgers. The adapter does not run adapter-owned scope checks
+or acceptance gates, nor does it generate competing private ledger schemas.
+
+Cancellation (signal or cancel file) terminates the process and exits with code
+130. Timeout terminates the process and exits with code 124. Quota exhaustion
+exits with code 75 for caller handoff. Malformed output exits with code 1,
+preserving the raw output for diagnosis.

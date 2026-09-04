@@ -1,31 +1,29 @@
 # Codex adapter
 
 The Codex adapter is a vendor-neutral worker boundary for hosts that provide the
-Codex CLI. It has PowerShell and Bash entry points:
+Codex CLI. It conforms to the worker adapter contract (`docs/adapter-contract.md`)
+and has PowerShell and Bash entry points:
 
 ```text
-scripts/run-codex-json.ps1 capabilities --output <capabilities.json>
-scripts/run-codex-json.ps1 run --assignment <assignment.json> --output <result.json> --error <error.log>
+scripts/run-codex-json.ps1 --operation catalog --request <request.json>
+scripts/run-codex-json.ps1 --operation launch --request <selection.json> --output <output.json> --error <error.log> -- <worker_args...>
 
-bash scripts/run-codex-json.sh capabilities --output <capabilities.json>
-bash scripts/run-codex-json.sh run --assignment <assignment.json> --output <result.json> --error <error.log>
+bash scripts/run-codex-json.sh --operation catalog --request <request.json>
+bash scripts/run-codex-json.sh --operation launch --request <selection.json> --output <output.json> --error <error.log> -- <worker_args...>
 ```
 
 The Bash entry point requires Bash 3.2 or newer and `jq`; the PowerShell entry
 point requires PowerShell 7 or newer.
 
-The adapter accepts an assignment document with `schema_version: 1`,
-`assignment_id`, `prompt`, `worktree`, `preference`, `effort`, `timeout_seconds`,
-`scope_check`, and `final_gate`. The optional
-`parent_assignment_id`, `depth`, `attempt`, `resume_session_id`, `model_id`, and
-`resource_ledger` fields carry lifecycle and ownership state from the caller.
+## Operations
 
-## Capability discovery
+### Catalog discovery
 
-`capabilities` probes the installed Codex CLI for the structured execution flags
-used by the adapter: `--json`, `--output-schema`, and `--output-last-message`. It also reads the
-host-provided `CODEX_MODEL_CATALOG` environment variable. The variable may contain a JSON
-document or a path to one:
+`--operation catalog --request <request.json>` probes the installed Codex CLI for
+the structured execution flags used by the adapter: `--json`, `--output-schema`,
+and `--output-last-message`. It also reads the host-provided `CODEX_MODEL_CATALOG`
+(or `OFFLOAD_ADAPTER_CATALOG`) environment variable. The variable may contain a
+JSON document or a path to one:
 
 ```json
 {
@@ -40,51 +38,72 @@ document or a path to one:
 }
 ```
 
-The catalog is deliberately supplied by the host. The adapter does not publish
-or embed model IDs. `fast`, `balanced`, and `deep` are the stable internal preferences; the adapter
-selects a matching available model deterministically. If the CLI flags or
-catalog are unavailable, the adapter writes a normalized unsupported result and
+The adapter emits a protocol version 1 catalog document to standard output:
+
+```json
+{
+  "protocol_version": 1,
+  "adapter": "codex",
+  "adapter_revision": "codex-1",
+  "vendor": "codex",
+  "catalog_revision": "host-catalog-1",
+  "models": [
+    {
+      "id": "host-selected-model",
+      "family_hint": "unknown",
+      "available": true,
+      "quota_available": true,
+      "supported_efforts": ["low", "medium", "high"],
+      "capabilities": ["structured-output"],
+      "scores": { "fast": 2, "balanced": 1, "deep": 2 }
+    }
+  ]
+}
+```
+
+The catalog is supplied by the host; the adapter does not hardcode vendor model
+IDs. If the CLI flags or catalog are unavailable, the adapter fails closed and
 exits nonzero.
 
-## Security and lifecycle boundary
+### Worker launch
 
-The adapter owns the native Codex invocation and always supplies these fixed
+`--operation launch --request <selection.json> --output <output.json> --error <error.log> -- <worker_args...>`
+launches Codex with the exact model selected by the orchestrator. The adapter
+parses worker arguments following the `--` delimiter (such as `--prompt`, `--cd`,
+`--cancel-file`, and `--timeout-seconds`), preserving argument and path
+boundaries when values contain spaces.
+
+The adapter owns the native Codex invocation syntax, supplying fixed
 constraints:
 
 - `exec --json --ephemeral`
-- `--cd <assignment worktree>`
+- `--cd <worktree>`
 - `--sandbox workspace-write`
 - `--ask-for-approval never`
 - `--output-schema <adapter schema>`
 - `--output-last-message <artifact>`
+- `--model <model_id>`
+- `-- <prompt>`
 
-Callers cannot inject native worker flags through the assignment. A worker
-response containing a child-assignment request is recorded under
-`orchestrator_requests`; the adapter never dispatches it. Assignment depth
-and attempt values are validated before launch.
+The adapter captures process standard output and standard error, writing the
+normalized result to the designated output path:
 
-Every worktree, process, and adapter artifact is appended to the JSONL resource
-ledger with the assignment ID and an ownership marker. The normalized result
-records process identity, selected model, artifacts, cancellation, timeout,
-quota handoff, malformed output, scope-check, and final-gate outcomes.
-Cancellation and timeout stop the native process. Retry, quota handoff, and
-resume scheduling remain decisions of the shared lifecycle coordinator, which
-passes the next attempt or resume session back to this adapter.
+```json
+{
+  "status": "success",
+  "structured_output": { ... },
+  "model_id": "host-selected-model"
+}
+```
 
-The adapter only returns `completed` after both the declared scope check and
-final gate pass. Scope failure and gate failure are caller-visible failures and
-do not expose the worker's structured result as a successful result.
+## Security and responsibility boundary
 
-## Tested and unavailable features
+The orchestrator owns assignment constraints, execution-scope verification,
+final acceptance gates, resource ledgers, and cleanup. The adapter does not run
+adapter-owned scope checks or acceptance gates, nor does it maintain a competing
+private ledger schema.
 
-The deterministic PowerShell acceptance test covers capability discovery,
-successful structured output, malformed output, cancellation, scope failure,
-quota handoff, and fail-closed capability discovery. The Bash entry point is
-syntax-checked in CI and uses the same assignment and result contract.
-
-The Codex CLI does not provide a portable model-catalog command for this
-adapter, so hosts must provide `CODEX_MODEL_CATALOG`. The adapter does not
-offer concurrency, nested dispatch, or independent worktree cleanup. Those
-operations belong to the shared lifecycle and resource-ledger services. A
-missing service or unsupported host capability is reported as an explicit
-failure instead of being inferred or silently widened.
+Cancellation (signal or cancel file) terminates the process and exits with code
+130. Timeout terminates the process and exits with code 124. Quota exhaustion
+exits with code 75 for caller handoff. Malformed output exits with code 1,
+preserving the raw output for diagnosis.

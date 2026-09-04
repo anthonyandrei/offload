@@ -58,6 +58,9 @@ try {
     $FakeCodex = Join-Path $TmpRoot 'fake-codex.ps1'
     @'
 $ArgsList = @($args)
+if ($env:FAKE_CODEX_RECORD_ARGS) {
+    $ArgsList | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:FAKE_CODEX_RECORD_ARGS -Encoding utf8
+}
 $last = $null
 for ($i = 0; $i -lt $ArgsList.Count; $i++) {
     if ($ArgsList[$i] -eq '--output-last-message') { $last = $ArgsList[$i + 1] }
@@ -83,21 +86,6 @@ $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $last -Encoding ut
 Write-Output '{"type":"turn.completed"}'
 '@ | Set-Content -LiteralPath $FakeCodex -Encoding utf8
 
-    $FakeScope = Join-Path $TmpRoot 'fake-scope.ps1'
-    @'
-if ($env:FAKE_SCOPE_RESULT -eq 'fail') { exit 1 }
-Set-Content -LiteralPath $env:FAKE_SCOPE_MARKER -Value 'scope checked' -Encoding utf8
-exit 0
-'@ | Set-Content -LiteralPath $FakeScope -Encoding utf8
-
-    $FakeGate = Join-Path $TmpRoot 'fake-gate.ps1'
-    @'
-Set-Content -LiteralPath $env:FAKE_GATE_MARKER -Value 'gate checked' -Encoding utf8
-exit 0
-'@ | Set-Content -LiteralPath $FakeGate -Encoding utf8
-
-    $pwsh = (Get-Command pwsh).Source
-
     $Catalog = Join-Path $TmpRoot 'catalog.json'
     Write-JsonFile $Catalog ([ordered]@{
         schema_version = 1
@@ -109,127 +97,131 @@ exit 0
         )
     })
 
-    $capOutput = Join-Path $TmpRoot 'capabilities.json'
-    $cap = Invoke-Adapter @('capabilities', '--output', $capOutput, '--codex', $FakeCodex) @{ CODEX_MODEL_CATALOG = $Catalog }
-    Assert-Equal $cap.ExitCode 0 'capabilities discovery exits successfully'
-    $capDoc = Get-Content -LiteralPath $capOutput -Raw | ConvertFrom-Json
-    Assert-Equal $capDoc.vendor 'codex' 'capabilities report identifies Codex'
-    Assert-True ($capDoc.supported_tools -contains 'exec') 'capabilities report includes exec tool'
-    Assert-True ($capDoc.structured_output.supported) 'capabilities report includes structured output support'
-    Assert-True ($capDoc.model_availability.available) 'capabilities report includes live model availability'
-    Assert-True ($capDoc.effort_levels -contains 'high') 'capabilities report includes effort levels'
-
-    $worktree = Join-Path $TmpRoot 'worktree'
-    New-Item -ItemType Directory -Path $worktree | Out-Null
-    $scopeMarker = Join-Path $TmpRoot 'scope.marker'
-    $gateMarker = Join-Path $TmpRoot 'gate.marker'
-    $assignment = Join-Path $TmpRoot 'success-assignment.json'
-    Write-JsonFile $assignment ([ordered]@{
-        schema_version = 1
-        assignment_id = 'codex-success-1'
-        parent_assignment_id = $null
-        depth = 0
-        prompt = 'Return the bounded result.'
-        worktree = $worktree
-        owned_paths = @('owned.txt')
-        frozen_paths = @('tests/test_codex_adapter.ps1')
-        baseline = 'HEAD'
+    # 1. Operation catalog test
+    $catalogRequest = Join-Path $TmpRoot 'catalog-request.json'
+    Write-JsonFile $catalogRequest ([ordered]@{
+        protocol_version = 1
+        role = 'worker'
         preference = 'balanced'
         effort = 'high'
-        timeout_seconds = 10
-        scope_check = @($pwsh, '-NoProfile', '-File', $FakeScope)
-        final_gate = @($pwsh, '-NoProfile', '-File', $FakeGate)
-        artifacts = @()
+        required_capabilities = @('structured-output')
+        policy_revision = 'test-policy-1'
     })
-    $resultOutput = Join-Path $TmpRoot 'success-result.json'
-    $success = Invoke-Adapter @('run', '--assignment', $assignment, '--output', $resultOutput, '--error', (Join-Path $TmpRoot 'success.err'), '--codex', $FakeCodex) @{
-        CODEX_MODEL_CATALOG = $Catalog
-        FAKE_SCOPE_MARKER = $scopeMarker
-        FAKE_GATE_MARKER = $gateMarker
-    } $worktree
-    Assert-Equal $success.ExitCode 0 'successful assignment exits successfully'
-    $successDoc = Get-Content -LiteralPath $resultOutput -Raw | ConvertFrom-Json
-    Assert-Equal $successDoc.status 'completed' 'successful assignment returns completed status'
-    Assert-Equal $successDoc.model_selection.preference 'balanced' 'assignment keeps internal model preference'
-    Assert-Equal $successDoc.model_selection.model_id 'fake-balanced-model' 'adapter selects catalog model for preference'
-    Assert-True $successDoc.structured_output.ok 'successful assignment returns structured output'
-    Assert-True ($successDoc.process.pid -gt 0) 'successful assignment reports process identity'
-    Assert-Equal $successDoc.verification.scope_check 'passed' 'scope check runs before returning result'
-    Assert-Equal $successDoc.verification.final_gate 'passed' 'final gate runs before returning result'
-    Assert-True (Test-Path -LiteralPath $scopeMarker) 'scope check marker proves scope check ran'
-    Assert-True (Test-Path -LiteralPath $gateMarker) 'final gate marker proves final gate ran'
-    Assert-True ($successDoc.resources.artifacts.Count -ge 2) 'resource ledger reports worker artifacts'
-    Assert-True (-not $successDoc.PSObject.Properties.Name.Contains('child_assignment')) 'nested dispatch is not promoted to an assignment'
 
-    $malformedAssignment = Join-Path $TmpRoot 'malformed-assignment.json'
-    Write-JsonFile $malformedAssignment ((Get-Content -LiteralPath $assignment -Raw | ConvertFrom-Json) | ForEach-Object { $_.assignment_id = 'codex-malformed-1'; $_ })
+    $cap = Invoke-Adapter @('--operation', 'catalog', '--request', $catalogRequest, '--codex', $FakeCodex) @{ CODEX_MODEL_CATALOG = $Catalog }
+    Assert-Equal $cap.ExitCode 0 'catalog discovery exits successfully'
+    $capDoc = $cap.Stdout | ConvertFrom-Json
+    Assert-Equal $capDoc.vendor 'codex' 'catalog report identifies Codex'
+    Assert-Equal $capDoc.adapter 'codex' 'catalog report identifies adapter as codex'
+    Assert-Equal $capDoc.protocol_version 1 'catalog report specifies protocol_version 1'
+    Assert-True ($capDoc.models.Count -ge 1) 'catalog report includes models'
+    Assert-True ($capDoc.models[0].supported_efforts -contains 'low' -or $capDoc.models[0].supported_efforts -contains 'medium') 'catalog models include supported_efforts'
+
+    # 2. Operation launch test with arguments preserving spaces
+    $worktree = Join-Path $TmpRoot 'worktree with spaces'
+    New-Item -ItemType Directory -Path $worktree | Out-Null
+
+    $selection = Join-Path $TmpRoot 'selection.json'
+    Write-JsonFile $selection ([ordered]@{
+        protocol_version = 1
+        model_id = 'fake-balanced-model'
+        effort = 'high'
+        preference = 'balanced'
+        vendor = 'codex'
+    })
+
+    $resultOutput = Join-Path $TmpRoot 'success-result.json'
+    $errorOutput = Join-Path $TmpRoot 'success.err'
+    $recordedArgsFile = Join-Path $TmpRoot 'recorded-args.json'
+    $testPrompt = 'Return the bounded result with spaces and "quotes".'
+
+    $success = Invoke-Adapter @(
+        '--operation', 'launch',
+        '--request', $selection,
+        '--output', $resultOutput,
+        '--error', $errorOutput,
+        '--codex', $FakeCodex,
+        '--',
+        '--cd', $worktree,
+        '--prompt', $testPrompt
+    ) @{
+        CODEX_MODEL_CATALOG = $Catalog
+        FAKE_CODEX_RECORD_ARGS = $recordedArgsFile
+    }
+
+    Assert-Equal $success.ExitCode 0 'successful launch exits successfully'
+    Assert-True (Test-Path -LiteralPath $resultOutput) 'result output file is written'
+    $successDoc = Get-Content -LiteralPath $resultOutput -Raw | ConvertFrom-Json
+    Assert-Equal $successDoc.status 'success' 'successful launch returns success status'
+    Assert-True $successDoc.structured_output.ok 'successful launch returns structured output'
+    Assert-Equal $successDoc.model_id 'fake-balanced-model' 'result includes selected model_id'
+
+    # Verify space preservation in arguments
+    $recordedArgs = Get-Content -LiteralPath $recordedArgsFile -Raw | ConvertFrom-Json
+    Assert-True ($recordedArgs -contains $testPrompt) 'prompt argument boundary with spaces preserved'
+    Assert-True ($recordedArgs -contains $worktree) 'worktree path argument boundary with spaces preserved'
+
+    # 3. Malformed worker output test
     $malformedOutput = Join-Path $TmpRoot 'malformed-result.json'
-    $malformed = Invoke-Adapter @('run', '--assignment', $malformedAssignment, '--output', $malformedOutput, '--error', (Join-Path $TmpRoot 'malformed.err'), '--codex', $FakeCodex) @{
+    $malformed = Invoke-Adapter @(
+        '--operation', 'launch',
+        '--request', $selection,
+        '--output', $malformedOutput,
+        '--error', (Join-Path $TmpRoot 'malformed.err'),
+        '--codex', $FakeCodex,
+        '--',
+        '--cd', $worktree,
+        '--prompt', 'malformed'
+    ) @{
         CODEX_MODEL_CATALOG = $Catalog
         FAKE_CODEX_MODE = 'malformed'
-        FAKE_SCOPE_MARKER = (Join-Path $TmpRoot 'malformed-scope.marker')
-        FAKE_GATE_MARKER = (Join-Path $TmpRoot 'malformed-gate.marker')
-    } $worktree
+    }
     Assert-True ($malformed.ExitCode -ne 0) 'malformed worker output exits nonzero'
-    $malformedDoc = Get-Content -LiteralPath $malformedOutput -Raw | ConvertFrom-Json
-    Assert-Equal $malformedDoc.status 'failed' 'malformed worker output is failed'
-    Assert-Equal $malformedDoc.failure.kind 'malformed-output' 'malformed worker output records failure reason'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TmpRoot 'malformed-gate.marker'))) 'malformed output cannot reach final gate'
 
-    $scopeFailAssignment = Join-Path $TmpRoot 'scope-fail-assignment.json'
-    Write-JsonFile $scopeFailAssignment ((Get-Content -LiteralPath $assignment -Raw | ConvertFrom-Json) | ForEach-Object { $_.assignment_id = 'codex-scope-fail-1'; $_ })
-    $scopeFailOutput = Join-Path $TmpRoot 'scope-fail-result.json'
-    $scopeFail = Invoke-Adapter @('run', '--assignment', $scopeFailAssignment, '--output', $scopeFailOutput, '--error', (Join-Path $TmpRoot 'scope-fail.err'), '--codex', $FakeCodex) @{
-        CODEX_MODEL_CATALOG = $Catalog
-        FAKE_SCOPE_RESULT = 'fail'
-        FAKE_SCOPE_MARKER = (Join-Path $TmpRoot 'scope-fail-scope.marker')
-        FAKE_GATE_MARKER = (Join-Path $TmpRoot 'scope-fail-gate.marker')
-    } $worktree
-    Assert-True ($scopeFail.ExitCode -ne 0) 'scope failure exits nonzero'
-    $scopeFailDoc = Get-Content -LiteralPath $scopeFailOutput -Raw | ConvertFrom-Json
-    Assert-Equal $scopeFailDoc.status 'scope-failure' 'scope failure is returned as scope-failure'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TmpRoot 'scope-fail-gate.marker'))) 'scope failure blocks final gate'
-
-    $unsupportedOutput = Join-Path $TmpRoot 'unsupported-result.json'
-    $unsupported = Invoke-Adapter @('run', '--assignment', $assignment, '--output', $unsupportedOutput, '--error', (Join-Path $TmpRoot 'unsupported.err'), '--codex', $FakeCodex) @{
-        FAKE_SCOPE_MARKER = (Join-Path $TmpRoot 'unsupported-scope.marker')
-        FAKE_GATE_MARKER = (Join-Path $TmpRoot 'unsupported-gate.marker')
-    } $worktree
-    Assert-True ($unsupported.ExitCode -ne 0) 'unsupported host capability exits nonzero'
-    $unsupportedDoc = Get-Content -LiteralPath $unsupportedOutput -Raw | ConvertFrom-Json
-    Assert-Equal $unsupportedDoc.status 'unsupported' 'unsupported host capability fails closed'
-    Assert-True ($unsupportedDoc.failure.reason -match 'model catalog') 'unsupported capability records a reason'
-
-    $quotaAssignment = Join-Path $TmpRoot 'quota-assignment.json'
-    Write-JsonFile $quotaAssignment ((Get-Content -LiteralPath $assignment -Raw | ConvertFrom-Json) | ForEach-Object { $_.assignment_id = 'codex-quota-1'; $_ })
+    # 4. Quota exhaustion test
     $quotaOutput = Join-Path $TmpRoot 'quota-result.json'
-    $quota = Invoke-Adapter @('run', '--assignment', $quotaAssignment, '--output', $quotaOutput, '--error', (Join-Path $TmpRoot 'quota.err'), '--codex', $FakeCodex) @{
+    $quota = Invoke-Adapter @(
+        '--operation', 'launch',
+        '--request', $selection,
+        '--output', $quotaOutput,
+        '--error', (Join-Path $TmpRoot 'quota.err'),
+        '--codex', $FakeCodex,
+        '--',
+        '--cd', $worktree,
+        '--prompt', 'quota'
+    ) @{
         CODEX_MODEL_CATALOG = $Catalog
         FAKE_CODEX_MODE = 'quota'
-        FAKE_SCOPE_MARKER = (Join-Path $TmpRoot 'quota-scope.marker')
-        FAKE_GATE_MARKER = (Join-Path $TmpRoot 'quota-gate.marker')
-    } $worktree
-    Assert-True ($quota.ExitCode -ne 0) 'quota exhaustion exits nonzero'
-    $quotaDoc = Get-Content -LiteralPath $quotaOutput -Raw | ConvertFrom-Json
-    Assert-Equal $quotaDoc.status 'quota-handoff' 'quota exhaustion is handed off'
-    Assert-Equal $quotaDoc.failure.kind 'quota' 'quota exhaustion records failure reason'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $TmpRoot 'quota-gate.marker'))) 'quota exhaustion blocks final gate'
+    }
+    Assert-Equal $quota.ExitCode 75 'quota exhaustion exits 75'
 
+    # 5. Cancellation test
     $cancelFile = Join-Path $TmpRoot 'cancel.request'
-    $cancelAssignment = Join-Path $TmpRoot 'cancel-assignment.json'
-    Write-JsonFile $cancelAssignment ((Get-Content -LiteralPath $assignment -Raw | ConvertFrom-Json) | ForEach-Object { $_.assignment_id = 'codex-cancel-1'; $_; })
     $cancelOutput = Join-Path $TmpRoot 'cancel-result.json'
     New-Item -ItemType File -Path $cancelFile | Out-Null
-    $canceled = Invoke-Adapter @('run', '--assignment', $cancelAssignment, '--output', $cancelOutput, '--error', (Join-Path $TmpRoot 'cancel.err'), '--codex', $FakeCodex, '--cancel-file', $cancelFile) @{
+    $canceled = Invoke-Adapter @(
+        '--operation', 'launch',
+        '--request', $selection,
+        '--output', $cancelOutput,
+        '--error', (Join-Path $TmpRoot 'cancel.err'),
+        '--codex', $FakeCodex,
+        '--cancel-file', $cancelFile,
+        '--',
+        '--cd', $worktree,
+        '--prompt', 'sleep'
+    ) @{
         CODEX_MODEL_CATALOG = $Catalog
         FAKE_CODEX_MODE = 'sleep'
-        FAKE_SCOPE_MARKER = (Join-Path $TmpRoot 'cancel-scope.marker')
-        FAKE_GATE_MARKER = (Join-Path $TmpRoot 'cancel-gate.marker')
-    } $worktree
-    Assert-True ($canceled.ExitCode -ne 0) 'cancellation exits nonzero'
-    $canceledDoc = Get-Content -LiteralPath $cancelOutput -Raw | ConvertFrom-Json
-    Assert-Equal $canceledDoc.status 'canceled' 'cancellation is recorded as canceled'
-    Assert-True ($canceledDoc.process.exit_code -ne $null) 'cancellation records worker exit result'
+    }
+    Assert-Equal $canceled.ExitCode 130 'cancellation exits 130'
+
+    # 6. Missing catalog fails closed
+    $unsupported = Invoke-Adapter @(
+        '--operation', 'catalog',
+        '--request', $catalogRequest,
+        '--codex', $FakeCodex
+    ) @{}
+    Assert-True ($unsupported.ExitCode -ne 0) 'missing catalog exits nonzero'
 
     Write-Output 'all Codex adapter contract checks passed'
 } finally {

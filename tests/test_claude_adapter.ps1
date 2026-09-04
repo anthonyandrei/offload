@@ -83,24 +83,52 @@ function New-Workspace([string]$Root) {
     return $workspace
 }
 
-function New-Assignment([string]$Workspace, [string]$Path, [string]$CancelFile = '', [int]$Timeout = 10) {
-    $baseline = Invoke-Git $Workspace @('rev-parse', 'HEAD')
-    $assignment = [ordered]@{
-        schema_version = 1
-        assignment_id = "test-$([Guid]::NewGuid().ToString('N'))"
-        prompt = 'Return a structured result without dispatching a child assignment.'
-        working_directory = $Workspace
-        owned_paths = @('owned.txt')
-        frozen_paths = @('frozen.txt')
-        baseline = $baseline
-        gate_command = 'Test-Path -LiteralPath owned.txt'
-        preference = 'balanced'
-        timeout_seconds = $Timeout
-    }
-    if ($CancelFile) { $assignment.cancel_file = $CancelFile }
-    $assignment | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Path -Encoding utf8
-    return $assignment
+$root = Split-Path -Parent $PSScriptRoot
+$adapter = Join-Path $root 'scripts/run-claude-json.ps1'
+$pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
+if (-not $pwsh) { $pwsh = (Get-Process -Id $PID).Path }
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) "offload-claude-adapter-$([Guid]::NewGuid().ToString('N'))"
+[IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+
+$fakeClaude = Join-Path $tempRoot 'fake-claude.ps1'
+$fakeScript = @'
+$ErrorActionPreference = 'Stop'
+$argsList = @($args)
+if ($env:FAKE_CLAUDE_RECORD_ARGS) {
+    $argsList | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:FAKE_CLAUDE_RECORD_ARGS -Encoding utf8
 }
+if ($args -contains '--version') { Write-Output 'claude-fake 1.0'; exit 0 }
+if ($args -contains '--help') {
+    Write-Output '--output-format --permission-mode --allowedTools --disallowedTools --resume'
+    exit 0
+}
+switch ($env:FAKE_CLAUDE_MODE) {
+    'malformed' { Write-Output 'not-json'; exit 0 }
+    'cancel' { Start-Sleep -Seconds 30; exit 0 }
+    'quota' { Write-Error 'quota exhausted'; exit 75 }
+}
+Write-Output '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}'
+'@
+[IO.File]::WriteAllText($fakeClaude, $fakeScript)
+
+$catalog = Join-Path $tempRoot 'catalog.json'
+@{
+    revision = 'test-claude-cat'
+    models = @(
+        @{ id = 'claude-3-5-sonnet-20241022'; family_hint = 'sonnet'; available = $true; quota_available = $true }
+        @{ id = 'claude-3-haiku-20240307'; family_hint = 'haiku'; available = $true; quota_available = $true }
+    )
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $catalog -Encoding utf8
+
+$catalogRequest = Join-Path $tempRoot 'catalog-request.json'
+@{
+    protocol_version = 1
+    role = 'worker'
+    preference = 'balanced'
+    effort = 'high'
+    required_capabilities = @('structured-output')
+    policy_revision = 'test-policy-1'
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $catalogRequest -Encoding utf8
 
 function Invoke-Adapter {
     param(
@@ -111,91 +139,98 @@ function Invoke-Adapter {
         [Parameter(Mandatory = $true)][string]$Artifacts,
         [string]$Mode = 'success',
         [string]$CancelFile = '',
-        [int]$Timeout = 10
+        [int]$Timeout = 10,
+        [string]$Prompt = 'Return a structured result without dispatching a child assignment.',
+        [string]$RecordArgs = ''
     )
-    $assignmentPath = Join-Path $Artifacts "$Mode-assignment.json"
+    $selectionPath = Join-Path $Artifacts "$Mode-selection.json"
     $outputPath = Join-Path $Artifacts "$Mode-result.json"
     $errorPath = Join-Path $Artifacts "$Mode-error.txt"
-    $assignment = New-Assignment $Workspace $assignmentPath $CancelFile $Timeout
-    $environment = @{ CLAUDE_BIN = $FakeClaude; FAKE_CLAUDE_MODE = $Mode }
-    $arguments = @('-NoProfile', '-NonInteractive', '-File', $Adapter, '--assignment', $assignmentPath, '--output', $outputPath, '--error', $errorPath)
-    $processResult = Invoke-ToolProcess $Pwsh $arguments $environment
-    $document = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json -Depth 30
-    return [pscustomobject]@{ Process = $processResult; Result = $document; OutputPath = $outputPath; ErrorPath = $errorPath; Assignment = $assignment }
-}
+    @{
+        protocol_version = 1
+        model_id = 'claude-3-5-sonnet-20241022'
+        effort = 'high'
+        preference = 'balanced'
+        vendor = 'anthropic'
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $selectionPath -Encoding utf8
 
-$root = Split-Path -Parent $PSScriptRoot
-$adapter = Join-Path $root 'scripts/run-claude-json.ps1'
-$pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
-if (-not $pwsh) { $pwsh = (Get-Process -Id $PID).Path }
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) "offload-claude-adapter-$([Guid]::NewGuid().ToString('N'))"
-[IO.Directory]::CreateDirectory($tempRoot) | Out-Null
-$fakeClaude = Join-Path $tempRoot 'fake-claude.ps1'
-$fakeScript = @'
-$ErrorActionPreference = 'Stop'
-if ($args -contains '--version') { Write-Output 'claude-fake 1.0'; exit 0 }
-if ($args -contains '--help') {
-    Write-Output '--output-format --permission-mode --allowedTools --disallowedTools --resume'
-    exit 0
+    $environment = @{ CLAUDE_BIN = $FakeClaude; FAKE_CLAUDE_MODE = $Mode; CLAUDE_MODEL_CATALOG = $catalog }
+    if ($RecordArgs) { $environment['FAKE_CLAUDE_RECORD_ARGS'] = $RecordArgs }
+
+    $adapterArgs = @(
+        '-NoProfile', '-NonInteractive', '-File', $Adapter,
+        '--operation', 'launch',
+        '--request', $selectionPath,
+        '--output', $outputPath,
+        '--error', $errorPath,
+        '--claude', $FakeClaude
+    )
+    if ($CancelFile) {
+        $adapterArgs += @('--cancel-file', $CancelFile)
+    }
+    $adapterArgs += @('--', '--cd', $Workspace, '--prompt', $Prompt)
+    $processResult = Invoke-ToolProcess $Pwsh $adapterArgs $environment
+    $document = $null
+    if (Test-Path -LiteralPath $outputPath -PathType Leaf) {
+        try {
+            $document = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json -Depth 30
+        } catch { }
+    }
+    return [pscustomobject]@{ Process = $processResult; Result = $document; OutputPath = $outputPath; ErrorPath = $errorPath }
 }
-switch ($env:FAKE_CLAUDE_MODE) {
-    'malformed' { Write-Output 'not-json'; exit 0 }
-    'cancel' { Start-Sleep -Seconds 30; exit 0 }
-    'scope-failure' { Set-Content -LiteralPath (Join-Path (Get-Location) 'unowned.txt') -Value 'unexpected'; }
-    'quota' { Write-Error 'quota exhausted'; exit 75 }
-}
-Write-Output '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}'
-'@
-[IO.File]::WriteAllText($fakeClaude, $fakeScript)
 
 try {
+    # 1. Operation catalog test
+    $cap = Invoke-ToolProcess $pwsh @('-NoProfile', '-NonInteractive', '-File', $adapter, '--operation', 'catalog', '--request', $catalogRequest, '--claude', $fakeClaude) @{ CLAUDE_MODEL_CATALOG = $catalog }
+    Assert-Equal $cap.ExitCode 0 'catalog discovery exits successfully'
+    $capDoc = $cap.Stdout | ConvertFrom-Json
+    Assert-Equal $capDoc.vendor 'anthropic' 'catalog identifies anthropic'
+    Assert-Equal $capDoc.adapter 'claude' 'catalog identifies claude adapter'
+    Assert-Equal $capDoc.protocol_version 1 'catalog specifies protocol_version 1'
+    Assert-True ($capDoc.models.Count -ge 1) 'catalog includes models'
+
+    # 2. Successful launch test with space preservation
     $successWorkspace = New-Workspace $tempRoot
-    $success = Invoke-Adapter $successWorkspace $adapter $pwsh $fakeClaude $tempRoot
+    $recordArgsFile = Join-Path $tempRoot 'success-args.json'
+    $testPrompt = 'Return a structured result with spaces and "quotes".'
+    $success = Invoke-Adapter -Workspace $successWorkspace -Adapter $adapter -Pwsh $pwsh -FakeClaude $fakeClaude -Artifacts $tempRoot -Prompt $testPrompt -RecordArgs $recordArgsFile
     Assert-Equal $success.Process.ExitCode 0 'success returns zero'
-    Assert-Equal $success.Result.status 'completed' 'success is completed'
-    Assert-Equal $success.Result.lifecycle 'completed' 'success lifecycle completes'
+    Assert-Equal $success.Result.status 'success' 'success status is success'
     Assert-Equal $success.Result.response 'ok' 'success response is normalized'
     Assert-Equal $success.Result.session_id 's1' 'session id is normalized'
-    Assert-True ($success.Result.capabilities.tools.assignment_denied -contains 'Task') 'child assignment tool is denied'
-    Assert-True ($success.Result.capabilities.tools.assignment_denied -contains 'Agent') 'alternate child assignment tool is denied'
     Assert-True (Test-Path -LiteralPath $success.ErrorPath -PathType Leaf) 'error artifact is written'
-    $ledger = Get-Content -LiteralPath (Join-Path $tempRoot 'resource-ledger.json') -Raw | ConvertFrom-Json -Depth 30
-    Assert-True (@($ledger.records).resource_type -contains 'process') 'process is registered'
-    Assert-True (@($ledger.records).resource_type -contains 'worktree') 'worktree is registered'
-    Assert-True (@($ledger.records).resource_type -contains 'artifact') 'artifacts are registered'
-    Assert-Equal ((@($ledger.records) | Where-Object resource_id -eq 'process').state) 'completed' 'process is reconciled'
 
+    # Verify space preservation in arguments and denied tools
+    $recordedArgs = Get-Content -LiteralPath $recordArgsFile -Raw | ConvertFrom-Json
+    Assert-True ($recordedArgs -contains $testPrompt) 'prompt argument boundary with spaces is preserved'
+    Assert-True ($recordedArgs -contains 'Task') 'Task child assignment tool is denied'
+    Assert-True ($recordedArgs -contains 'Agent') 'Agent child assignment tool is denied'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $tempRoot 'resource-ledger.json'))) 'no private resource ledger is created'
+
+    # 3. Malformed worker output
     $malformedWorkspace = New-Workspace $tempRoot
-    $malformed = Invoke-Adapter $malformedWorkspace $adapter $pwsh $fakeClaude $tempRoot 'malformed'
+    $malformed = Invoke-Adapter -Workspace $malformedWorkspace -Adapter $adapter -Pwsh $pwsh -FakeClaude $fakeClaude -Artifacts $tempRoot -Mode 'malformed'
     Assert-Equal $malformed.Process.ExitCode 1 'malformed output returns failure'
-    Assert-Equal $malformed.Result.lifecycle 'failed' 'malformed output has failed lifecycle'
-    Assert-Equal $malformed.Result.error 'malformed Claude JSON output' 'malformed output is classified'
-    Assert-True ((Get-Content -LiteralPath "$($malformed.OutputPath).raw.json" -Raw) -match 'not-json') 'raw malformed output is retained'
+    Assert-True ((Get-Content -LiteralPath $malformed.OutputPath -Raw) -match 'not-json') 'raw malformed output is retained'
 
+    # 4. Cancellation
     $cancelFile = Join-Path $tempRoot 'cancel.request'
     [IO.File]::WriteAllText($cancelFile, 'cancel')
     $cancelWorkspace = New-Workspace $tempRoot
-    $canceled = Invoke-Adapter $cancelWorkspace $adapter $pwsh $fakeClaude $tempRoot 'cancel' $cancelFile
+    $canceled = Invoke-Adapter -Workspace $cancelWorkspace -Adapter $adapter -Pwsh $pwsh -FakeClaude $fakeClaude -Artifacts $tempRoot -Mode 'cancel' -CancelFile $cancelFile
     Assert-Equal $canceled.Process.ExitCode 130 'cancellation returns normalized exit code'
-    Assert-Equal $canceled.Result.lifecycle 'canceled' 'cancellation lifecycle is recorded'
-    Assert-Equal $canceled.Result.error 'canceled' 'cancellation reason is recorded'
 
-    $scopeWorkspace = New-Workspace $tempRoot
-    $scopeFailure = Invoke-Adapter $scopeWorkspace $adapter $pwsh $fakeClaude $tempRoot 'scope-failure'
-    Assert-Equal $scopeFailure.Process.ExitCode 1 'scope failure returns failure'
-    Assert-Equal $scopeFailure.Result.verification.scope 'failed' 'scope failure is verified'
-    Assert-Equal $scopeFailure.Result.verification.gate 'not-run' 'gate is withheld after scope failure'
-    Assert-Equal $scopeFailure.Result.error 'execution scope check failed' 'scope failure reason is recorded'
-
+    # 5. Unmarked workspace fails closed
     $unmarkedWorkspace = New-Workspace $tempRoot
     Remove-Item -LiteralPath (Join-Path $unmarkedWorkspace '.offload-execution-workspace') -Force
-    $unmarkedAssignment = Join-Path $tempRoot 'unmarked-assignment.json'
-    $null = New-Assignment $unmarkedWorkspace $unmarkedAssignment
-    $unmarkedOutput = Join-Path $tempRoot 'unmarked-result.json'
-    $unmarkedError = Join-Path $tempRoot 'unmarked-error.txt'
-    $unmarkedRun = Invoke-ToolProcess $pwsh @('-NoProfile', '-NonInteractive', '-File', $adapter, '--assignment', $unmarkedAssignment, '--output', $unmarkedOutput, '--error', $unmarkedError) @{ CLAUDE_BIN = $fakeClaude; FAKE_CLAUDE_MODE = 'success' }
-    Assert-NotEqual $unmarkedRun.ExitCode 0 'unmarked workspace fails closed'
-    Assert-True ($unmarkedRun.Stderr -match 'unmarked sandbox') 'unmarked failure explains isolation requirement'
+    $unmarkedRun = Invoke-Adapter -Workspace $unmarkedWorkspace -Adapter $adapter -Pwsh $pwsh -FakeClaude $fakeClaude -Artifacts $tempRoot -Mode 'unmarked'
+    Assert-NotEqual $unmarkedRun.Process.ExitCode 0 'unmarked workspace fails closed'
+    Assert-True ($unmarkedRun.Process.Stderr -match 'unmarked sandbox') 'unmarked failure explains isolation requirement'
+
+    # 6. Missing catalog fails closed
+    $noCatRun = Invoke-ToolProcess $pwsh @('-NoProfile', '-NonInteractive', '-File', $adapter, '--operation', 'catalog', '--request', $catalogRequest, '--claude', $fakeClaude) @{}
+    Assert-NotEqual $noCatRun.ExitCode 0 'missing catalog fails closed'
+
 } finally {
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
 }

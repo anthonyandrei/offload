@@ -52,9 +52,9 @@ Orchestrators select helper scripts based on their current shell (`.sh` for Bash
 The bounded Claude Code adapter is available as `scripts/run-claude-json.ps1` and
 `scripts/run-claude-json.sh`. It accepts the versioned assignment contract in
 [`docs/specs/0004-claude-adapter.md`](docs/specs/0004-claude-adapter.md), probes
-the installed Claude CLI, forwards only the assignment's bounded prompt and
-tool policy, and returns a normalized result with raw artifacts, process and
-worktree ledger records, and scope and gate verification.
+the installed Claude CLI, forwards only the bounded prompt and tool policy,
+and returns a normalized result while preserving orchestrator ownership of
+verification and ledgers.
 
 Set `CLAUDE_BIN` when Claude is not on `PATH`. The adapter accepts internal
 `fast`, `balanced`, and `deep` preferences without mapping them to published

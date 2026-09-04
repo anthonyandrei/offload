@@ -1,506 +1,428 @@
 #!/usr/bin/env pwsh
-# Launch one bounded Claude Code assignment and return an orchestrator-verifiable result.
+# scripts/run-claude-json.ps1
+# Claude worker adapter. Conforms to the adapter contract (--operation catalog | launch).
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
-$script:FailureOutputPath = ''
-
-function Full([string]$Path) {
-    return [System.IO.Path]::GetFullPath($Path)
-}
-
-function Same([string]$A, [string]$B) {
-    $left = (Full $A).TrimEnd('\', '/')
-    $right = (Full $B).TrimEnd('\', '/')
-    return [string]::Equals($left, $right, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Within([string]$Child, [string]$Parent) {
-    $childPath = (Full $Child).TrimEnd('\', '/')
-    $parentPath = (Full $Parent).TrimEnd('\', '/')
-    return (Same $childPath $parentPath) -or
-        $childPath.StartsWith("$parentPath\", [System.StringComparison]::OrdinalIgnoreCase) -or
-        $childPath.StartsWith("$parentPath/", [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Iso {
-    return [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-}
-
-function Write-Json([string]$Path, $Value) {
-    $fullPath = Full $Path
-    $directory = Split-Path -Parent $fullPath
-    if ($directory -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
-        [IO.Directory]::CreateDirectory($directory) | Out-Null
-    }
-    $temporaryPath = "$fullPath.tmp.$([Guid]::NewGuid().ToString('N'))"
-    try {
-        $json = ($Value | ConvertTo-Json -Depth 30) + "`n"
-        [IO.File]::WriteAllText($temporaryPath, $json, [Text.UTF8Encoding]::new($false))
-        Move-Item -LiteralPath $temporaryPath -Destination $fullPath -Force
-    } finally {
-        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
-            Remove-Item -LiteralPath $temporaryPath -Force
-        }
-    }
-}
 
 function Fail([string]$Message, [int]$Code = 2) {
     [Console]::Error.WriteLine("ERROR: $Message")
-    if ($script:FailureOutputPath) {
-        try {
-            Write-Json $script:FailureOutputPath ([ordered]@{
-                schema_version = 1
-                adapter = 'claude'
-                status = 'failed'
-                lifecycle = 'failed'
-                error = $Message
-            })
-        } catch {
-            # Preserve the original diagnostic if the result path is unusable.
-        }
-    }
     exit $Code
 }
 
-function Read-Json([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        Fail "JSON file does not exist: $Path"
-    }
-    try {
-        return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 30 -ErrorAction Stop
-    } catch {
-        Fail "invalid JSON in $Path"
-    }
+function Usage {
+    [Console]::Error.WriteLine("Usage: run-claude-json.ps1 --operation catalog --request REQUEST.json [--claude PATH]")
+    [Console]::Error.WriteLine("       run-claude-json.ps1 --operation launch --request SELECTION.json --output OUTPUT --error ERROR [--claude PATH] [--cancel-file FILE] [--timeout-seconds N] -- WORKER_ARGS...")
 }
 
-function Has-Property($Object, [string]$Name) {
-    return $null -ne $Object -and ($Object.PSObject.Properties.Name -contains $Name)
-}
-
-function Optional-String($Object, [string]$Name, [string]$Default = '') {
-    if ($null -ne $Object -and (Has-Property $Object $Name) -and $null -ne $Object.$Name) {
-        return [string]$Object.$Name
-    }
-    return $Default
-}
-
-function Optional-Array($Object, [string]$Name) {
-    if ($null -ne $Object -and (Has-Property $Object $Name) -and $null -ne $Object.$Name) {
-        return @($Object.$Name | ForEach-Object { [string]$_ })
-    }
-    return @()
-}
-
-function Resolve-Claude {
-    $requested = if ($env:CLAUDE_BIN) { [string]$env:CLAUDE_BIN } else { '' }
-    if ($requested) {
-        $command = Get-Command $requested -ErrorAction SilentlyContinue
-        if ($command) {
-            return $(if ($command.Source) { $command.Source } else { $command.Name })
+function Resolve-Claude([string]$Requested) {
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        $cmd = Get-Command $Requested -ErrorAction SilentlyContinue
+        if ($cmd) {
+            if ($cmd.Source) { return $cmd.Source }
+            return $cmd.Name
         }
-        if (Test-Path -LiteralPath $requested -PathType Leaf) {
-            return (Resolve-Path -LiteralPath $requested).Path
-        }
-        Fail "CLAUDE_BIN does not resolve to an executable: $requested" 1
+        if (Test-Path -LiteralPath $Requested -PathType Leaf) { return (Resolve-Path -LiteralPath $Requested).Path }
+        Fail "Claude executable does not exist: $Requested" 127
     }
-
-    $command = Get-Command claude -ErrorAction SilentlyContinue
-    if ($command) {
-        return $(if ($command.Source) { $command.Source } else { $command.Name })
+    $envBin = [Environment]::GetEnvironmentVariable('CLAUDE_BIN')
+    if (-not [string]::IsNullOrWhiteSpace($envBin)) {
+        return Resolve-Claude $envBin
     }
-    Fail 'claude was not found; set CLAUDE_BIN or add claude to PATH' 1
+    $cmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($cmd) {
+        if ($cmd.Source) { return $cmd.Source }
+        return $cmd.Name
+    }
+    Fail 'claude was not found; set CLAUDE_BIN or add claude to PATH' 127
 }
 
-function New-ProcessInfo([string]$Executable, [string[]]$Arguments, [string]$WorkingDirectory = '') {
-    $psi = [Diagnostics.ProcessStartInfo]::new()
-    $isPowerShellScript = $Executable.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)
-    if ($isPowerShellScript) {
-        $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
-        if (-not $pwsh) { $pwsh = (Get-Process -Id $PID).Path }
-        $psi.FileName = $pwsh
+function New-ProcessInfo([string]$File, [string[]]$Arguments, [string]$WorkingDirectory = '') {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    if ($File.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $psi.FileName = (Get-Command pwsh -ErrorAction Stop).Source
         $psi.ArgumentList.Add('-NoProfile')
         $psi.ArgumentList.Add('-NonInteractive')
         $psi.ArgumentList.Add('-File')
-        $psi.ArgumentList.Add($Executable)
+        $psi.ArgumentList.Add($File)
     } else {
-        $psi.FileName = $Executable
+        $psi.FileName = $File
     }
-    foreach ($argument in $Arguments) { $psi.ArgumentList.Add($argument) }
+    foreach ($arg in $Arguments) { [void]$psi.ArgumentList.Add([string]$arg) }
     if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
     $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
-    $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
     return $psi
 }
 
-function Invoke-Probe([string]$Executable, [string[]]$Arguments, [string]$WorkingDirectory = '') {
+function Probe-Claude([string]$ClaudePath) {
+    $psi = New-ProcessInfo $ClaudePath @('--help')
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
     try {
-        $process = [Diagnostics.Process]::Start((New-ProcessInfo $Executable $Arguments $WorkingDirectory))
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        if (-not $process.Start()) { return @{ ExitCode = 127; Stdout = ''; Stderr = 'failed to start' } }
+        $outTask = $process.StandardOutput.ReadToEndAsync()
+        $errTask = $process.StandardError.ReadToEndAsync()
         $process.WaitForExit()
-        return [pscustomobject]@{ exit_code = $process.ExitCode; stdout = $stdout; stderr = $stderr }
+        return @{ ExitCode = $process.ExitCode; Stdout = $outTask.Result; Stderr = $errTask.Result }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Get-CatalogData {
+    $source = [Environment]::GetEnvironmentVariable('OFFLOAD_ADAPTER_CATALOG')
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        $source = [Environment]::GetEnvironmentVariable('CLAUDE_MODEL_CATALOG')
+    }
+    if ([string]::IsNullOrWhiteSpace($source)) { return $null }
+    try {
+        if (Test-Path -LiteralPath $source -PathType Leaf) {
+            return Get-Content -LiteralPath $source -Raw | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+        }
+        return $source | ConvertFrom-Json -Depth 20 -ErrorAction Stop
     } catch {
-        return [pscustomobject]@{ exit_code = 127; stdout = ''; stderr = $_.Exception.Message }
+        return $null
     }
 }
 
-function Discover([string]$Executable, $Assignment) {
-    $version = Invoke-Probe $Executable @('--version')
-    $help = Invoke-Probe $Executable @('--help')
-    $helpText = "$($help.stdout)`n$($help.stderr)"
-    $knownFlags = @('print', 'output-format', 'input-format', 'model', 'permission-mode', 'allowedTools', 'disallowedTools', 'resume', 'max-turns', 'add-dir', 'effort')
-    $flags = @($knownFlags | Where-Object { $helpText -match "--$([regex]::Escape($_))(\s|=|$)" })
+function Get-FamilyHint([string]$ModelId) {
+    if ($ModelId -match 'opus') { return 'opus' }
+    if ($ModelId -match 'sonnet') { return 'sonnet' }
+    if ($ModelId -match 'haiku') { return 'haiku' }
+    return 'unknown'
+}
 
-    $catalog = [System.Collections.Generic.List[string]]::new()
-    $catalogSource = 'unavailable'
-    $catalogStatus = 'unknown'
-    $catalogFallback = if ($env:CLAUDE_MODEL_CATALOG) { [string]$env:CLAUDE_MODEL_CATALOG } else { '' }
-    $catalogPath = Optional-String $Assignment 'model_catalog_path' $catalogFallback
-    if ($catalogPath) {
-        $catalogDocument = Read-Json $catalogPath
-        if (-not (Has-Property $catalogDocument 'models')) {
-            Fail "model catalog has no models array: $catalogPath"
-        }
-        foreach ($model in @($catalogDocument.models)) { [void]$catalog.Add([string]$model) }
-        $catalogSource = Full $catalogPath
-        $catalogStatus = 'available'
-    }
-
-    $assignmentAllowed = [System.Collections.Generic.List[string]]::new()
-    foreach ($tool in @(Optional-Array $Assignment 'allowed_tools')) { [void]$assignmentAllowed.Add($tool) }
-    $assignmentDenied = [System.Collections.Generic.List[string]]::new()
-    foreach ($tool in @(Optional-Array $Assignment 'disallowed_tools')) { [void]$assignmentDenied.Add($tool) }
-    [void]$assignmentDenied.Add('Task')
-    [void]$assignmentDenied.Add('Agent')
-    $effortLevels = [System.Collections.Generic.List[string]]::new()
-    if ($flags -contains 'effort') {
-        [void]$effortLevels.Add('low')
-        [void]$effortLevels.Add('balanced')
-        [void]$effortLevels.Add('deep')
-    }
-
-    return [ordered]@{
-        version = $version.stdout.Trim()
-        version_exit_code = $version.exit_code
-        cli_exit_code = $help.exit_code
-        supported_flags = $flags
-        tools = [ordered]@{
-            discovered = @('Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Task')
-            assignment_allowed = $assignmentAllowed
-            assignment_denied = $assignmentDenied
-        }
-        structured_output = [ordered]@{
-            supported = ($flags -contains 'output-format')
-            formats = if ($flags -contains 'output-format') { @('json', 'stream-json', 'text') } else { [System.Collections.Generic.List[string]]::new() }
-        }
-        model_catalog = [ordered]@{ source = $catalogSource; status = $catalogStatus; models = $catalog }
-        effort_levels = $effortLevels
+function Get-PreferenceScore([string]$Family) {
+    switch ($Family) {
+        'haiku'   { return [ordered]@{ fast = 1; balanced = 2; deep = 3 } }
+        'sonnet'  { return [ordered]@{ fast = 2; balanced = 1; deep = 2 } }
+        'opus'    { return [ordered]@{ fast = 3; balanced = 2; deep = 1 } }
+        default   { return [ordered]@{ fast = 100; balanced = 100; deep = 100 } }
     }
 }
 
-function Add-Record($Ledger, [string]$Id, [string]$Type, [string]$Identity, [string]$State) {
-    $record = [pscustomobject]@{
-        resource_id = $Id
-        assignment_id = [string]$Ledger.assignment_id
-        parent_id = [string]$Ledger.assignment_id
-        resource_type = $Type
-        identity = $Identity
-        owner_marker = 'offload-claude-adapter-v1'
-        state = $State
-        created_at = Iso
-        updated_at = Iso
+$operation = ''
+$requestPath = ''
+$outputPath = ''
+$errorPath = ''
+$claudePath = ''
+$cancelFile = ''
+$timeoutSeconds = 0
+$workerArgs = [System.Collections.Generic.List[string]]::new()
+$afterDelimiter = $false
+
+$i = 0
+while ($i -lt $args.Count) {
+    $arg = [string]$args[$i]
+    if ($arg -eq '--') {
+        $afterDelimiter = $true
+        $i++
+        while ($i -lt $args.Count) { $workerArgs.Add([string]$args[$i]); $i++ }
+        break
     }
-    $Ledger.records = @($Ledger.records) + $record
+    if ($arg -in @('--operation', '--request', '--output', '--error', '--claude', '--cancel-file', '--timeout-seconds')) {
+        if ($i + 1 -ge $args.Count) { Fail "$arg requires a value" }
+        $val = [string]$args[$i + 1]
+        switch ($arg) {
+            '--operation' { $operation = $val }
+            '--request' { $requestPath = $val }
+            '--output' { $outputPath = $val }
+            '--error' { $errorPath = $val }
+            '--claude' { $claudePath = $val }
+            '--cancel-file' { $cancelFile = $val }
+            '--timeout-seconds' { [void][int]::TryParse($val, [ref]$timeoutSeconds) }
+        }
+        $i += 2
+        continue
+    }
+    if ($arg -in @('-h', '--help')) { Usage; exit 0 }
+    Fail "unknown adapter option: $arg"
 }
 
-function Update-Records($Ledger, [string]$Id, [string]$State, [hashtable]$Extra = @{}) {
-    foreach ($record in @($Ledger.records)) {
-        if ($record.resource_id -eq $Id) {
-            $record.state = $State
-            $record.updated_at = Iso
-            foreach ($key in $Extra.Keys) {
-                if ($record.PSObject.Properties.Name -contains $key) {
-                    $record.$key = $Extra[$key]
-                } else {
-                    $record | Add-Member -NotePropertyName $key -NotePropertyValue $Extra[$key]
+if ($operation -ne 'catalog' -and $operation -ne 'launch') { Fail 'operation must be catalog or launch' }
+if ([string]::IsNullOrWhiteSpace($requestPath) -or -not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+    Fail 'request file is required and must exist'
+}
+
+$resolvedClaude = Resolve-Claude $claudePath
+
+if ($operation -eq 'catalog') {
+    $probe = Probe-Claude $resolvedClaude
+    if ($probe.ExitCode -ne 0 -or -not $probe.Stdout.Contains('--output-format')) {
+        Fail 'Claude CLI does not advertise structured JSON output' 127
+    }
+
+    $rawCatalog = Get-CatalogData
+    if ($null -eq $rawCatalog -or $null -eq $rawCatalog.models -or @($rawCatalog.models).Count -eq 0) {
+        Fail 'host does not expose a model catalog' 127
+    }
+
+    $models = @(
+        foreach ($m in @($rawCatalog.models)) {
+            if ($m -is [string]) {
+                $mId = [string]$m
+                $family = Get-FamilyHint $mId
+                [ordered]@{
+                    id = $mId
+                    family_hint = $family
+                    available = $true
+                    quota_available = $true
+                    supported_efforts = @('low', 'medium', 'high')
+                    capabilities = @('structured-output')
+                    scores = Get-PreferenceScore $family
+                }
+            } elseif ($m -is [PSCustomObject]) {
+                $mId = [string]$m.id
+                $family = if ($m.PSObject.Properties['family_hint']) { [string]$m.family_hint } else { Get-FamilyHint $mId }
+                $efforts = if ($m.PSObject.Properties['supported_efforts']) { @($m.supported_efforts) } elseif ($m.PSObject.Properties['efforts']) { @($m.efforts) } else { @('low', 'medium', 'high') }
+                $caps = if ($m.PSObject.Properties['capabilities']) { @($m.capabilities) } else { @('structured-output') }
+                $scores = if ($m.PSObject.Properties['scores']) { $m.scores } else { Get-PreferenceScore $family }
+                [ordered]@{
+                    id = $mId
+                    family_hint = $family
+                    available = if ($m.PSObject.Properties['available']) { [bool]$m.available } else { $true }
+                    quota_available = if ($m.PSObject.Properties['quota_available']) { [bool]$m.quota_available } else { $true }
+                    supported_efforts = @($efforts | ForEach-Object { [string]$_ })
+                    capabilities = @($caps | ForEach-Object { [string]$_ })
+                    scores = $scores
                 }
             }
         }
-    }
-}
+    )
 
-function Run-Verification($Assignment, [string]$Workdir) {
-    $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue)?.Source
-    if (-not $pwsh) { $pwsh = (Get-Process -Id $PID).Path }
-
-    $scopeScript = Join-Path $PSScriptRoot 'check-execution-scope.ps1'
-    $scopeArguments = @('-NoProfile', '-NonInteractive', '-File', $scopeScript, '--baseline', [string]$Assignment.baseline)
-    foreach ($path in (Optional-Array $Assignment 'owned_paths')) { $scopeArguments += @('--owned', $path) }
-    foreach ($path in (Optional-Array $Assignment 'frozen_paths')) { $scopeArguments += @('--frozen', $path) }
-    $scope = Invoke-Probe $pwsh $scopeArguments $Workdir
-    if ($scope.exit_code -ne 0) {
-        return [ordered]@{ scope = 'failed'; gate = 'not-run'; reason = 'execution scope check failed'; detail = "$($scope.stdout)`n$($scope.stderr)" }
+    $revision = if ($rawCatalog.PSObject.Properties['revision']) { [string]$rawCatalog.revision } else {
+        $hash = [System.Security.Cryptography.SHA256]::Create()
+        try { [Convert]::ToHexString($hash.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(($rawCatalog | ConvertTo-Json -Depth 20)))).ToLowerInvariant() }
+        finally { $hash.Dispose() }
     }
 
-    $gateScript = Join-Path $PSScriptRoot 'execute-gate.ps1'
-    $gate = Invoke-Probe $pwsh @('-NoProfile', '-NonInteractive', '-File', $gateScript, '--command', [string]$Assignment.gate_command, '--workspace', $Workdir) $Workdir
-    if ($gate.exit_code -ne 0) {
-        return [ordered]@{ scope = 'passed'; gate = 'failed'; reason = 'final gate failed'; detail = "$($gate.stdout)`n$($gate.stderr)" }
+    $catalogDoc = [ordered]@{
+        protocol_version = 1
+        adapter = 'claude'
+        adapter_revision = 'claude-1'
+        vendor = 'anthropic'
+        catalog_revision = $revision
+        models = $models
     }
-    try {
-        $gateReport = $gate.stdout | ConvertFrom-Json -Depth 20 -ErrorAction Stop
-        if ($gateReport.verification_status -ne 'passed') {
-            return [ordered]@{ scope = 'passed'; gate = 'failed'; reason = 'final gate did not pass'; detail = $gate.stdout }
-        }
-    } catch {
-        return [ordered]@{ scope = 'passed'; gate = 'failed'; reason = 'final gate returned malformed report'; detail = $gate.stdout }
-    }
-    return [ordered]@{ scope = 'passed'; gate = 'passed'; reason = 'scope and final gate passed' }
+    [Console]::Out.Write(($catalogDoc | ConvertTo-Json -Depth 20 -Compress))
+    exit 0
 }
 
-$assignmentPath = ''
-$outputPath = ''
-$errorPath = ''
-$capabilitiesOnly = $false
-for ($i = 0; $i -lt $args.Count; $i++) {
-    switch ([string]$args[$i]) {
-        '--assignment' { $i++; if ($i -ge $args.Count) { Fail '--assignment requires a path' }; $assignmentPath = [string]$args[$i] }
-        '--output' { $i++; if ($i -ge $args.Count) { Fail '--output requires a path' }; $outputPath = [string]$args[$i]; $script:FailureOutputPath = $outputPath }
-        '--error' { $i++; if ($i -ge $args.Count) { Fail '--error requires a path' }; $errorPath = [string]$args[$i] }
-        '--capabilities' { $capabilitiesOnly = $true }
-        '-h' { Write-Output 'Usage: run-claude-json.ps1 --assignment FILE --output FILE --error FILE'; exit 0 }
-        '--help' { Write-Output 'Usage: run-claude-json.ps1 --assignment FILE --output FILE --error FILE'; exit 0 }
-        default { Fail "unknown option: $($args[$i])" }
-    }
-}
-if (-not $assignmentPath) { Fail '--assignment is required' }
-if (-not $outputPath) { Fail '--output is required' }
-if (-not $errorPath) { Fail '--error is required' }
+# Launch operation
+if (-not $afterDelimiter -or $workerArgs.Count -eq 0) { Fail 'worker arguments are required after --' }
+if ([string]::IsNullOrWhiteSpace($outputPath) -or [string]::IsNullOrWhiteSpace($errorPath)) { Fail 'launch requires output and error paths' }
 
-$assignment = Read-Json $assignmentPath
-if ($assignment.schema_version -ne 1) { Fail 'assignment schema_version must be 1' }
-foreach ($name in @('assignment_id', 'prompt', 'working_directory', 'baseline', 'gate_command', 'preference')) {
-    if (-not (Has-Property $assignment $name) -or [string]::IsNullOrWhiteSpace([string]$assignment.$name)) {
-        Fail "assignment field is required: $name"
-    }
-}
-foreach ($name in @('owned_paths', 'frozen_paths')) {
-    if (-not (Has-Property $assignment $name) -or $null -eq $assignment.$name) {
-        Fail "assignment field is required: $name"
-    }
-}
-if ([string]$assignment.preference -notin @('fast', 'balanced', 'deep')) { Fail 'preference must be fast, balanced, or deep' }
-
-$workdir = Full ([string]$assignment.working_directory)
-if (-not (Test-Path -LiteralPath $workdir -PathType Container)) { Fail "working directory does not exist: $workdir" }
-$markerPath = Join-Path $workdir '.offload-execution-workspace'
-$markerValue = 'offload-execution-workspace-v1'
-if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
-    $markerPath = Join-Path $workdir '.offload-research-workspace'
-    $markerValue = 'offload-research-workspace-v1'
-}
-if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { Fail 'unsupported or unmarked sandbox; use an isolated offload workspace' }
+$selection = $null
 try {
-    if (([IO.File]::ReadAllText($markerPath)).Trim() -ne $markerValue) { Fail 'invalid isolated workspace marker' }
+    $selection = Get-Content -LiteralPath $requestPath -Raw | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+} catch {
+    Fail "request is not valid JSON: $($_.Exception.Message)"
+}
+
+$modelId = [string]$selection.model_id
+if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = [string]$selection.model }
+if ([string]::IsNullOrWhiteSpace($modelId)) { Fail 'selection is missing model_id' }
+
+$prompt = ''
+$worktree = ''
+$permissionMode = 'acceptEdits'
+$resumeSession = ''
+$allowedTools = [System.Collections.Generic.List[string]]::new()
+$disallowedTools = [System.Collections.Generic.List[string]]::new()
+$disallowedTools.Add('Task')
+$disallowedTools.Add('Agent')
+
+$j = 0
+while ($j -lt $workerArgs.Count) {
+    $warg = [string]$workerArgs[$j]
+    if ($warg -eq '--') {
+        $j++
+        if ($j -lt $workerArgs.Count) {
+            $prompt = [string]$workerArgs[$j]
+            $j++
+        }
+        break
+    }
+    if ($warg -in @('-p', '--prompt')) {
+        $j++; if ($j -lt $workerArgs.Count) { $prompt = [string]$workerArgs[$j] }
+        $j++; continue
+    }
+    if ($warg.StartsWith('--prompt=')) {
+        $prompt = $warg.Substring(9)
+        $j++; continue
+    }
+    if ($warg -in @('--cd', '-C', '--working-directory')) {
+        $j++; if ($j -lt $workerArgs.Count) { $worktree = [string]$workerArgs[$j] }
+        $j++; continue
+    }
+    if ($warg.StartsWith('--cd=')) {
+        $worktree = $warg.Substring(5)
+        $j++; continue
+    }
+    if ($warg -eq '--permission-mode') {
+        $j++; if ($j -lt $workerArgs.Count) { $permissionMode = [string]$workerArgs[$j] }
+        $j++; continue
+    }
+    if ($warg -in @('--resume', '--resume-session')) {
+        $j++; if ($j -lt $workerArgs.Count) { $resumeSession = [string]$workerArgs[$j] }
+        $j++; continue
+    }
+    if ($warg -eq '--cancel-file') {
+        $j++; if ($j -lt $workerArgs.Count) { $cancelFile = [string]$workerArgs[$j] }
+        $j++; continue
+    }
+    if ($warg -eq '--timeout-seconds') {
+        $j++; if ($j -lt $workerArgs.Count) { [void][int]::TryParse([string]$workerArgs[$j], [ref]$timeoutSeconds) }
+        $j++; continue
+    }
+    if ($warg -in @('--allowedTools', '--allowed-tools')) {
+        $j++; if ($j -lt $workerArgs.Count) { $allowedTools.Add([string]$workerArgs[$j]) }
+        $j++; continue
+    }
+    if ($warg -in @('--disallowedTools', '--disallowed-tools')) {
+        $j++; if ($j -lt $workerArgs.Count) { $disallowedTools.Add([string]$workerArgs[$j]) }
+        $j++; continue
+    }
+    if (-not $prompt -and -not $warg.StartsWith('-')) {
+        $prompt = $warg
+        $j++; continue
+    }
+    $j++
+}
+
+if ($permissionMode -eq 'bypassPermissions') { Fail 'bypassPermissions is not allowed' }
+
+if ([string]::IsNullOrWhiteSpace($worktree)) {
+    $worktree = (Get-Location).Path
+}
+$worktree = [System.IO.Path]::GetFullPath($worktree)
+
+if (-not (Test-Path -LiteralPath $worktree -PathType Container)) {
+    Fail "working directory does not exist: $worktree"
+}
+
+# Sandbox marker validation
+$markerPath = Join-Path $worktree '.offload-execution-workspace'
+$markerExpected = 'offload-execution-workspace-v1'
+if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+    $markerPath = Join-Path $worktree '.offload-research-workspace'
+    $markerExpected = 'offload-research-workspace-v1'
+}
+if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+    Fail 'unsupported or unmarked sandbox; use an isolated offload workspace'
+}
+try {
+    $markerContent = [System.IO.File]::ReadAllText($markerPath).Trim()
+    if ($markerContent -ne $markerExpected) { Fail 'invalid isolated workspace marker' }
 } catch {
     Fail 'could not read isolated workspace marker'
 }
-if (Same $workdir (Get-Location).Path) { Fail 'working directory cannot be the caller current directory' }
 
-foreach ($path in (Optional-Array $assignment 'owned_paths') + (Optional-Array $assignment 'frozen_paths')) {
-    $normalized = $path.Replace('\', '/')
-    if ([IO.Path]::IsPathRooted($path) -or $normalized.Split('/') -contains '..') {
-        Fail "assignment path escapes repository: $path"
-    }
+$outFull = [System.IO.Path]::GetFullPath($outputPath)
+$errFull = [System.IO.Path]::GetFullPath($errorPath)
+$outParent = Split-Path -Parent $outFull
+if ($outParent -and -not (Test-Path -LiteralPath $outParent -PathType Container)) {
+    [System.IO.Directory]::CreateDirectory($outParent) | Out-Null
 }
-$permissionMode = Optional-String $assignment 'permission_mode' 'acceptEdits'
-if ($permissionMode -eq 'bypassPermissions') { Fail 'bypassPermissions is not allowed' }
-$requestedTools = @(Optional-Array $assignment 'allowed_tools')
-if ($requestedTools -contains 'Task' -or $requestedTools -contains 'Agent') {
-    Fail 'child assignment tools cannot be allowed'
+$errParent = Split-Path -Parent $errFull
+if ($errParent -and -not (Test-Path -LiteralPath $errParent -PathType Container)) {
+    [System.IO.Directory]::CreateDirectory($errParent) | Out-Null
 }
 
-$out = Full $outputPath
-$err = Full $errorPath
-if (Within $out $workdir -or Within $err $workdir) { Fail 'result and error artifacts must be outside the worker directory' }
-
-$executable = Resolve-Claude
-$capabilities = Discover $executable $assignment
-if ($capabilitiesOnly) {
-    Write-Json $out ([ordered]@{ schema_version = 1; adapter = 'claude'; status = 'capabilities'; capabilities = $capabilities })
-    exit 0
+$claudeArgs = [System.Collections.Generic.List[string]]::new()
+$claudeArgs.Add('-p')
+$claudeArgs.Add($prompt)
+$claudeArgs.Add('--output-format')
+$claudeArgs.Add('json')
+$claudeArgs.Add('--permission-mode')
+$claudeArgs.Add($permissionMode)
+foreach ($t in $disallowedTools) {
+    $claudeArgs.Add('--disallowedTools')
+    $claudeArgs.Add($t)
 }
-if (-not $capabilities.structured_output.supported) { Fail 'Claude CLI does not advertise structured JSON output' }
-
-$models = @($capabilities.model_catalog.models)
-$pinnedModel = Optional-String $assignment 'model'
-if ($pinnedModel -and ($capabilities.model_catalog.status -ne 'available' -or $models -notcontains $pinnedModel)) {
-    Fail 'pinned model is unavailable or model availability is unknown'
+foreach ($t in $allowedTools) {
+    $claudeArgs.Add('--allowedTools')
+    $claudeArgs.Add($t)
 }
-$requestedEffort = Optional-String $assignment 'effort' 'default'
-if ($requestedEffort -ne 'default' -and @($capabilities.effort_levels) -notcontains $requestedEffort) {
-    Fail 'requested effort is not supported by Claude host'
+if ($modelId) {
+    $claudeArgs.Add('--model')
+    $claudeArgs.Add($modelId)
 }
-
-$ledgerPath = Optional-String $assignment 'ledger_path'
-if ($ledgerPath) { $ledgerPath = Full $ledgerPath } else { $ledgerPath = Join-Path (Split-Path -Parent $out) 'resource-ledger.json' }
-if (Within $ledgerPath $workdir) { Fail 'resource ledger must be outside the worker directory' }
-$ledger = if (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
-    Read-Json $ledgerPath
-} else {
-    [pscustomobject]@{ schema_version = 1; owner = 'orchestrator'; assignment_id = [string]$assignment.assignment_id; records = @() }
-}
-if ($ledger.schema_version -ne 1 -or $ledger.owner -ne 'orchestrator') { Fail 'invalid resource ledger' }
-$ledger.assignment_id = [string]$assignment.assignment_id
-if ($null -eq $ledger.records) { $ledger.records = @() }
-
-$rawOut = "$out.raw.json"
-$rawErr = "$err.raw.txt"
-$timeoutText = Optional-String $assignment 'timeout_seconds' '1200'
-$timeout = 0
-if (-not [int]::TryParse($timeoutText, [ref]$timeout) -or $timeout -lt 1) { Fail 'timeout_seconds must be a positive integer' }
-Add-Record $ledger 'worktree' 'worktree' $workdir 'created'
-Add-Record $ledger 'process' 'process' 'pending' 'created'
-Add-Record $ledger 'raw-output' 'artifact' $rawOut 'created'
-Add-Record $ledger 'raw-error' 'artifact' $rawErr 'created'
-Add-Record $ledger 'result' 'artifact' $out 'created'
-Add-Record $ledger 'verification' 'verification' 'scope-and-gate' 'created'
-Write-Json $ledgerPath $ledger
-
-$modelForResult = if ($pinnedModel) { $pinnedModel } else { $null }
-$result = [ordered]@{
-    schema_version = 1
-    assignment_id = [string]$assignment.assignment_id
-    adapter = 'claude'
-    status = 'failed'
-    lifecycle = 'created'
-    exit_code = $null
-    response = $null
-    structured_output = $null
-    session_id = $null
-    capabilities = $capabilities
-    model_selection = [ordered]@{
-        preference = [string]$assignment.preference
-        model = $modelForResult
-        effort = $requestedEffort
-        reason = 'selection is owned by the orchestrator; the adapter does not map preferences'
-    }
-    resources = [ordered]@{ ledger = $ledgerPath; worktree = $workdir; process = $null }
-    artifacts = [ordered]@{ raw_output = $rawOut; raw_error = $rawErr; result = $out }
-    verification = $null
-    error = $null
+if ($resumeSession) {
+    $claudeArgs.Add('--resume')
+    $claudeArgs.Add($resumeSession)
 }
 
-$runArguments = @('-p', [string]$assignment.prompt, '--output-format', 'json', '--permission-mode', $permissionMode, '--disallowedTools', 'Task', '--disallowedTools', 'Agent')
-foreach ($tool in (Optional-Array $assignment 'allowed_tools')) { $runArguments += @('--allowedTools', $tool) }
-foreach ($tool in (Optional-Array $assignment 'disallowed_tools')) { $runArguments += @('--disallowedTools', $tool) }
-if ($pinnedModel) { $runArguments += @('--model', $pinnedModel) }
-$resumeSession = Optional-String $assignment 'resume_session_id'
-if ($resumeSession) { $runArguments += @('--resume', $resumeSession) }
-
-$process = $null
-$timedOut = $false
-$canceled = $false
+$psi = New-ProcessInfo $resolvedClaude $claudeArgs.ToArray() $worktree
+$proc = [System.Diagnostics.Process]::new()
+$proc.StartInfo = $psi
 try {
-    $process = [Diagnostics.Process]::Start((New-ProcessInfo $executable $runArguments $workdir))
-    Update-Records $ledger 'process' 'started' @{ identity = "pid:$($process.Id)" }
-    $result.resources.process = "pid:$($process.Id)"
-    Update-Records $ledger 'worktree' 'running'
-    Update-Records $ledger 'raw-output' 'running'
-    Update-Records $ledger 'raw-error' 'running'
-    Write-Json $ledgerPath $ledger
-
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
-    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
-    while (-not $process.HasExited) {
-        $cancelFile = Optional-String $assignment 'cancel_file'
-        if ($cancelFile -and (Test-Path -LiteralPath $cancelFile)) {
-            $canceled = $true
-            $process.Kill($true)
+    if (-not $proc.Start()) { Fail "failed to start Claude: $resolvedClaude" 127 }
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $termination = 'natural'
+    while (-not $proc.HasExited) {
+        if (-not [string]::IsNullOrWhiteSpace($cancelFile) -and (Test-Path -LiteralPath $cancelFile -PathType Leaf)) {
+            $termination = 'canceled'
+            try { $proc.Kill($true) } catch { }
             break
         }
-        if ($stopwatch.Elapsed.TotalSeconds -ge $timeout) {
-            $timedOut = $true
-            $process.Kill($true)
+        if ($timeoutSeconds -gt 0 -and $watch.Elapsed.TotalSeconds -ge $timeoutSeconds) {
+            $termination = 'timeout'
+            try { $proc.Kill($true) } catch { }
             break
         }
-        Start-Sleep -Milliseconds 50
+        Start-Sleep -Milliseconds 25
     }
-    $process.WaitForExit()
-    $rawStdout = $stdoutTask.GetAwaiter().GetResult()
-    $rawStderr = $stderrTask.GetAwaiter().GetResult()
-    [IO.File]::WriteAllText($rawOut, $rawStdout, [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText($rawErr, $rawStderr, [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText($err, $rawStderr, [Text.UTF8Encoding]::new($false))
+    try { $proc.WaitForExit() } catch { }
+    [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask))
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    [System.IO.File]::WriteAllText($errFull, $stderr, [System.Text.Encoding]::UTF8)
 
-    $result.exit_code = $process.ExitCode
-    if ($canceled) {
-        $result.lifecycle = 'canceled'
-        $result.error = 'canceled'
-    } elseif ($timedOut) {
-        $result.lifecycle = 'failed'
-        $result.error = 'timeout'
-    } elseif ("$rawStdout`n$rawStderr" -match '(?i)quota|rate limit|too many requests|429') {
-        $result.lifecycle = 'quota-handoff'
-        $result.error = 'quota exhausted'
-    } elseif ($process.ExitCode -eq 0) {
+    if ($termination -eq 'canceled') {
+        exit 130
+    }
+    if ($termination -eq 'timeout') {
+        exit 124
+    }
+
+    if ($proc.ExitCode -eq 75 -or "$stdout`n$stderr" -match '(?i)quota|rate limit|too many requests|429') {
+        exit 75
+    }
+
+    if ($proc.ExitCode -eq 0) {
         try {
-            $document = $rawStdout | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+            $document = $stdout | ConvertFrom-Json -Depth 30 -ErrorAction Stop
             if ($document.subtype -eq 'success' -or $document.status -eq 'success') {
-                $result.response = if ($document.result) { [string]$document.result } elseif ($document.response) { [string]$document.response } else { $null }
-                $result.structured_output = $document
-                $result.session_id = if ($document.session_id) { [string]$document.session_id } else { $null }
-                $result.lifecycle = 'running'
+                $response = if ($document.result) { [string]$document.result } elseif ($document.response) { [string]$document.response } else { $null }
+                $sessionId = if ($document.session_id) { [string]$document.session_id } else { $null }
+                $result = [ordered]@{
+                    status = 'success'
+                    response = $response
+                    session_id = $sessionId
+                    structured_output = $document
+                    model_id = $modelId
+                }
+                $resultJson = $result | ConvertTo-Json -Depth 20
+                [System.IO.File]::WriteAllText($outFull, "$resultJson`n", [System.Text.Encoding]::UTF8)
+                exit 0
             } else {
-                $result.lifecycle = 'failed'
-                $result.error = 'Claude returned a non-success result'
+                [System.IO.File]::WriteAllText($outFull, $stdout, [System.Text.Encoding]::UTF8)
+                Fail 'Claude returned a non-success result' 1
             }
         } catch {
-            $result.lifecycle = 'failed'
-            $result.error = 'malformed Claude JSON output'
+            [System.IO.File]::WriteAllText($outFull, $stdout, [System.Text.Encoding]::UTF8)
+            Fail 'malformed Claude JSON output' 1
         }
-    } else {
-        $result.lifecycle = 'failed'
-        $result.error = "Claude exited with code $($process.ExitCode)"
     }
 
-    if ($result.lifecycle -eq 'running') {
-        Update-Records $ledger 'verification' 'running'
-        $result.verification = Run-Verification $assignment $workdir
-        if ($result.verification.scope -eq 'passed' -and $result.verification.gate -eq 'passed') {
-            $result.status = 'completed'
-            $result.lifecycle = 'completed'
-            Update-Records $ledger 'verification' 'completed'
-        } else {
-            $result.error = $result.verification.reason
-            Update-Records $ledger 'verification' 'failed'
-        }
-    }
-} catch {
-    $result.error = $_.Exception.Message
-    $result.lifecycle = 'failed'
+    [System.IO.File]::WriteAllText($outFull, $stdout, [System.Text.Encoding]::UTF8)
+    exit $proc.ExitCode
 } finally {
-    if ($null -ne $process -and -not $process.HasExited) {
-        try { $process.Kill($true); $process.WaitForExit() } catch { }
-    }
-    Write-Json $out $result
-    Update-Records $ledger 'process' $result.lifecycle
-    Update-Records $ledger 'worktree' $(if ($result.status -eq 'completed') { 'completed' } else { 'retained' })
-    Update-Records $ledger 'raw-output' 'retained'
-    Update-Records $ledger 'raw-error' 'retained'
-    Update-Records $ledger 'result' 'completed'
-    if ($null -eq $result.verification) { Update-Records $ledger 'verification' 'not-run' }
-    Write-Json $ledgerPath $ledger
-    if ($null -ne $process) { $process.Dispose() }
+    $proc.Dispose()
 }
-
-if ($result.status -eq 'completed') { exit 0 }
-if ($result.lifecycle -eq 'quota-handoff') { exit 75 }
-if ($result.lifecycle -eq 'canceled') { exit 130 }
-exit 1

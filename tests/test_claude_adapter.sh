@@ -27,6 +27,9 @@ fake_claude="$TMP_ROOT/fake-claude"
 cat >"$fake_claude" <<'FAKE_CLAUDE'
 #!/usr/bin/env bash
 set -u
+if [ -n "${FAKE_CLAUDE_RECORD_ARGS:-}" ]; then
+  printf '%s\n' "$@" >"$FAKE_CLAUDE_RECORD_ARGS"
+fi
 case "${1:-}" in
   --version) printf 'claude-fake 1.0\n'; exit 0 ;;
   --help) printf '%s\n' '--output-format --permission-mode --allowedTools --disallowedTools --resume'; exit 0 ;;
@@ -34,46 +37,92 @@ esac
 case "${FAKE_CLAUDE_MODE:-success}" in
   malformed) printf 'not-json\n'; exit 0 ;;
   cancel) while :; do :; done ;;
-  scope-failure) printf 'unexpected\n' >unowned.txt ;;
   quota) printf 'quota exhausted\n' >&2; exit 75 ;;
 esac
 printf '%s\n' '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}'
 FAKE_CLAUDE
 chmod +x "$fake_claude"
 
+catalog="$TMP_ROOT/catalog.json"
+cat >"$catalog" <<'CATALOG'
+{
+  "revision": "test-claude-cat",
+  "models": [
+    { "id": "claude-3-5-sonnet-20241022", "family_hint": "sonnet", "available": true, "quota_available": true },
+    { "id": "claude-3-haiku-20240307", "family_hint": "haiku", "available": true, "quota_available": true }
+  ]
+}
+CATALOG
+
+catalog_request="$TMP_ROOT/catalog-request.json"
+cat >"$catalog_request" <<'CATREQ'
+{
+  "protocol_version": 1,
+  "role": "worker",
+  "preference": "balanced",
+  "effort": "high",
+  "required_capabilities": ["structured-output"],
+  "policy_revision": "test-policy-1"
+}
+CATREQ
+
+# 1. Operation catalog test
+catalog_output=$(CLAUDE_BIN="$fake_claude" CLAUDE_MODEL_CATALOG="$catalog" "$ADAPTER" --operation catalog --request "$catalog_request")
+[ "$(printf '%s' "$catalog_output" | jq -r '.vendor')" = anthropic ] || fail 'catalog vendor is not anthropic'
+[ "$(printf '%s' "$catalog_output" | jq -r '.adapter')" = claude ] || fail 'catalog adapter is not claude'
+[ "$(printf '%s' "$catalog_output" | jq -r '.protocol_version')" = "1" ] || fail 'catalog protocol_version is not 1'
+[ "$(printf '%s' "$catalog_output" | jq -r '.models | length')" -ge 1 ] || fail 'catalog has no models'
+pass 'Bash adapter catalog discovery succeeds'
+
 run_adapter() {
-  local mode="$1" workspace="$2" cancel_file="${3:-}"
-  local assignment="$TMP_ROOT/$mode-assignment.json" output="$TMP_ROOT/$mode-result.json" error="$TMP_ROOT/$mode-error.txt"
-  local baseline; baseline=$(git -C "$workspace" rev-parse HEAD)
-  jq -n --arg id "test-$mode" --arg prompt 'bounded fake assignment' --arg workdir "$workspace" --arg baseline "$baseline" --arg cancel "$cancel_file" \
-    '{schema_version:1,assignment_id:$id,prompt:$prompt,working_directory:$workdir,owned_paths:["owned.txt"],frozen_paths:["frozen.txt"],baseline:$baseline,gate_command:"test -f owned.txt",preference:"balanced",timeout_seconds:10} | if $cancel != "" then .cancel_file=$cancel else . end' >"$assignment"
+  local mode="$1" workspace="$2" cancel_file="${3:-}" prompt="${4:-bounded fake assignment}" record_args="${5:-}"
+  local selection="$TMP_ROOT/$mode-selection.json" output="$TMP_ROOT/$mode-result.json" error="$TMP_ROOT/$mode-error.txt"
+  jq -n '{protocol_version:1,model_id:"claude-3-5-sonnet-20241022",effort:"high",preference:"balanced",vendor:"anthropic"}' >"$selection"
   set +e
-  FAKE_CLAUDE_MODE="$mode" CLAUDE_BIN="$fake_claude" "$ADAPTER" --assignment "$assignment" --output "$output" --error "$error"
+  local cancel_args=()
+  if [ -n "$cancel_file" ]; then
+    cancel_args=(--cancel-file "$cancel_file")
+  fi
+  FAKE_CLAUDE_MODE="$mode" FAKE_CLAUDE_RECORD_ARGS="$record_args" CLAUDE_BIN="$fake_claude" CLAUDE_MODEL_CATALOG="$catalog" "$ADAPTER" \
+    --operation launch \
+    --request "$selection" \
+    --output "$output" \
+    --error "$error" \
+    "${cancel_args[@]}" \
+    -- \
+    --cd "$workspace" \
+    --prompt "$prompt"
   RUN_EXIT=$?
   set -e
   RUN_OUTPUT="$output"
   RUN_ERROR="$error"
 }
 
-workspace="$TMP_ROOT/success"
+# 2. Successful launch test with space preservation
+workspace="$TMP_ROOT/success with spaces"
 init_workspace "$workspace"
-run_adapter success "$workspace"
+record_args="$TMP_ROOT/success-args.txt"
+test_prompt='result with spaces and "quotes"'
+run_adapter success "$workspace" "" "$test_prompt" "$record_args"
 [ "$RUN_EXIT" -eq 0 ] || fail 'success did not return zero'
-[ "$(jq -r '.status' "$RUN_OUTPUT")" = completed ] || fail 'success was not completed'
+[ "$(jq -r '.status' "$RUN_OUTPUT")" = success ] || fail 'success status was not success'
 [ "$(jq -r '.response' "$RUN_OUTPUT")" = ok ] || fail 'success response was not normalized'
 [ "$(jq -r '.session_id' "$RUN_OUTPUT")" = s1 ] || fail 'session id was not normalized'
-[ "$(jq -r '.resources.process' "$RUN_OUTPUT")" != null ] || fail 'process identity was not reported'
 [ -f "$RUN_ERROR" ] || fail 'error artifact was not written'
-[ "$(jq -r '[.records[] | select(.resource_type == "process")][0].state' "$TMP_ROOT/resource-ledger.json")" = completed ] || fail 'process was not reconciled'
-pass 'Bash adapter returns verified normalized success and ledger records'
+grep -qF "$test_prompt" "$record_args" || fail 'prompt argument boundary with spaces was not preserved'
+grep -qF "Task" "$record_args" || fail 'Task was not disallowed'
+grep -qF "Agent" "$record_args" || fail 'Agent was not disallowed'
+[ ! -f "$TMP_ROOT/resource-ledger.json" ] || fail 'private resource ledger was created'
+pass 'Bash adapter returns normalized success and preserves argument boundaries'
 
+# 3. Malformed output test
 workspace="$TMP_ROOT/malformed"
 init_workspace "$workspace"
 run_adapter malformed "$workspace"
 [ "$RUN_EXIT" -eq 1 ] || fail 'malformed output did not return failure'
-[ "$(jq -r '.lifecycle' "$RUN_OUTPUT")" = failed ] || fail 'malformed output lifecycle was not failed'
 pass 'Bash adapter classifies malformed output'
 
+# 4. Cancellation test
 cancel_file="$TMP_ROOT/cancel.request"
 touch "$cancel_file"
 workspace="$TMP_ROOT/cancel"
@@ -83,19 +132,11 @@ case "$(uname -s)" in
   *)
     run_adapter cancel "$workspace" "$cancel_file"
     [ "$RUN_EXIT" -eq 130 ] || fail 'cancellation did not return normalized exit code'
-    [ "$(jq -r '.lifecycle' "$RUN_OUTPUT")" = canceled ] || fail 'cancellation lifecycle was not recorded'
     pass 'Bash adapter cancels bounded workers'
     ;;
 esac
 
-workspace="$TMP_ROOT/scope-failure"
-init_workspace "$workspace"
-run_adapter scope-failure "$workspace"
-[ "$RUN_EXIT" -eq 1 ] || fail 'scope failure did not return failure'
-[ "$(jq -r '.verification.scope' "$RUN_OUTPUT")" = failed ] || fail 'scope failure was not recorded'
-[ "$(jq -r '.verification.gate' "$RUN_OUTPUT")" = not-run ] || fail 'gate ran after scope failure'
-pass 'Bash adapter withholds the gate after scope failure'
-
+# 5. Unmarked workspace test
 workspace="$TMP_ROOT/unmarked"
 init_workspace "$workspace"
 rm -f "$workspace/.offload-execution-workspace"

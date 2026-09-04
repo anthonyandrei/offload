@@ -1,4 +1,4 @@
-# ADR 0007: Select models at runtime through worker adapters
+# ADR 0008: Select models at runtime through worker adapters
 
 - Status: accepted
 - Date: 2026-09-04
