@@ -330,7 +330,13 @@ bash tests/test_execution_scope.sh
 ```powershell
 pwsh -File tests/test_research_helpers.ps1
 pwsh -File tests/test_execution_scope.ps1
+pwsh -File tests/test_codex_adapter.ps1
 ```
+
+The Codex worker boundary is documented in docs/codex-adapter.md. It discovers
+the installed CLI structured-output support and selects models from the
+host-provided CODEX_MODEL_CATALOG. It fails closed when either capability is
+unavailable.
 
 ## Findings about agy
 
