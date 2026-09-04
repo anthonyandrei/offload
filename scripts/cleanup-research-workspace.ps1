@@ -6,16 +6,26 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: cleanup-research-workspace.ps1 --workspace <path> --status <success|partial|failed>")
+    [Console]::Error.WriteLine("Usage: cleanup-research-workspace.ps1 --workspace <path> --status <success|partial|failed> [--ledger <path> --resource-id <id>]")
 }
+
+$script:LedgerPath = ""
+$script:ResourceId = ""
 
 function Fail([string]$message, [int]$exitCode = 1) {
     [Console]::Error.WriteLine("Error: $message")
+    if ($script:LedgerPath -and $script:ResourceId -and (Test-Path -LiteralPath $script:LedgerPath -PathType Leaf)) {
+        try {
+            & pwsh -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'resource-ledger.ps1') update --ledger $script:LedgerPath --resource-id $script:ResourceId --state failed --error $message | Out-Null
+        } catch { }
+    }
     exit $exitCode
 }
 
 $workspace = ""
 $status = ""
+$ledgerPath = ""
+$resourceId = ""
 
 $i = 0
 while ($i -lt $args.Count) {
@@ -34,6 +44,14 @@ while ($i -lt $args.Count) {
             Fail "--status requires a value"
         }
         $status = [string]$args[$i]
+    } elseif ($arg -eq '--ledger') {
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--ledger requires a path" }
+        $ledgerPath = [string]$args[$i]
+    } elseif ($arg -eq '--resource-id') {
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--resource-id requires a value" }
+        $resourceId = [string]$args[$i]
     } elseif ($arg -eq '-h' -or $arg -eq '--help') {
         Show-Usage
         exit 0
@@ -43,6 +61,12 @@ while ($i -lt $args.Count) {
     }
     $i++
 }
+
+if (($ledgerPath -and -not $resourceId) -or ($resourceId -and -not $ledgerPath)) {
+    Fail "--ledger and --resource-id must be supplied together"
+}
+$script:LedgerPath = if ($ledgerPath) { [System.IO.Path]::GetFullPath($ledgerPath) } else { "" }
+$script:ResourceId = $resourceId
 
 if ([string]::IsNullOrWhiteSpace($workspace) -or [string]::IsNullOrWhiteSpace($status)) {
     Show-Usage
@@ -456,6 +480,14 @@ if ($status -eq 'success') {
 
         # Check every entry before descending so nested links are never followed.
         Remove-EntryWithoutFollowingReparsePoint $entry
+    }
+}
+
+if ($script:LedgerPath -and $script:ResourceId) {
+    try {
+        & pwsh -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'resource-ledger.ps1') update --ledger $script:LedgerPath --resource-id $script:ResourceId --state retained --error "research workspace retained as evidence" | Out-Null
+    } catch {
+        Fail "could not update resource ledger: $($_.Exception.Message)"
     }
 }
 

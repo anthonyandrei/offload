@@ -3,6 +3,11 @@ set -euo pipefail
 
 source_repo=""
 paths=()
+ledger_path=""
+assignment_id=""
+parent_id=""
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+resource_ledger="$script_dir/resource-ledger.sh"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -14,8 +19,20 @@ while [[ $# -gt 0 ]]; do
       paths+=("$2")
       shift 2
       ;;
+    --ledger)
+      ledger_path="$2"
+      shift 2
+      ;;
+    --assignment-id)
+      assignment_id="$2"
+      shift 2
+      ;;
+    --parent-id)
+      parent_id="$2"
+      shift 2
+      ;;
     -h|--help)
-      printf 'Usage: %s [--source-repo <path>] [--path <declared-path> ...]\n' "$0" >&2
+      printf 'Usage: %s [--source-repo <path>] [--path <declared-path> ...] [--ledger <path>] [--assignment-id <id>] [--parent-id <id>]\n' "$0" >&2
       exit 0
       ;;
     *)
@@ -28,15 +45,29 @@ done
 workspace=$(mktemp -d "${TMPDIR:-/tmp}/offload-research.XXXXXX")
 workspace=$(cd "$workspace" && pwd -P)
 
+if [[ -z "$ledger_path" ]]; then
+  ledger_path="${TMPDIR:-/tmp}/offload-resource-ledger.json"
+fi
+if [[ -z "$assignment_id" ]]; then
+  assignment_id="$(basename "$workspace")"
+fi
+if [[ -z "$parent_id" ]]; then
+  parent_id="${source_repo:-orchestrator}"
+fi
+resource_id="research-workspace:$assignment_id"
+
 success=false
 cleanup() {
   if [[ "$success" != "true" && -n "${workspace:-}" && -d "${workspace:-}" ]]; then
+    bash "$resource_ledger" update --ledger "$ledger_path" --resource-id "$resource_id" --state failed --error 'research workspace creation failed' >/dev/null 2>&1 || true
     rm -rf "$workspace"
   fi
 }
 trap cleanup EXIT
 
 printf 'offload-research-workspace-v1\n' > "$workspace/.offload-research-workspace"
+
+bash "$resource_ledger" register --ledger "$ledger_path" --assignment-id "$assignment_id" --parent-id "$parent_id" --resource-type research-workspace --path "$workspace" --owner-marker '.offload-research-workspace=offload-research-workspace-v1' --resource-id "$resource_id" --state active >/dev/null
 
 if [[ -n "$source_repo" ]]; then
   if [[ ! -d "$source_repo" ]]; then

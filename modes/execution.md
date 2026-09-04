@@ -375,3 +375,8 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
   - Bash: `"$OFFLOAD_ROOT/scripts/execution-workspace.sh" cleanup --manifest "<manifest>" --status success|failed|retain`
   - PowerShell: `& "$OffloadRoot/scripts/execution-workspace.ps1" cleanup --manifest "<manifest>" --status success|failed|retain`
   Wait for active worker processes to terminate before calling cleanup. Pass `--status retain` if preserving a candidate workspace for orchestrator inspection.
+
+- **Ownership ledger and crash recovery.** Candidate worktrees, research workspaces, and worker processes are recorded in an orchestrator-owned ledger outside their resource paths. Register a resource before or immediately after creation, update it as the lifecycle changes (`active`, `failed`, `timed_out`, `cancelled`, `quota_handoff`, `cleanup_pending`, or `completed`), and run reconciliation at the start of a later run:
+  - Bash: `"$OFFLOAD_ROOT/scripts/resource-ledger.sh" reconcile --ledger "<ledger>" --source-repo "<repo>"`
+  - PowerShell: `& "$OffloadRoot/scripts/resource-ledger.ps1" reconcile --ledger "<ledger>" --source-repo "<repo>"`
+  Cleanup terminates and waits for an owned worker process before touching its resources. It removes only records whose owner marker, parent relationship, and Git/worktree safety checks pass. Dirty, unmerged, unknown, ambiguous, or otherwise unprovable resources remain on disk and in the ledger for review. Never place the ledger inside a worker checkout.

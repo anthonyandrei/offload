@@ -250,6 +250,19 @@ After generating provenance, `cleanup-research-workspace` cleans the temporary w
 - On `success`, the helper removes intermediate worker files and snapshot directories while preserving `final.md`, `provenance.json` when present, `routing-outcomes.json`, the workspace marker, and `evidence-disposition.json`. The disposition manifest records each routing evidence path, its pre-cleanup existence, a SHA-256 hash for existing regular files, and whether it was retained, pruned, missing, or left uninspected for safety.
 - On `partial` or failure, the helper retains all raw artifacts and logs.
 
+### Crash recovery and resource ownership
+
+The adapters maintain a durable, orchestrator-owned resource ledger outside worker checkouts. Pass the same ledger, assignment ID, and parent ID to workspace and worker helpers when coordinating a run:
+
+```bash
+LEDGER="$SCRATCH/offload-resource-ledger.json"
+WORKSPACE=$(./scripts/make-research-workspace.sh --ledger "$LEDGER" --assignment-id "$ASSIGNMENT" --parent-id "$PWD" --source-repo "$PWD" --path src/auth)
+./scripts/run-agy-json.sh --role researcher --ledger "$LEDGER" --assignment-id "$ASSIGNMENT" --parent-id "$PWD" --output "$WORKSPACE/worker.json" --error "$WORKSPACE/worker.err" -- --prompt '...'
+./scripts/cleanup-research-workspace.sh --workspace "$WORKSPACE" --status success --ledger "$LEDGER" --resource-id "research-workspace:$ASSIGNMENT"
+```
+
+If the orchestrator crashes, reconcile the ledger on its next run. Reconciliation terminates recorded worker processes before cleaning their resources and discovers AGY-native Git worktrees that were never registered as `unknown`. It never deletes dirty, unmerged, unowned, ambiguous, or otherwise unprovable resources.
+
 ### Shared report format
 
 All modes format results into a consistent summary:

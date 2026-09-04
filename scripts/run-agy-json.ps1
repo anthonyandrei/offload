@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] --output FILE --error FILE '--' agy-arguments...")
+    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] --output FILE --error FILE [--ledger FILE --assignment-id ID --parent-id ID [--resource-id ID]] '--' agy-arguments...")
     [Console]::Error.WriteLine("In PowerShell command expressions, quote '--' because PowerShell consumes the bare delimiter before the helper receives it.")
 }
 
@@ -20,11 +20,19 @@ $outputPath = ""
 $errorPath = ""
 $role = ""
 $route = ""
+$ledgerPath = ""
+$assignmentId = ""
+$parentId = ""
+$resourceId = ""
 $seenOutput = $false
 $seenError = $false
 $seenRole = $false
 $seenRoute = $false
 $seenDashDash = $false
+$seenLedger = $false
+$seenAssignment = $false
+$seenParent = $false
+$seenResource = $false
 $forwardedArgs = [System.Collections.Generic.List[string]]::new()
 
 $i = 0
@@ -122,6 +130,50 @@ while ($i -lt $args.Count) {
             Fail "--route requires a route name"
         }
         $seenRoute = $true
+    } elseif ($arg -eq '--ledger') {
+        if ($seenLedger) { Fail "duplicate --ledger option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--ledger requires a path" }
+        $ledgerPath = [string]$args[$i]
+        $seenLedger = $true
+    } elseif ($arg.StartsWith('--ledger=')) {
+        if ($seenLedger) { Fail "duplicate --ledger option" }
+        $ledgerPath = $arg.Substring(9)
+        if ([string]::IsNullOrWhiteSpace($ledgerPath)) { Show-Usage; Fail "--ledger requires a path" }
+        $seenLedger = $true
+    } elseif ($arg -eq '--assignment-id') {
+        if ($seenAssignment) { Fail "duplicate --assignment-id option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--assignment-id requires a value" }
+        $assignmentId = [string]$args[$i]
+        $seenAssignment = $true
+    } elseif ($arg.StartsWith('--assignment-id=')) {
+        if ($seenAssignment) { Fail "duplicate --assignment-id option" }
+        $assignmentId = $arg.Substring(16)
+        if ([string]::IsNullOrWhiteSpace($assignmentId)) { Show-Usage; Fail "--assignment-id requires a value" }
+        $seenAssignment = $true
+    } elseif ($arg -eq '--parent-id') {
+        if ($seenParent) { Fail "duplicate --parent-id option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--parent-id requires a value" }
+        $parentId = [string]$args[$i]
+        $seenParent = $true
+    } elseif ($arg.StartsWith('--parent-id=')) {
+        if ($seenParent) { Fail "duplicate --parent-id option" }
+        $parentId = $arg.Substring(12)
+        if ([string]::IsNullOrWhiteSpace($parentId)) { Show-Usage; Fail "--parent-id requires a value" }
+        $seenParent = $true
+    } elseif ($arg -eq '--resource-id') {
+        if ($seenResource) { Fail "duplicate --resource-id option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--resource-id requires a value" }
+        $resourceId = [string]$args[$i]
+        $seenResource = $true
+    } elseif ($arg.StartsWith('--resource-id=')) {
+        if ($seenResource) { Fail "duplicate --resource-id option" }
+        $resourceId = $arg.Substring(14)
+        if ([string]::IsNullOrWhiteSpace($resourceId)) { Show-Usage; Fail "--resource-id requires a value" }
+        $seenResource = $true
     } else {
         Show-Usage
         Fail "unknown launcher option: $arg"
@@ -144,6 +196,13 @@ if (-not $seenError -or [string]::IsNullOrWhiteSpace($errorPath)) {
 if (-not $seenRole -or [string]::IsNullOrWhiteSpace($role)) {
     Show-Usage
     Fail "--role is required; specify a role and remove any caller --model flag"
+}
+
+if ($seenLedger -or $seenAssignment -or $seenParent -or $seenResource) {
+    if (-not $seenLedger -or [string]::IsNullOrWhiteSpace($ledgerPath)) { Fail "--ledger is required when resource ledger registration is enabled" }
+    if (-not $seenAssignment -or [string]::IsNullOrWhiteSpace($assignmentId)) { Fail "--assignment-id is required when resource ledger registration is enabled" }
+    if (-not $seenParent -or [string]::IsNullOrWhiteSpace($parentId)) { Fail "--parent-id is required when resource ledger registration is enabled" }
+    if ([string]::IsNullOrWhiteSpace($resourceId)) { $resourceId = "worker:$assignmentId" }
 }
 
 $knownRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
@@ -416,6 +475,8 @@ $errFs = $null
 $proc = $null
 $launcherSuccess = $false
 $workerExitCode = 1
+$ledgerRegistered = $false
+$ledgerScript = Join-Path $PSScriptRoot 'resource-ledger.ps1'
 
 try {
     try {
@@ -457,6 +518,16 @@ try {
         Fail "failed to start agy: $($_.Exception.Message)" 1
     }
 
+    if ($seenLedger) {
+        $startTime = $null
+        try { $startTime = $proc.StartTime.ToUniversalTime().ToString('o') } catch { }
+        $ledgerArgs = @('register', '--ledger', $ledgerPath, '--assignment-id', $assignmentId, '--parent-id', $parentId, '--resource-type', 'worker-process', '--process-id', [string]$proc.Id, '--owner-marker', 'agy-worker=agy-worker-v1', '--resource-id', $resourceId, '--state', 'active')
+        if ($null -ne $startTime) { $ledgerArgs += @('--process-start-time', $startTime) }
+        & pwsh -NoProfile -NonInteractive -File $ledgerScript @ledgerArgs | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "failed to register worker process in resource ledger" }
+        $ledgerRegistered = $true
+    }
+
     try {
         if ($env:FAKE_LAUNCHER_FAIL_POST_START -or $env:OFFLOAD_TEST_FAIL_POST_START) {
             if ($env:FAKE_AGY_STARTED_MARKER) {
@@ -488,6 +559,14 @@ try {
             # Process already exited
         } catch {
             # Best effort kill
+        }
+    }
+    if ($ledgerRegistered) {
+        $ledgerState = if ($launcherSuccess -and $workerExitCode -eq 0) { 'completed' } elseif ($launcherSuccess -and $workerExitCode -ne 0) { 'failed' } else { 'failed' }
+        try {
+            & pwsh -NoProfile -NonInteractive -File $ledgerScript update --ledger $ledgerPath --resource-id $resourceId --state $ledgerState --error (if ($ledgerState -eq 'failed') { 'worker or launcher failed' } else { '' }) | Out-Null
+        } catch {
+            # The worker result remains authoritative; reconciliation can repair a failed ledger update.
         }
     }
     if ($null -ne $outFs) {

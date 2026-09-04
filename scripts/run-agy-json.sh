@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s --role ROLE [--route default|quality-retry] --output FILE --error FILE -- agy-arguments...\n' "$0" >&2
+  printf 'Usage: %s --role ROLE [--route default|quality-retry] --output FILE --error FILE [--ledger FILE --assignment-id ID --parent-id ID [--resource-id ID]] -- agy-arguments...\n' "$0" >&2
 }
 
 fail() {
@@ -14,11 +14,19 @@ output_path=''
 error_path=''
 role=''
 route=''
+ledger_path=''
+assignment_id=''
+parent_id=''
+resource_id=''
 
 seen_output=false
 seen_error=false
 seen_role=false
 seen_route=false
+seen_ledger=false
+seen_assignment=false
+seen_parent=false
+seen_resource=false
 seen_delimiter=false
 worker_args=()
 
@@ -80,6 +88,62 @@ while [ "$#" -gt 0 ]; do
       seen_route=true
       shift
       ;;
+    --ledger)
+      $seen_ledger && fail 'duplicate --ledger option'
+      [ "$#" -ge 2 ] || { usage; fail '--ledger requires a path'; }
+      ledger_path="$2"
+      seen_ledger=true
+      shift 2
+      ;;
+    --ledger=*)
+      $seen_ledger && fail 'duplicate --ledger option'
+      ledger_path="${1#--ledger=}"
+      [ -n "$ledger_path" ] || { usage; fail '--ledger requires a path'; }
+      seen_ledger=true
+      shift
+      ;;
+    --assignment-id)
+      $seen_assignment && fail 'duplicate --assignment-id option'
+      [ "$#" -ge 2 ] || { usage; fail '--assignment-id requires a value'; }
+      assignment_id="$2"
+      seen_assignment=true
+      shift 2
+      ;;
+    --assignment-id=*)
+      $seen_assignment && fail 'duplicate --assignment-id option'
+      assignment_id="${1#--assignment-id=}"
+      [ -n "$assignment_id" ] || { usage; fail '--assignment-id requires a value'; }
+      seen_assignment=true
+      shift
+      ;;
+    --parent-id)
+      $seen_parent && fail 'duplicate --parent-id option'
+      [ "$#" -ge 2 ] || { usage; fail '--parent-id requires a value'; }
+      parent_id="$2"
+      seen_parent=true
+      shift 2
+      ;;
+    --parent-id=*)
+      $seen_parent && fail 'duplicate --parent-id option'
+      parent_id="${1#--parent-id=}"
+      [ -n "$parent_id" ] || { usage; fail '--parent-id requires a value'; }
+      seen_parent=true
+      shift
+      ;;
+    --resource-id)
+      $seen_resource && fail 'duplicate --resource-id option'
+      [ "$#" -ge 2 ] || { usage; fail '--resource-id requires a value'; }
+      resource_id="$2"
+      seen_resource=true
+      shift 2
+      ;;
+    --resource-id=*)
+      $seen_resource && fail 'duplicate --resource-id option'
+      resource_id="${1#--resource-id=}"
+      [ -n "$resource_id" ] || { usage; fail '--resource-id requires a value'; }
+      seen_resource=true
+      shift
+      ;;
     --)
       seen_delimiter=true
       shift
@@ -111,6 +175,15 @@ fi
 if ! $seen_role || [ -z "$role" ]; then
   usage
   fail '--role is required; specify a role and remove any caller --model flag'
+fi
+
+if $seen_ledger || $seen_assignment || $seen_parent || $seen_resource; then
+  $seen_ledger && [ -n "$ledger_path" ] || fail '--ledger is required when resource ledger registration is enabled'
+  $seen_assignment && [ -n "$assignment_id" ] || fail '--assignment-id is required when resource ledger registration is enabled'
+  $seen_parent && [ -n "$parent_id" ] || fail '--parent-id is required when resource ledger registration is enabled'
+  if ! $seen_resource; then
+    resource_id="worker:$assignment_id"
+  fi
 fi
 
 case "$role" in
@@ -161,6 +234,7 @@ done
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 policy_file="$repo_root/model-policy.json"
+resource_ledger="$script_dir/resource-ledger.sh"
 
 if [ ! -f "$policy_file" ]; then
   fail "model policy file not found at: $policy_file"
@@ -273,9 +347,65 @@ fi
 
 mkdir -p "$(dirname "$output_path")" "$(dirname "$error_path")"
 
+worker_pid=''
+worker_done=false
+ledger_registered=false
+
+update_ledger() {
+  local state="$1"
+  local error_message="${2:-}"
+  if $ledger_registered; then
+    if [ -n "$error_message" ]; then
+      "$resource_ledger" update --ledger "$ledger_path" --resource-id "$resource_id" --state "$state" --error "$error_message" >/dev/null 2>&1 || true
+    else
+      "$resource_ledger" update --ledger "$ledger_path" --resource-id "$resource_id" --state "$state" >/dev/null 2>&1 || true
+    fi
+    ledger_registered=false
+  fi
+}
+
+cleanup_worker() {
+  if [ -n "$worker_pid" ] && ! $worker_done && kill -0 "$worker_pid" 2>/dev/null; then
+    kill "$worker_pid" 2>/dev/null || true
+    wait "$worker_pid" 2>/dev/null || true
+  fi
+  if $ledger_registered; then
+    update_ledger failed 'worker or launcher was interrupted'
+  fi
+}
+trap cleanup_worker EXIT
+
 set +e
-"$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path"
+"$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path" &
+worker_pid=$!
+set -e
+
+if $seen_ledger; then
+  process_start=''
+  if process_start=$(ps -o lstart= -p "$worker_pid" 2>/dev/null); then
+    process_start="$(printf '%s' "$process_start" | sed 's/^ *//;s/ *$//')"
+  else
+    process_start=''
+  fi
+  register_args=(register --ledger "$ledger_path" --assignment-id "$assignment_id" --parent-id "$parent_id" --resource-type worker-process --process-id "$worker_pid" --owner-marker agy-worker=agy-worker-v1 --resource-id "$resource_id" --state active)
+  [ -n "$process_start" ] && register_args+=(--process-start-time "$process_start")
+  if ! "$resource_ledger" "${register_args[@]}" >/dev/null; then
+    cleanup_worker
+    fail 'failed to register worker process in resource ledger' 1
+  fi
+  ledger_registered=true
+fi
+
+set +e
+wait "$worker_pid"
 worker_exit=$?
 set -e
+worker_done=true
+
+if [ "$worker_exit" -eq 0 ]; then
+  update_ledger completed
+else
+  update_ledger failed 'worker or launcher failed'
+fi
 
 exit "$worker_exit"
