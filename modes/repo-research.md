@@ -11,6 +11,8 @@ Select the helper family matching your current host shell:
 
 Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. Researchers route through `model-policy.json` (`gemini-3.8-flash-high` default). Do not pass `--model` or `--effort` directly.
 
+Every research dispatch supplies the shared lifecycle metadata to `run-agy-json`: `--assignment-id`, `--attempt`, `--mode repo-research`, `--verification-baseline`, `--resource-ledger`, and a distinct `--lifecycle` path. The launcher records worker exit results and retains diagnosis artifacts for failed, canceled, timed-out, malformed, or quota-handoff runs. Resume and retry must use the ledger's pinned identity, model, effort, verification baseline, and attempt limit.
+
 ## Assignment requirements
 
 Every repository research assignment must define four fields:

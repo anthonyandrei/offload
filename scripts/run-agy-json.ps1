@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] --output FILE --error FILE '--' agy-arguments...")
+    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] --output FILE --error FILE [lifecycle options] '--' agy-arguments...")
     [Console]::Error.WriteLine("In PowerShell command expressions, quote '--' because PowerShell consumes the bare delimiter before the helper receives it.")
 }
 
@@ -20,10 +20,26 @@ $outputPath = ""
 $errorPath = ""
 $role = ""
 $route = ""
+$lifecyclePath = ""
+$assignmentId = ""
+$attempt = 1
+$mode = "unknown"
+$verificationBaseline = ""
+$resourceLedgerPath = ""
+$timeoutSeconds = 0
+$cancelFile = ""
 $seenOutput = $false
 $seenError = $false
 $seenRole = $false
 $seenRoute = $false
+$seenLifecycle = $false
+$seenAssignmentId = $false
+$seenAttempt = $false
+$seenMode = $false
+$seenVerificationBaseline = $false
+$seenResourceLedger = $false
+$seenTimeout = $false
+$seenCancelFile = $false
 $seenDashDash = $false
 $forwardedArgs = [System.Collections.Generic.List[string]]::new()
 
@@ -122,6 +138,92 @@ while ($i -lt $args.Count) {
             Fail "--route requires a route name"
         }
         $seenRoute = $true
+    } elseif ($arg -eq '--lifecycle') {
+        if ($seenLifecycle) { Fail "duplicate --lifecycle option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--lifecycle requires a path" }
+        $lifecyclePath = [string]$args[$i]
+        $seenLifecycle = $true
+    } elseif ($arg.StartsWith('--lifecycle=')) {
+        if ($seenLifecycle) { Fail "duplicate --lifecycle option" }
+        $lifecyclePath = $arg.Substring(12)
+        if ([string]::IsNullOrWhiteSpace($lifecyclePath)) { Show-Usage; Fail "--lifecycle requires a path" }
+        $seenLifecycle = $true
+    } elseif ($arg -eq '--assignment-id') {
+        if ($seenAssignmentId) { Fail "duplicate --assignment-id option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--assignment-id requires an identifier" }
+        $assignmentId = [string]$args[$i]
+        $seenAssignmentId = $true
+    } elseif ($arg.StartsWith('--assignment-id=')) {
+        if ($seenAssignmentId) { Fail "duplicate --assignment-id option" }
+        $assignmentId = $arg.Substring(16)
+        if ([string]::IsNullOrWhiteSpace($assignmentId)) { Show-Usage; Fail "--assignment-id requires an identifier" }
+        $seenAssignmentId = $true
+    } elseif ($arg -eq '--attempt') {
+        if ($seenAttempt) { Fail "duplicate --attempt option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--attempt requires an integer" }
+        if (-not [int]::TryParse([string]$args[$i], [ref]$attempt)) { Fail "--attempt requires an integer" }
+        $seenAttempt = $true
+    } elseif ($arg.StartsWith('--attempt=')) {
+        if ($seenAttempt) { Fail "duplicate --attempt option" }
+        if (-not [int]::TryParse($arg.Substring(10), [ref]$attempt)) { Fail "--attempt requires an integer" }
+        $seenAttempt = $true
+    } elseif ($arg -eq '--mode') {
+        if ($seenMode) { Fail "duplicate --mode option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--mode requires a mode name" }
+        $mode = [string]$args[$i]
+        $seenMode = $true
+    } elseif ($arg.StartsWith('--mode=')) {
+        if ($seenMode) { Fail "duplicate --mode option" }
+        $mode = $arg.Substring(7)
+        if ([string]::IsNullOrWhiteSpace($mode)) { Show-Usage; Fail "--mode requires a mode name" }
+        $seenMode = $true
+    } elseif ($arg -eq '--verification-baseline') {
+        if ($seenVerificationBaseline) { Fail "duplicate --verification-baseline option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--verification-baseline requires a value" }
+        $verificationBaseline = [string]$args[$i]
+        $seenVerificationBaseline = $true
+    } elseif ($arg.StartsWith('--verification-baseline=')) {
+        if ($seenVerificationBaseline) { Fail "duplicate --verification-baseline option" }
+        $verificationBaseline = $arg.Substring(24)
+        if ([string]::IsNullOrWhiteSpace($verificationBaseline)) { Show-Usage; Fail "--verification-baseline requires a value" }
+        $seenVerificationBaseline = $true
+    } elseif ($arg -eq '--resource-ledger') {
+        if ($seenResourceLedger) { Fail "duplicate --resource-ledger option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--resource-ledger requires a path" }
+        $resourceLedgerPath = [string]$args[$i]
+        $seenResourceLedger = $true
+    } elseif ($arg.StartsWith('--resource-ledger=')) {
+        if ($seenResourceLedger) { Fail "duplicate --resource-ledger option" }
+        $resourceLedgerPath = $arg.Substring(18)
+        if ([string]::IsNullOrWhiteSpace($resourceLedgerPath)) { Show-Usage; Fail "--resource-ledger requires a path" }
+        $seenResourceLedger = $true
+    } elseif ($arg -eq '--timeout-seconds') {
+        if ($seenTimeout) { Fail "duplicate --timeout-seconds option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--timeout-seconds requires a positive number" }
+        if (-not [int]::TryParse([string]$args[$i], [ref]$timeoutSeconds)) { Fail "--timeout-seconds requires a positive number" }
+        $seenTimeout = $true
+    } elseif ($arg.StartsWith('--timeout-seconds=')) {
+        if ($seenTimeout) { Fail "duplicate --timeout-seconds option" }
+        if (-not [int]::TryParse($arg.Substring(18), [ref]$timeoutSeconds)) { Fail "--timeout-seconds requires a positive number" }
+        $seenTimeout = $true
+    } elseif ($arg -eq '--cancel-file') {
+        if ($seenCancelFile) { Fail "duplicate --cancel-file option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--cancel-file requires a path" }
+        $cancelFile = [string]$args[$i]
+        $seenCancelFile = $true
+    } elseif ($arg.StartsWith('--cancel-file=')) {
+        if ($seenCancelFile) { Fail "duplicate --cancel-file option" }
+        $cancelFile = $arg.Substring(14)
+        if ([string]::IsNullOrWhiteSpace($cancelFile)) { Show-Usage; Fail "--cancel-file requires a path" }
+        $seenCancelFile = $true
     } else {
         Show-Usage
         Fail "unknown launcher option: $arg"
@@ -338,6 +440,19 @@ if ([string]::IsNullOrWhiteSpace($resolvedModel)) {
     Fail "failed to resolve model for role '$role' and route '$route'"
 }
 
+if ($attempt -lt 1 -or $attempt -gt 2) {
+    Fail "attempt must be 1 or 2; policy allows at most one retry per assignment"
+}
+if ($timeoutSeconds -lt 0) {
+    Fail "--timeout-seconds must be zero or a positive integer"
+}
+if ([string]::IsNullOrWhiteSpace($assignmentId)) {
+    $assignmentId = "$role-$(Get-Date -Format 'yyyyMMddHHmmssfff')"
+}
+if ([string]::IsNullOrWhiteSpace($lifecyclePath)) {
+    $lifecyclePath = "$outputPath.lifecycle.json"
+}
+
 # Resolve agy executable
 $resolvedAgy = $null
 
@@ -382,6 +497,8 @@ if (-not $resolvedAgy) {
 # Resolve paths and validate output/error destinations
 $resolvedOutputPath = [System.IO.Path]::GetFullPath($outputPath)
 $resolvedErrorPath = [System.IO.Path]::GetFullPath($errorPath)
+$resolvedLifecyclePath = [System.IO.Path]::GetFullPath($lifecyclePath)
+$resolvedLedgerPath = if ([string]::IsNullOrWhiteSpace($resourceLedgerPath)) { "" } else { [System.IO.Path]::GetFullPath($resourceLedgerPath) }
 
 $pathComparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
 
@@ -395,6 +512,149 @@ if ([System.IO.Directory]::Exists($resolvedOutputPath)) {
 
 if ([System.IO.Directory]::Exists($resolvedErrorPath)) {
     Fail "error destination is an existing directory: $resolvedErrorPath"
+}
+
+if ([System.IO.Directory]::Exists($resolvedLifecyclePath)) {
+    Fail "lifecycle destination is an existing directory: $resolvedLifecyclePath"
+}
+if ($resolvedLedgerPath -and [System.IO.Directory]::Exists($resolvedLedgerPath)) {
+    Fail "resource ledger destination is an existing directory: $resolvedLedgerPath"
+}
+
+$effort = if ($resolvedModel -match '-(low|medium|high)$') { $Matches[1] } else { 'unknown' }
+$script:Lifecycle = [ordered]@{
+    schema_version = 1
+    assignment_id = $assignmentId
+    attempt = $attempt
+    role = $role
+    mode = $mode
+    policy_revision = [string]$policy.PSObject.Properties['policy_revision'].Value
+    model = $resolvedModel
+    effort = $effort
+    verification_baseline = if ($verificationBaseline) { $verificationBaseline } else { $null }
+    resource_ledger = if ($resolvedLedgerPath) { $resolvedLedgerPath } else { $null }
+    state = 'created'
+    events = @()
+    exit_code = $null
+    termination = 'none'
+    failure_class = 'none'
+    artifacts = [ordered]@{
+        output = $resolvedOutputPath
+        error = $resolvedErrorPath
+        lifecycle = $resolvedLifecyclePath
+    }
+}
+
+function Save-Lifecycle {
+    $json = $script:Lifecycle | ConvertTo-Json -Depth 12
+    [System.IO.File]::WriteAllText($resolvedLifecyclePath, $json, [System.Text.Encoding]::UTF8)
+}
+
+function Set-LifecycleState([string]$state, [hashtable]$details = @{}) {
+    $event = [ordered]@{
+        state = $state
+        at = [DateTime]::UtcNow.ToString('o')
+    }
+    foreach ($key in $details.Keys) { $event[$key] = $details[$key] }
+    $events = [System.Collections.Generic.List[object]]::new()
+    foreach ($existing in @($script:Lifecycle.events)) { $events.Add($existing) }
+    $events.Add([PSCustomObject]$event)
+    $script:Lifecycle.events = @($events)
+    $script:Lifecycle.state = $state
+    foreach ($key in $details.Keys) {
+        if ($script:Lifecycle.Contains($key)) { $script:Lifecycle[$key] = $details[$key] }
+    }
+    Save-Lifecycle
+}
+
+function Test-WorkerOutput {
+    try {
+        $rawOutput = [System.IO.File]::ReadAllText($resolvedOutputPath, [System.Text.Encoding]::UTF8)
+        $parsedOutput = ConvertFrom-Json -InputObject $rawOutput -Depth 20 -ErrorAction Stop
+        $structuredOutputProperty = $parsedOutput.PSObject.Properties['structured_output']
+        return ($parsedOutput -is [System.Management.Automation.PSCustomObject] -and
+            $parsedOutput.status -eq 'success' -and
+            $null -ne $structuredOutputProperty -and
+            $structuredOutputProperty.Value -is [System.Management.Automation.PSCustomObject])
+    } catch {
+        return $false
+    }
+}
+
+function Test-QuotaSignal {
+    try {
+        $outputText = [System.IO.File]::ReadAllText($resolvedOutputPath, [System.Text.Encoding]::UTF8)
+        $errorText = [System.IO.File]::ReadAllText($resolvedErrorPath, [System.Text.Encoding]::UTF8)
+        return (($outputText + "`n" + $errorText) -match '(?i)quota|resource[_ -]?exhausted|rate limit|\b429\b')
+    } catch {
+        return $false
+    }
+}
+
+try {
+    $lifecycleDir = [System.IO.Path]::GetDirectoryName($resolvedLifecyclePath)
+    if ($lifecycleDir -and -not [System.IO.Directory]::Exists($lifecycleDir)) {
+        [System.IO.Directory]::CreateDirectory($lifecycleDir) | Out-Null
+    }
+    Save-Lifecycle
+    Set-LifecycleState 'created'
+} catch {
+    Fail "failed to create lifecycle artifact '$resolvedLifecyclePath': $($_.Exception.Message)" 1
+}
+
+if ($resolvedLedgerPath) {
+    try {
+        $ledgerDir = [System.IO.Path]::GetDirectoryName($resolvedLedgerPath)
+        if ($ledgerDir -and -not [System.IO.Directory]::Exists($ledgerDir)) {
+            [System.IO.Directory]::CreateDirectory($ledgerDir) | Out-Null
+        }
+        if (Test-Path -LiteralPath $resolvedLedgerPath -PathType Leaf) {
+            $ledger = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resolvedLedgerPath, [System.Text.Encoding]::UTF8)) -Depth 12 -ErrorAction Stop
+            if ($ledger.assignment_id -ne $assignmentId -or $ledger.model -ne $resolvedModel -or $ledger.effort -ne $effort) {
+                Fail "resource ledger is pinned to a different assignment, model, or effort"
+            }
+            $ledgerBaselineProperty = $ledger.PSObject.Properties['verification_baseline']
+            if ($ledgerBaselineProperty -and $ledgerBaselineProperty.Value) {
+                if ($verificationBaseline -and $ledgerBaselineProperty.Value -ne $verificationBaseline) {
+                    Fail "resource ledger is pinned to a different verification baseline"
+                }
+                if (-not $verificationBaseline) {
+                    $verificationBaseline = [string]$ledgerBaselineProperty.Value
+                    $script:Lifecycle.verification_baseline = $verificationBaseline
+                    Save-Lifecycle
+                }
+            }
+        } else {
+            $ledger = [ordered]@{
+                schema_version = 1
+                assignment_id = $assignmentId
+                model = $resolvedModel
+                effort = $effort
+                verification_baseline = if ($verificationBaseline) { $verificationBaseline } else { $null }
+                attempts = @()
+            }
+        }
+        $attemptEntry = [ordered]@{
+            attempt = $attempt
+            model = $resolvedModel
+            effort = $effort
+            verification_baseline = if ($verificationBaseline) { $verificationBaseline } else { $null }
+            lifecycle = $resolvedLifecyclePath
+        }
+        $ledgerAttempts = [System.Collections.Generic.List[object]]::new()
+        if ($ledger.PSObject.Properties['attempts']) {
+            foreach ($existingAttempt in @($ledger.attempts)) { $ledgerAttempts.Add($existingAttempt) }
+        }
+        if (@($ledgerAttempts | Where-Object { $_.attempt -eq $attempt }).Count -gt 0) {
+            Fail "resource ledger already contains attempt $attempt"
+        }
+        $ledgerAttempts.Add([PSCustomObject]$attemptEntry)
+        $ledger.attempts = @($ledgerAttempts)
+        [System.IO.File]::WriteAllText($resolvedLedgerPath, ($ledger | ConvertTo-Json -Depth 12), [System.Text.Encoding]::UTF8)
+    } catch {
+        if ($_.Exception.Message -like 'resource ledger*') { throw }
+        Fail "failed to read or write resource ledger '$resolvedLedgerPath': $($_.Exception.Message)" 1
+    }
 }
 
 try {
@@ -414,8 +674,9 @@ try {
 $outFs = $null
 $errFs = $null
 $proc = $null
-$launcherSuccess = $false
+$processStarted = $false
 $workerExitCode = 1
+$terminalStateRecorded = $false
 
 try {
     try {
@@ -456,8 +717,13 @@ try {
     } catch {
         Fail "failed to start agy: $($_.Exception.Message)" 1
     }
+    $processStarted = $true
+    Set-LifecycleState 'started' @{ pid = $proc.Id }
 
     try {
+        $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
+        $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
+        Set-LifecycleState 'running'
         if ($env:FAKE_LAUNCHER_FAIL_POST_START -or $env:OFFLOAD_TEST_FAIL_POST_START) {
             if ($env:FAKE_AGY_STARTED_MARKER) {
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -467,18 +733,91 @@ try {
             }
             throw "simulated post-start failure"
         }
-
-        $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
-        $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
-        $proc.WaitForExit()
+        $deadline = if ($timeoutSeconds -gt 0) { [DateTime]::UtcNow.AddSeconds($timeoutSeconds) } else { $null }
+        $termination = 'natural'
+        while (-not $proc.HasExited) {
+            if ($cancelFile -and (Test-Path -LiteralPath $cancelFile -PathType Leaf)) {
+                $termination = 'canceled'
+                break
+            }
+            if ($deadline -and [DateTime]::UtcNow -ge $deadline) {
+                $termination = 'timeout'
+                break
+            }
+            [System.Threading.Thread]::Sleep(50)
+        }
+        if (-not $proc.HasExited) {
+            $proc.Kill($true)
+            $proc.WaitForExit()
+        } else {
+            $proc.WaitForExit()
+        }
         [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
         $workerExitCode = $proc.ExitCode
-        $launcherSuccess = $true
+        $outFs.Flush()
+        $errFs.Flush()
+        $outFs.Dispose()
+        $outFs = $null
+        $errFs.Dispose()
+        $errFs = $null
+
+        $script:Lifecycle.exit_code = $workerExitCode
+        if ($termination -eq 'canceled') {
+            $script:Lifecycle.termination = 'canceled'
+            $script:Lifecycle.failure_class = 'canceled'
+            Set-LifecycleState 'canceled'
+            $terminalStateRecorded = $true
+            $workerExitCode = 130
+        } elseif ($termination -eq 'timeout') {
+            $script:Lifecycle.termination = 'timeout'
+            $script:Lifecycle.failure_class = 'timeout'
+            Set-LifecycleState 'failed'
+            $terminalStateRecorded = $true
+            $workerExitCode = 124
+        } elseif (Test-QuotaSignal) {
+            $script:Lifecycle.termination = 'quota-handoff'
+            $script:Lifecycle.failure_class = 'quota'
+            Set-LifecycleState 'quota-handoff'
+            $terminalStateRecorded = $true
+            $workerExitCode = 75
+        } elseif ($workerExitCode -ne 0) {
+            $script:Lifecycle.termination = 'worker-exit'
+            $script:Lifecycle.failure_class = 'tool_error'
+            Set-LifecycleState 'failed'
+            $terminalStateRecorded = $true
+        } elseif (-not (Test-WorkerOutput)) {
+            $script:Lifecycle.termination = 'malformed-output'
+            $script:Lifecycle.failure_class = 'malformed_output'
+            Set-LifecycleState 'failed' @{ error = 'worker output is not a successful JSON object with structured_output' }
+            $terminalStateRecorded = $true
+            $workerExitCode = 1
+        } else {
+            $script:Lifecycle.termination = 'natural'
+            Set-LifecycleState 'completed'
+            $terminalStateRecorded = $true
+        }
+        $script:Lifecycle.exit_code = $workerExitCode
+        Save-Lifecycle
     } catch {
-        Fail "launcher failed after starting worker: $($_.Exception.Message)" 1
+        if ($processStarted -and $null -ne $proc) {
+            try {
+                if (-not $proc.HasExited) {
+                    $proc.Kill($true)
+                    $proc.WaitForExit()
+                }
+            } catch { }
+        }
+        $script:Lifecycle.exit_code = if ($null -ne $proc -and $proc.HasExited) { $proc.ExitCode } else { $null }
+        $script:Lifecycle.termination = 'launcher-error'
+        $script:Lifecycle.failure_class = 'tool_error'
+        if (-not $terminalStateRecorded) {
+            Set-LifecycleState 'failed' @{ error = $_.Exception.Message }
+            $terminalStateRecorded = $true
+        }
+        $workerExitCode = 1
     }
 } finally {
-    if ($null -ne $proc -and -not $launcherSuccess) {
+    if ($null -ne $proc -and -not $terminalStateRecorded) {
         try {
             if (-not $proc.HasExited) {
                 $proc.Kill($true)
@@ -489,6 +828,9 @@ try {
         } catch {
             # Best effort kill
         }
+        $script:Lifecycle.termination = 'launcher-error'
+        $script:Lifecycle.failure_class = 'tool_error'
+        try { Set-LifecycleState 'failed' } catch { }
     }
     if ($null -ne $outFs) {
         try {
@@ -505,6 +847,12 @@ try {
             $proc.Dispose()
         } catch { }
     }
+    try {
+        if ($script:Lifecycle.state -in @('completed', 'failed', 'canceled', 'quota-handoff')) {
+            Set-LifecycleState 'retained'
+            Set-LifecycleState 'cleaned'
+        }
+    } catch { }
 }
 
 exit $workerExitCode

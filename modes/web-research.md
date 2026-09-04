@@ -13,6 +13,8 @@ Conducts cited online investigations and multi-angle technical research by dispa
 5. **Filesystem isolation.** Every research run operates in a disposable workspace outside the live repository.
 6. **Model policy and preflight check.** Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. All roles route through `model-policy.json` (`gemini-3.8-flash-high` default). Do not pass `--model` or `--effort` directly.
 
+Every web-research dispatch supplies the shared lifecycle metadata to `run-agy-json`: `--assignment-id`, `--attempt`, `--mode web-research`, `--verification-baseline`, `--resource-ledger`, and a distinct `--lifecycle` path. The launcher waits for worker exit before cleanup, preserves diagnosis evidence for non-successful runs, and hands off quota-exhausted work without waiting for sibling workers. Resume and retry must use the ledger's pinned identity, model, effort, verification baseline, and attempt limit.
+
 ## Worker isolation and mixed repositories
 
 `--mode plan` is a version-sensitive behavioral hint, not a write barrier. The accepted `agy 1.1.25` probe blocked the tested direct write outside the permitted artifact area, but exposed tools and commands mean this is not a guarantee. Similarly, `--add-dir` grants directory access without confining worker writes. Safety and containment rely on strict filesystem isolation:
