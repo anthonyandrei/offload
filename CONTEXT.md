@@ -9,8 +9,12 @@ The calling agent that plans assignments, dispatches workers, and verifies their
 _Avoid_: Controller, parent agent
 
 **Worker**:
-An `agy` process assigned one bounded role and prohibited from dispatching more workers.
+An `agy` process assigned one bounded role. Its process environment is marked as worker context, so the dispatch, launcher, and execution-workspace lifecycle interfaces reject nested assignment, process, or worktree creation.
 _Avoid_: Subagent, child agent
+
+**Dispatch ledger**:
+The orchestrator-owned `offload-dispatch-state-v1` record for admitted assignments. It records parentage, depth, child IDs, budgets, owned and frozen paths, lifecycle state, artifacts, and rejected nested-dispatch events.
+_Avoid_: Worker tree, implicit scheduler state
 
 **Helper family**:
 A shell-native set of scripts that implements the same offload operations and command contracts for one supported shell.

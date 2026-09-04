@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] --output FILE --error FILE '--' agy-arguments...")
+    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE '--' agy-arguments...")
     [Console]::Error.WriteLine("In PowerShell command expressions, quote '--' because PowerShell consumes the bare delimiter before the helper receives it.")
 }
 
@@ -20,10 +20,12 @@ $outputPath = ""
 $errorPath = ""
 $role = ""
 $route = ""
+$timeoutSeconds = $null
 $seenOutput = $false
 $seenError = $false
 $seenRole = $false
 $seenRoute = $false
+$seenTimeout = $false
 $seenDashDash = $false
 $forwardedArgs = [System.Collections.Generic.List[string]]::new()
 
@@ -122,6 +124,27 @@ while ($i -lt $args.Count) {
             Fail "--route requires a route name"
         }
         $seenRoute = $true
+    } elseif ($arg -eq '--timeout-seconds') {
+        if ($seenTimeout) {
+            Fail "duplicate --timeout-seconds option"
+        }
+        $i++
+        if ($i -ge $args.Count) {
+            Show-Usage
+            Fail "--timeout-seconds requires a positive integer"
+        }
+        $timeoutSeconds = [string]$args[$i]
+        $seenTimeout = $true
+    } elseif ($arg.StartsWith('--timeout-seconds=')) {
+        if ($seenTimeout) {
+            Fail "duplicate --timeout-seconds option"
+        }
+        $timeoutSeconds = $arg.Substring('--timeout-seconds='.Length)
+        if ([string]::IsNullOrWhiteSpace($timeoutSeconds)) {
+            Show-Usage
+            Fail "--timeout-seconds requires a positive integer"
+        }
+        $seenTimeout = $true
     } else {
         Show-Usage
         Fail "unknown launcher option: $arg"
@@ -144,6 +167,18 @@ if (-not $seenError -or [string]::IsNullOrWhiteSpace($errorPath)) {
 if (-not $seenRole -or [string]::IsNullOrWhiteSpace($role)) {
     Show-Usage
     Fail "--role is required; specify a role and remove any caller --model flag"
+}
+
+if ($env:OFFLOAD_WORKER_CONTEXT -eq '1') {
+    Fail 'worker process cannot invoke the launcher; only the orchestrator may create worker processes' 126
+}
+
+if ($seenTimeout) {
+    $parsedTimeout = 0
+    if (-not [int]::TryParse($timeoutSeconds, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedTimeout) -or $parsedTimeout -le 0) {
+        Fail '--timeout-seconds must be a positive integer'
+    }
+    $timeoutSeconds = $parsedTimeout
 }
 
 $knownRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
@@ -445,6 +480,7 @@ try {
     $psi.WorkingDirectory = $callerWorkingDirectory
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    $psi.EnvironmentVariables['OFFLOAD_WORKER_CONTEXT'] = '1'
     $psi.ArgumentList.Add('--model')
     $psi.ArgumentList.Add($resolvedModel)
     foreach ($arg in $forwardedArgs) {
@@ -470,9 +506,25 @@ try {
 
         $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
         $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
-        $proc.WaitForExit()
+        $timedOut = $false
+        if ($null -eq $timeoutSeconds) {
+            $proc.WaitForExit()
+        } elseif (-not $proc.WaitForExit([int]$timeoutSeconds * 1000)) {
+            $timedOut = $true
+            try {
+                $proc.Kill($true)
+            } catch [System.InvalidOperationException] {
+                # Process exited during the timeout check.
+            }
+            $proc.WaitForExit()
+        }
         [System.Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
-        $workerExitCode = $proc.ExitCode
+        $workerExitCode = if ($timedOut) { 124 } else { $proc.ExitCode }
+        if ($timedOut) {
+            $timeoutMessage = [System.Text.UTF8Encoding]::new($false).GetBytes("worker exceeded timeout of $timeoutSeconds seconds`n")
+            $errFs.Write($timeoutMessage, 0, $timeoutMessage.Length)
+            $errFs.Flush()
+        }
         $launcherSuccess = $true
     } catch {
         Fail "launcher failed after starting worker: $($_.Exception.Message)" 1

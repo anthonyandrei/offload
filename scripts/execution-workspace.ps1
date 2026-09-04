@@ -865,6 +865,10 @@ if ($args.Count -eq 0) {
 $commandVerb = [string]$args[0]
 $restArgs = if ($args.Count -gt 1) { [string[]]$args[1..($args.Count - 1)] } else { @() }
 
+if ($env:OFFLOAD_WORKER_CONTEXT -eq '1' -and $commandVerb -in @('create', 'verify-export', 'export', 'integrate', 'cleanup')) {
+    Fail 'worker context cannot create or mutate execution worktrees; only the orchestrator may invoke this lifecycle helper' 126
+}
+
 switch ($commandVerb) {
     'create' {
         Cmd-Create $restArgs

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s --role ROLE [--route default|quality-retry] --output FILE --error FILE -- agy-arguments...\n' "$0" >&2
+  printf 'Usage: %s --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE -- agy-arguments...\n' "$0" >&2
 }
 
 fail() {
@@ -14,11 +14,13 @@ output_path=''
 error_path=''
 role=''
 route=''
+timeout_seconds=''
 
 seen_output=false
 seen_error=false
 seen_role=false
 seen_route=false
+seen_timeout=false
 seen_delimiter=false
 worker_args=()
 
@@ -80,6 +82,20 @@ while [ "$#" -gt 0 ]; do
       seen_route=true
       shift
       ;;
+    --timeout-seconds)
+      $seen_timeout && fail 'duplicate --timeout-seconds option'
+      [ "$#" -ge 2 ] || { usage; fail '--timeout-seconds requires a positive integer'; }
+      timeout_seconds="$2"
+      seen_timeout=true
+      shift 2
+      ;;
+    --timeout-seconds=*)
+      $seen_timeout && fail 'duplicate --timeout-seconds option'
+      timeout_seconds="${1#--timeout-seconds=}"
+      [ -n "$timeout_seconds" ] || { usage; fail '--timeout-seconds requires a positive integer'; }
+      seen_timeout=true
+      shift
+      ;;
     --)
       seen_delimiter=true
       shift
@@ -111,6 +127,17 @@ fi
 if ! $seen_role || [ -z "$role" ]; then
   usage
   fail '--role is required; specify a role and remove any caller --model flag'
+fi
+
+if [ "${OFFLOAD_WORKER_CONTEXT:-}" = '1' ]; then
+  fail 'worker process cannot invoke the launcher; only the orchestrator may create worker processes' 126
+fi
+
+if $seen_timeout; then
+  case "$timeout_seconds" in
+    ''|*[!0-9]*) fail '--timeout-seconds must be a positive integer' ;;
+  esac
+  [ "$timeout_seconds" -gt 0 ] || fail '--timeout-seconds must be a positive integer'
 fi
 
 case "$role" in
@@ -273,9 +300,35 @@ fi
 
 mkdir -p "$(dirname "$output_path")" "$(dirname "$error_path")"
 
-set +e
-"$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path"
-worker_exit=$?
-set -e
+if ! $seen_timeout; then
+  set +e
+  OFFLOAD_WORKER_CONTEXT=1 "$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path"
+  worker_exit=$?
+  set -e
+else
+  set +e
+  OFFLOAD_WORKER_CONTEXT=1 "$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path" &
+  worker_pid=$!
+  start_epoch=$(date +%s)
+  timed_out=false
+  while kill -0 "$worker_pid" 2>/dev/null; do
+    now_epoch=$(date +%s)
+    if [ $((now_epoch - start_epoch)) -ge "$timeout_seconds" ]; then
+      timed_out=true
+      kill "$worker_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+  done
+  wait "$worker_pid" 2>/dev/null
+  child_exit=$?
+  if $timed_out; then
+    printf 'worker exceeded timeout of %s seconds\n' "$timeout_seconds" >>"$error_path"
+    worker_exit=124
+  else
+    worker_exit=$child_exit
+  fi
+  set -e
+fi
 
 exit "$worker_exit"
