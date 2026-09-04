@@ -35,6 +35,14 @@ Workers are dispatched by role using `run-agy-json` with `--role <role>`. The la
 
 Acceptance is distinct from process completion: exit 0, a top-level success status, or prose is insufficient. Require a parsed envelope, valid substantive structured output, execution-scope and gate evidence, and an explicit accepted attempt. A gate exit 126 or 127 is classified as `unrunnable` with `verification: not_performed`; preserve the command, exit code, and diagnostic evidence, and do not schedule a quality retry.
 
+Worker processes run through the vendor-neutral adapter boundary in
+[`docs/worker-adapter-contract.md`](../docs/worker-adapter-contract.md).
+Validate its normalized result with `scripts/check-worker-adapter.sh` or
+`scripts/check-worker-adapter.ps1`, using the helper matching the host, before
+accepting artifacts. The adapter reports process, worktree, and artifact
+ownership. The orchestrator alone decides whether verification, publication,
+or cleanup is allowed.
+
 ## Step 1: Split and scout
 
 ### Provisional split

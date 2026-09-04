@@ -28,6 +28,7 @@ cleanup, and acceptance gates.
 - **Filesystem isolation.** Research workflows run inside disposable workspaces outside the live repository. Workers receive only scoped snapshots of declared files, keeping live repository files untouched.
 - **Mechanical verification.** Execution workflows require a clean git working tree, execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path checks, and automated test gates.
 - **Prohibition on nested dispatch.** Assignments instruct workers not to dispatch nested workers.
+- **Vendor-neutral worker adapters.** [`docs/worker-adapter-contract.md`](docs/worker-adapter-contract.md) defines the assignment, lifecycle, capability/model discovery, ownership, and normalized-result boundary. The current AGY launcher is the reference adapter; verification and cleanup remain with the orchestrator.
 
 ## Supported environments
 
@@ -339,12 +340,14 @@ Run the automated acceptance suite to verify contracts across supported helper f
 ```bash
 bash tests/test_research_modes.sh
 bash tests/test_execution_scope.sh
+bash tests/test_worker_adapter_contract.sh
 ```
 
 #### PowerShell
 ```powershell
 pwsh -File tests/test_research_helpers.ps1
 pwsh -File tests/test_execution_scope.ps1
+pwsh -File tests/test_worker_adapter_contract.ps1
 ```
 
 ## Findings about agy

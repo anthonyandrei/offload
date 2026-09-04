@@ -100,6 +100,17 @@ In PowerShell command expressions, always quote the delimiter (`'--'`).
 - `--route default` (default): Resolves `default_model` for the specified role.
 - `--route quality-retry`: Resolves `quality_escalation.model` for that role. If `quality_escalation` is `null` or unconfigured, the launcher rejects the request with exit code 2 before starting `agy`. Never infer an escalation model or replace the route.
 
+## Worker adapter contract
+
+The vendor-neutral boundary for one bounded worker assignment is defined in
+[`docs/worker-adapter-contract.md`](docs/worker-adapter-contract.md). The
+orchestrator owns assignment constraints, verification, publication, and
+cleanup decisions. An adapter owns vendor command syntax, output parsing,
+capability discovery, and model catalog handling, then returns the normalized
+result described by that contract. Validate adapter results with
+`scripts/check-worker-adapter.ps1` or `scripts/check-worker-adapter.sh` before
+running the existing execution scope check and gates.
+
 ## Shared recovery, retry accounting, and failure handling
 
 ### Stable worker IDs and retry ceiling
