@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE [lifecycle options] -- agy-arguments...\n' "$0" >&2
+  printf 'Usage: %s --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE [lifecycle options] [--ledger FILE --assignment-id ID --parent-id ID [--resource-id ID]] -- agy-arguments...\n' "$0" >&2
 }
 
 fail() {
@@ -15,13 +15,16 @@ error_path=''
 role=''
 route=''
 lifecycle_path=''
-assignment_id=''
 attempt=1
 mode='unknown'
 verification_baseline=''
 resource_ledger_path=''
 timeout_seconds=0
 cancel_file=''
+ledger_path=''
+assignment_id=''
+parent_id=''
+resource_id=''
 
 seen_output=false
 seen_error=false
@@ -35,6 +38,10 @@ seen_verification_baseline=false
 seen_resource_ledger=false
 seen_timeout=false
 seen_cancel_file=false
+seen_ledger=false
+seen_assignment=false
+seen_parent=false
+seen_resource=false
 seen_delimiter=false
 worker_args=()
 
@@ -108,20 +115,6 @@ while [ "$#" -gt 0 ]; do
       lifecycle_path="${1#--lifecycle=}"
       [ -n "$lifecycle_path" ] || { usage; fail '--lifecycle requires a path'; }
       seen_lifecycle=true
-      shift
-      ;;
-    --assignment-id)
-      $seen_assignment_id && fail 'duplicate --assignment-id option'
-      [ "$#" -ge 2 ] || { usage; fail '--assignment-id requires an identifier'; }
-      assignment_id="$2"
-      seen_assignment_id=true
-      shift 2
-      ;;
-    --assignment-id=*)
-      $seen_assignment_id && fail 'duplicate --assignment-id option'
-      assignment_id="${1#--assignment-id=}"
-      [ -n "$assignment_id" ] || { usage; fail '--assignment-id requires an identifier'; }
-      seen_assignment_id=true
       shift
       ;;
     --attempt)
@@ -206,6 +199,62 @@ while [ "$#" -gt 0 ]; do
       seen_cancel_file=true
       shift
       ;;
+    --ledger)
+      $seen_ledger && fail 'duplicate --ledger option'
+      [ "$#" -ge 2 ] || { usage; fail '--ledger requires a path'; }
+      ledger_path="$2"
+      seen_ledger=true
+      shift 2
+      ;;
+    --ledger=*)
+      $seen_ledger && fail 'duplicate --ledger option'
+      ledger_path="${1#--ledger=}"
+      [ -n "$ledger_path" ] || { usage; fail '--ledger requires a path'; }
+      seen_ledger=true
+      shift
+      ;;
+    --assignment-id)
+      $seen_assignment_id && fail 'duplicate --assignment-id option'
+      [ "$#" -ge 2 ] || { usage; fail '--assignment-id requires a value'; }
+      assignment_id="$2"
+      seen_assignment_id=true
+      shift 2
+      ;;
+    --assignment-id=*)
+      $seen_assignment_id && fail 'duplicate --assignment-id option'
+      assignment_id="${1#--assignment-id=}"
+      [ -n "$assignment_id" ] || { usage; fail '--assignment-id requires a value'; }
+      seen_assignment_id=true
+      shift
+      ;;
+    --parent-id)
+      $seen_parent && fail 'duplicate --parent-id option'
+      [ "$#" -ge 2 ] || { usage; fail '--parent-id requires a value'; }
+      parent_id="$2"
+      seen_parent=true
+      shift 2
+      ;;
+    --parent-id=*)
+      $seen_parent && fail 'duplicate --parent-id option'
+      parent_id="${1#--parent-id=}"
+      [ -n "$parent_id" ] || { usage; fail '--parent-id requires a value'; }
+      seen_parent=true
+      shift
+      ;;
+    --resource-id)
+      $seen_resource && fail 'duplicate --resource-id option'
+      [ "$#" -ge 2 ] || { usage; fail '--resource-id requires a value'; }
+      resource_id="$2"
+      seen_resource=true
+      shift 2
+      ;;
+    --resource-id=*)
+      $seen_resource && fail 'duplicate --resource-id option'
+      resource_id="${1#--resource-id=}"
+      [ -n "$resource_id" ] || { usage; fail '--resource-id requires a value'; }
+      seen_resource=true
+      shift
+      ;;
     --)
       seen_delimiter=true
       shift
@@ -248,6 +297,15 @@ if $seen_timeout; then
     ''|*[!0-9]*) fail '--timeout-seconds must be a positive integer' ;;
   esac
   [ "$timeout_seconds" -gt 0 ] || fail '--timeout-seconds must be a positive integer'
+fi
+
+if $seen_ledger || $seen_assignment_id || $seen_parent || $seen_resource; then
+  $seen_ledger && [ -n "$ledger_path" ] || fail '--ledger is required when resource ledger registration is enabled'
+  $seen_assignment_id && [ -n "$assignment_id" ] || fail '--assignment-id is required when resource ledger registration is enabled'
+  $seen_parent && [ -n "$parent_id" ] || fail '--parent-id is required when resource ledger registration is enabled'
+  if ! $seen_resource; then
+    resource_id="worker:$assignment_id"
+  fi
 fi
 
 case "$role" in
@@ -298,6 +356,7 @@ done
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 policy_file="$repo_root/model-policy.json"
+resource_ledger="$script_dir/resource-ledger.sh"
 
 if [ ! -f "$policy_file" ]; then
   fail "model policy file not found at: $policy_file"
@@ -513,8 +572,23 @@ if [ -n "$resource_ledger_path" ]; then
   mv -f "$resource_ledger_path.tmp" "$resource_ledger_path"
 fi
 
-: > "$output_path"
-: > "$error_path"
+
+worker_pid=''
+worker_done=false
+ledger_registered=false
+
+update_ledger() {
+  local state="$1"
+  local error_message="${2:-}"
+  if $ledger_registered; then
+    if [ -n "$error_message" ]; then
+      "$resource_ledger" update --ledger "$ledger_path" --resource-id "$resource_id" --state "$state" --error "$error_message" >/dev/null 2>&1 || true
+    else
+      "$resource_ledger" update --ledger "$ledger_path" --resource-id "$resource_id" --state "$state" >/dev/null 2>&1 || true
+    fi
+    ledger_registered=false
+  fi
+}
 
 finalize_lifecycle() {
   if [ -f "$lifecycle_path" ]; then
@@ -531,7 +605,18 @@ finalize_lifecycle() {
     esac
   fi
 }
-trap finalize_lifecycle EXIT
+
+cleanup_worker() {
+  if [ -n "$worker_pid" ] && ! $worker_done && kill -0 "$worker_pid" 2>/dev/null; then
+    kill "$worker_pid" 2>/dev/null || true
+    wait "$worker_pid" 2>/dev/null || true
+  fi
+  if $ledger_registered; then
+    update_ledger failed 'worker or launcher was interrupted'
+  fi
+  finalize_lifecycle
+}
+trap cleanup_worker EXIT
 
 if [ -n "$cancel_file" ] && [ -f "$cancel_file" ]; then
   update_lifecycle 130 canceled canceled
@@ -548,6 +633,23 @@ record_state running
 termination='natural'
 trap 'termination=canceled; kill "$worker_pid" 2>/dev/null || true' INT TERM
 start_time=$(date +%s)
+
+if $seen_ledger; then
+  process_start=''
+  if process_start=$(ps -o lstart= -p "$worker_pid" 2>/dev/null); then
+    process_start="$(printf '%s' "$process_start" | sed 's/^ *//;s/ *$//')"
+  else
+    process_start=''
+  fi
+  register_args=(register --ledger "$ledger_path" --assignment-id "$assignment_id" --parent-id "$parent_id" --resource-type worker-process --process-id "$worker_pid" --owner-marker agy-worker=agy-worker-v1 --resource-id "$resource_id" --state active)
+  [ -n "$process_start" ] && register_args+=(--process-start-time "$process_start")
+  if ! "$resource_ledger" "${register_args[@]}" >/dev/null; then
+    cleanup_worker
+    fail 'failed to register worker process in resource ledger' 1
+  fi
+  ledger_registered=true
+fi
+
 while kill -0 "$worker_pid" 2>/dev/null; do
   if [ -n "$cancel_file" ] && [ -f "$cancel_file" ]; then
     termination='canceled'
@@ -561,37 +663,45 @@ while kill -0 "$worker_pid" 2>/dev/null; do
   fi
   sleep 0.05
 done
+
 set +e
 wait "$worker_pid"
 worker_exit=$?
 set -e
+worker_done=true
 
 if [ "$termination" = 'canceled' ]; then
   update_lifecycle 130 canceled canceled
   record_state canceled
+  update_ledger cancelled 'worker canceled'
   exit 130
 fi
 if [ "$termination" = 'timeout' ]; then
   update_lifecycle 124 timeout timeout
   record_state failed
+  update_ledger timed_out 'worker timed out'
   exit 124
 fi
 if grep -Eiq 'quota|resource[_ -]?exhausted|rate limit|(^|[^0-9])429([^0-9]|$)' "$output_path" "$error_path" 2>/dev/null; then
   update_lifecycle 75 quota-handoff quota
   record_state quota-handoff
+  update_ledger quota_handoff 'quota handoff'
   exit 75
 fi
 if [ "$worker_exit" -ne 0 ]; then
   update_lifecycle "$worker_exit" worker-exit tool_error
   record_state failed
+  update_ledger failed 'worker or launcher failed'
   exit "$worker_exit"
 fi
 if ! jq -e 'type == "object" and .status == "success" and (.structured_output | type) == "object"' "$output_path" >/dev/null 2>&1; then
   update_lifecycle 1 malformed-output malformed_output
   record_state failed
+  update_ledger failed 'worker output is malformed'
   exit 1
 fi
 update_lifecycle 0 natural none
 record_state completed
+update_ledger completed
 
 exit 0

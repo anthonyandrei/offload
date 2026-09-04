@@ -13,11 +13,12 @@ $script:ManifestMarker = 'offload-execution-manifest-v1'
 $script:ScriptDir = Split-Path -Parent $PSCommandPath
 $script:RootDir = Split-Path -Parent $script:ScriptDir
 $script:ScopeChecker = Join-Path $script:ScriptDir 'check-execution-scope.ps1'
+$script:ResourceLedger = Join-Path $script:ScriptDir 'resource-ledger.ps1'
 
 function Show-Usage {
     [Console]::Error.WriteLine(@"
 Usage:
-  execution-workspace.ps1 create --source-repo <path> --task-id <id> --baseline <rev> --owned <path> [--owned <path> ...] [--frozen <path> ...] [--manifest <path>] [--workspace-dir <path>]
+  execution-workspace.ps1 create --source-repo <path> --task-id <id> --baseline <rev> --owned <path> [--owned <path> ...] [--frozen <path> ...] [--manifest <path>] [--workspace-dir <path>] [--ledger <path>]
   execution-workspace.ps1 verify-export --manifest <path> [--patch-output <path>]
   execution-workspace.ps1 integrate --manifest <path> [--target-repo <path>]
   execution-workspace.ps1 cleanup --manifest <path> [--status <success|failed|retain>]
@@ -130,6 +131,7 @@ function Cmd-Create([string[]]$cmdArgs) {
     $frozen = [System.Collections.Generic.List[string]]::new()
     $manifestPath = ""
     $workspaceDir = ""
+    $ledgerPath = ""
 
     $i = 0
     while ($i -lt $cmdArgs.Count) {
@@ -176,6 +178,12 @@ function Cmd-Create([string[]]$cmdArgs) {
             $workspaceDir = [string]$cmdArgs[$i]
         } elseif ($arg.StartsWith('--workspace-dir=')) {
             $workspaceDir = $arg.Substring('--workspace-dir='.Length)
+        } elseif ($arg -eq '--ledger') {
+            $i++
+            if ($i -ge $cmdArgs.Count) { Fail "--ledger requires a path" }
+            $ledgerPath = [string]$cmdArgs[$i]
+        } elseif ($arg.StartsWith('--ledger=')) {
+            $ledgerPath = $arg.Substring('--ledger='.Length)
         } elseif ($arg -eq '-h' -or $arg -eq '--help') {
             Show-Usage
             exit 0
@@ -265,6 +273,14 @@ function Cmd-Create([string[]]$cmdArgs) {
         Fail "manifest path must be outside the worker checkout: $manifestPath"
     }
 
+    if ([string]::IsNullOrWhiteSpace($ledgerPath)) {
+        $ledgerPath = [System.IO.Path]::Combine((Split-Path -Parent $canonManifest), 'resource-ledger.json')
+    }
+    $canonLedger = Canonicalize-Path $ledgerPath
+    if (Test-PathWithin $canonLedger $canonWorkspace) {
+        Fail "ledger path must be outside the worker checkout: $ledgerPath"
+    }
+
     $manifestDir = Split-Path -Parent $canonManifest
     if (-not (Test-Path -LiteralPath $manifestDir -PathType Container)) {
         [System.IO.Directory]::CreateDirectory($manifestDir) | Out-Null
@@ -280,6 +296,10 @@ function Cmd-Create([string[]]$cmdArgs) {
             Fail "workspace directory already exists and is not empty: $workspaceDir"
         }
     }
+
+    $resourceId = "worktree:$taskId"
+    & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger register --ledger $canonLedger --assignment-id $taskId --parent-id $canonRepo --parent-path $canonRepo --resource-type git-worktree --path $canonWorkspace --owner-marker "$($script:MarkerName)=$($script:MarkerContent)" --resource-id $resourceId --state registered | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "failed to register execution workspace in resource ledger" }
 
     # Add git worktree
     $resAdd = Run-GitCommand -WorkingDir $canonRepo -GitArgs @('worktree', 'add', '--detach', $canonWorkspace, $resolvedBaseline)
@@ -318,6 +338,9 @@ function Cmd-Create([string[]]$cmdArgs) {
         [System.IO.File]::AppendAllText($excludePath, "`n$($script:MarkerName)`n", [System.Text.UTF8Encoding]::new($false))
     }
 
+    & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $canonLedger --resource-id $resourceId --state active | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "failed to activate execution workspace in resource ledger" }
+
     $manifestData = [ordered]@{
         schema_version = 1
         marker         = $script:ManifestMarker
@@ -328,6 +351,8 @@ function Cmd-Create([string[]]$cmdArgs) {
         baseline       = $resolvedBaseline
         owned_paths    = @($normOwned)
         frozen_paths   = @($normFrozen)
+        ledger_path    = $canonLedger
+        resource_id    = $resourceId
         status         = "created"
         created_at     = Get-IsoTimestamp
     }
@@ -547,6 +572,8 @@ function Cmd-VerifyExport([string[]]$cmdArgs) {
         baseline       = $manifest.baseline
         owned_paths    = @($manifest.owned_paths)
         frozen_paths   = @($manifest.frozen_paths)
+        ledger_path    = if ($manifest.PSObject.Properties['ledger_path']) { $manifest.ledger_path } else { $null }
+        resource_id    = if ($manifest.PSObject.Properties['resource_id']) { $manifest.resource_id } else { $null }
         status         = "exported"
         patch_file     = $canonPatch
         patch_digest   = $patchDigest
@@ -608,6 +635,8 @@ function Cmd-Integrate([string[]]$cmdArgs) {
     $patchDigest = [string]$manifest.patch_digest
     $sourceRepo = Canonicalize-Path $manifest.source_repo
     $taskId = [string]$manifest.task_id
+    $ledgerPath = if ($manifest.PSObject.Properties['ledger_path']) { [string]$manifest.ledger_path } else { "" }
+    $resourceId = if ($manifest.PSObject.Properties['resource_id']) { [string]$manifest.resource_id } else { "" }
 
     if ([string]::IsNullOrWhiteSpace($patchFile) -or [string]::IsNullOrWhiteSpace($patchDigest)) {
         Fail "manifest does not record an exported patch file or digest; run verify-export first"
@@ -685,6 +714,8 @@ function Cmd-Integrate([string[]]$cmdArgs) {
         baseline       = $manifest.baseline
         owned_paths    = @($manifest.owned_paths)
         frozen_paths   = @($manifest.frozen_paths)
+        ledger_path    = if ($manifest.PSObject.Properties['ledger_path']) { $manifest.ledger_path } else { $null }
+        resource_id    = if ($manifest.PSObject.Properties['resource_id']) { $manifest.resource_id } else { $null }
         status         = "integrated"
         patch_file     = $manifest.patch_file
         patch_digest   = $manifest.patch_digest
@@ -695,6 +726,11 @@ function Cmd-Integrate([string[]]$cmdArgs) {
 
     $manifestJson = $manifestData | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($canonManifest, "$manifestJson`n", [System.Text.UTF8Encoding]::new($false))
+
+    if ($ledgerPath -and $resourceId) {
+        & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $ledgerPath --resource-id $resourceId --state completed --allow-dirty true | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "failed to mark integrated execution workspace in resource ledger" }
+    }
 
     [Console]::Out.WriteLine("Successfully integrated candidate $taskId into $canonTarget")
 }
@@ -747,6 +783,8 @@ function Cmd-Cleanup([string[]]$cmdArgs) {
     $sourceRepo = [string]$manifest.source_repo
     $taskId = [string]$manifest.task_id
     $patchFile = if ($manifest.PSObject.Properties['patch_file']) { [string]$manifest.patch_file } else { "" }
+    $ledgerPath = if ($manifest.PSObject.Properties['ledger_path']) { [string]$manifest.ledger_path } else { "" }
+    $resourceId = if ($manifest.PSObject.Properties['resource_id']) { [string]$manifest.resource_id } else { "" }
 
     if ([string]::IsNullOrWhiteSpace($workspaceDir)) { Fail "manifest does not specify workspace_dir" }
     if ([string]::IsNullOrWhiteSpace($sourceRepo)) { Fail "manifest does not specify source_repo" }
@@ -756,11 +794,17 @@ function Cmd-Cleanup([string[]]$cmdArgs) {
     }
 
     if ($status -in @('failed', 'retain')) {
+        if ($ledgerPath -and $resourceId) {
+            & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $ledgerPath --resource-id $resourceId --state retained | Out-Null
+        }
         [Console]::Out.WriteLine("Candidate $taskId marked $status; retaining workspace at $workspaceDir")
         exit 0
     }
 
     if (-not (Test-Path -LiteralPath $workspaceDir -PathType Container)) {
+        if ($ledgerPath -and $resourceId) {
+            & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger cleanup --ledger $ledgerPath --resource-id $resourceId | Out-Null
+        }
         Run-GitCommand -WorkingDir $sourceRepo -GitArgs @('worktree', 'prune') | Out-Null
         Remove-Item -LiteralPath $canonManifest -Force -ErrorAction SilentlyContinue
         if (-not [string]::IsNullOrWhiteSpace($patchFile)) {
@@ -772,6 +816,21 @@ function Cmd-Cleanup([string[]]$cmdArgs) {
 
     $canonWorkspace = Canonicalize-Path $workspaceDir
     $canonSource = Canonicalize-Path $sourceRepo
+
+    if ($ledgerPath -and $resourceId) {
+        & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $ledgerPath --resource-id $resourceId --state cleanup_pending | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "failed to mark execution workspace cleanup-pending in resource ledger" }
+        $ledgerResult = & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger cleanup --ledger $ledgerPath --resource-id $resourceId | ConvertFrom-Json
+        if ($ledgerResult.retained -eq $true) {
+            Fail "execution workspace retained for review: $canonWorkspace"
+        }
+        if ($ledgerResult.removed -eq $true) {
+            if (Test-Path -LiteralPath $canonManifest) { Remove-Item -LiteralPath $canonManifest -Force -ErrorAction SilentlyContinue }
+            if ($patchFile -and (Test-Path -LiteralPath $patchFile)) { Remove-Item -LiteralPath $patchFile -Force -ErrorAction SilentlyContinue }
+            [Console]::Out.WriteLine("Cleaned up manifest-owned workspace: $canonWorkspace")
+            exit 0
+        }
+    }
 
     # Safety bounds
     $pathRoot = [System.IO.Path]::GetPathRoot($canonWorkspace)

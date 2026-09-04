@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE [lifecycle options] '--' agy-arguments...")
+    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE [lifecycle options] [--ledger FILE --assignment-id ID --parent-id ID [--resource-id ID]] '--' agy-arguments...")
     [Console]::Error.WriteLine("In PowerShell command expressions, quote '--' because PowerShell consumes the bare delimiter before the helper receives it.")
 }
 
@@ -21,13 +21,16 @@ $errorPath = ""
 $role = ""
 $route = ""
 $lifecyclePath = ""
-$assignmentId = ""
 $attempt = 1
 $mode = "unknown"
 $verificationBaseline = ""
 $resourceLedgerPath = ""
 $timeoutSeconds = 0
 $cancelFile = ""
+$ledgerPath = ""
+$assignmentId = ""
+$parentId = ""
+$resourceId = ""
 $seenOutput = $false
 $seenError = $false
 $seenRole = $false
@@ -41,6 +44,9 @@ $seenResourceLedger = $false
 $seenTimeout = $false
 $seenCancelFile = $false
 $seenDashDash = $false
+$seenLedger = $false
+$seenParent = $false
+$seenResource = $false
 $forwardedArgs = [System.Collections.Generic.List[string]]::new()
 
 $i = 0
@@ -149,17 +155,6 @@ while ($i -lt $args.Count) {
         $lifecyclePath = $arg.Substring(12)
         if ([string]::IsNullOrWhiteSpace($lifecyclePath)) { Show-Usage; Fail "--lifecycle requires a path" }
         $seenLifecycle = $true
-    } elseif ($arg -eq '--assignment-id') {
-        if ($seenAssignmentId) { Fail "duplicate --assignment-id option" }
-        $i++
-        if ($i -ge $args.Count) { Show-Usage; Fail "--assignment-id requires an identifier" }
-        $assignmentId = [string]$args[$i]
-        $seenAssignmentId = $true
-    } elseif ($arg.StartsWith('--assignment-id=')) {
-        if ($seenAssignmentId) { Fail "duplicate --assignment-id option" }
-        $assignmentId = $arg.Substring(16)
-        if ([string]::IsNullOrWhiteSpace($assignmentId)) { Show-Usage; Fail "--assignment-id requires an identifier" }
-        $seenAssignmentId = $true
     } elseif ($arg -eq '--attempt') {
         if ($seenAttempt) { Fail "duplicate --attempt option" }
         $i++
@@ -224,16 +219,50 @@ while ($i -lt $args.Count) {
         $cancelFile = $arg.Substring(14)
         if ([string]::IsNullOrWhiteSpace($cancelFile)) { Show-Usage; Fail "--cancel-file requires a path" }
         $seenCancelFile = $true
-    } elseif ($arg -eq '--timeout-seconds') {
-        if ($seenTimeout) { Fail "duplicate --timeout-seconds option" }
+    } elseif ($arg -eq '--ledger') {
+        if ($seenLedger) { Fail "duplicate --ledger option" }
         $i++
-        if ($i -ge $args.Count) { Show-Usage; Fail "--timeout-seconds requires a positive number" }
-        if (-not [int]::TryParse([string]$args[$i], [ref]$timeoutSeconds)) { Fail "--timeout-seconds requires a positive number" }
-        $seenTimeout = $true
-    } elseif ($arg.StartsWith('--timeout-seconds=')) {
-        if ($seenTimeout) { Fail "duplicate --timeout-seconds option" }
-        if (-not [int]::TryParse($arg.Substring(18), [ref]$timeoutSeconds)) { Fail "--timeout-seconds requires a positive number" }
-        $seenTimeout = $true
+        if ($i -ge $args.Count) { Show-Usage; Fail "--ledger requires a path" }
+        $ledgerPath = [string]$args[$i]
+        $seenLedger = $true
+    } elseif ($arg.StartsWith('--ledger=')) {
+        if ($seenLedger) { Fail "duplicate --ledger option" }
+        $ledgerPath = $arg.Substring(9)
+        if ([string]::IsNullOrWhiteSpace($ledgerPath)) { Show-Usage; Fail "--ledger requires a path" }
+        $seenLedger = $true
+    } elseif ($arg -eq '--assignment-id') {
+        if ($seenAssignmentId) { Fail "duplicate --assignment-id option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--assignment-id requires a value" }
+        $assignmentId = [string]$args[$i]
+        $seenAssignmentId = $true
+    } elseif ($arg.StartsWith('--assignment-id=')) {
+        if ($seenAssignmentId) { Fail "duplicate --assignment-id option" }
+        $assignmentId = $arg.Substring(16)
+        if ([string]::IsNullOrWhiteSpace($assignmentId)) { Show-Usage; Fail "--assignment-id requires a value" }
+        $seenAssignmentId = $true
+    } elseif ($arg -eq '--parent-id') {
+        if ($seenParent) { Fail "duplicate --parent-id option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--parent-id requires a value" }
+        $parentId = [string]$args[$i]
+        $seenParent = $true
+    } elseif ($arg.StartsWith('--parent-id=')) {
+        if ($seenParent) { Fail "duplicate --parent-id option" }
+        $parentId = $arg.Substring(12)
+        if ([string]::IsNullOrWhiteSpace($parentId)) { Show-Usage; Fail "--parent-id requires a value" }
+        $seenParent = $true
+    } elseif ($arg -eq '--resource-id') {
+        if ($seenResource) { Fail "duplicate --resource-id option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--resource-id requires a value" }
+        $resourceId = [string]$args[$i]
+        $seenResource = $true
+    } elseif ($arg.StartsWith('--resource-id=')) {
+        if ($seenResource) { Fail "duplicate --resource-id option" }
+        $resourceId = $arg.Substring(14)
+        if ([string]::IsNullOrWhiteSpace($resourceId)) { Show-Usage; Fail "--resource-id requires a value" }
+        $seenResource = $true
     } else {
         Show-Usage
         Fail "unknown launcher option: $arg"
@@ -268,6 +297,13 @@ if ($seenTimeout) {
         Fail '--timeout-seconds must be a positive integer'
     }
     $timeoutSeconds = $parsedTimeout
+}
+
+if ($seenLedger -or $seenAssignmentId -or $seenParent -or $seenResource) {
+    if (-not $seenLedger -or [string]::IsNullOrWhiteSpace($ledgerPath)) { Fail "--ledger is required when resource ledger registration is enabled" }
+    if (-not $seenAssignmentId -or [string]::IsNullOrWhiteSpace($assignmentId)) { Fail "--assignment-id is required when resource ledger registration is enabled" }
+    if (-not $seenParent -or [string]::IsNullOrWhiteSpace($parentId)) { Fail "--parent-id is required when resource ledger registration is enabled" }
+    if ([string]::IsNullOrWhiteSpace($resourceId)) { $resourceId = "worker:$assignmentId" }
 }
 
 $knownRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
@@ -520,7 +556,7 @@ if (-not $resolvedAgy) {
 $resolvedOutputPath = [System.IO.Path]::GetFullPath($outputPath)
 $resolvedErrorPath = [System.IO.Path]::GetFullPath($errorPath)
 $resolvedLifecyclePath = [System.IO.Path]::GetFullPath($lifecyclePath)
-$resolvedLedgerPath = if ([string]::IsNullOrWhiteSpace($resourceLedgerPath)) { "" } else { [System.IO.Path]::GetFullPath($resourceLedgerPath) }
+$resolvedResourceLedgerPath = if ([string]::IsNullOrWhiteSpace($resourceLedgerPath)) { "" } else { [System.IO.Path]::GetFullPath($resourceLedgerPath) }
 
 $pathComparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
 
@@ -539,8 +575,22 @@ if ([System.IO.Directory]::Exists($resolvedErrorPath)) {
 if ([System.IO.Directory]::Exists($resolvedLifecyclePath)) {
     Fail "lifecycle destination is an existing directory: $resolvedLifecyclePath"
 }
-if ($resolvedLedgerPath -and [System.IO.Directory]::Exists($resolvedLedgerPath)) {
-    Fail "resource ledger destination is an existing directory: $resolvedLedgerPath"
+if ($resolvedResourceLedgerPath -and [System.IO.Directory]::Exists($resolvedResourceLedgerPath)) {
+    Fail "resource ledger destination is an existing directory: $resolvedResourceLedgerPath"
+}
+
+try {
+    $outDir = [System.IO.Path]::GetDirectoryName($resolvedOutputPath)
+    if (-not [string]::IsNullOrEmpty($outDir) -and -not [System.IO.Directory]::Exists($outDir)) {
+        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
+    }
+
+    $errDir = [System.IO.Path]::GetDirectoryName($resolvedErrorPath)
+    if (-not [string]::IsNullOrEmpty($errDir) -and -not [System.IO.Directory]::Exists($errDir)) {
+        [System.IO.Directory]::CreateDirectory($errDir) | Out-Null
+    }
+} catch {
+    Fail "failed to create parent directory for output or error: $($_.Exception.Message)" 1
 }
 
 $effort = if ($resolvedModel -match '-(low|medium|high)$') { $Matches[1] } else { 'unknown' }
@@ -554,7 +604,7 @@ $script:Lifecycle = [ordered]@{
     model = $resolvedModel
     effort = $effort
     verification_baseline = if ($verificationBaseline) { $verificationBaseline } else { $null }
-    resource_ledger = if ($resolvedLedgerPath) { $resolvedLedgerPath } else { $null }
+    resource_ledger = if ($resolvedResourceLedgerPath) { $resolvedResourceLedgerPath } else { $null }
     state = 'created'
     events = @()
     exit_code = $null
@@ -624,14 +674,14 @@ try {
     Fail "failed to create lifecycle artifact '$resolvedLifecyclePath': $($_.Exception.Message)" 1
 }
 
-if ($resolvedLedgerPath) {
+if ($resolvedResourceLedgerPath) {
     try {
-        $ledgerDir = [System.IO.Path]::GetDirectoryName($resolvedLedgerPath)
+        $ledgerDir = [System.IO.Path]::GetDirectoryName($resolvedResourceLedgerPath)
         if ($ledgerDir -and -not [System.IO.Directory]::Exists($ledgerDir)) {
             [System.IO.Directory]::CreateDirectory($ledgerDir) | Out-Null
         }
-        if (Test-Path -LiteralPath $resolvedLedgerPath -PathType Leaf) {
-            $ledger = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resolvedLedgerPath, [System.Text.Encoding]::UTF8)) -Depth 12 -ErrorAction Stop
+        if (Test-Path -LiteralPath $resolvedResourceLedgerPath -PathType Leaf) {
+            $ledger = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($resolvedResourceLedgerPath, [System.Text.Encoding]::UTF8)) -Depth 12 -ErrorAction Stop
             if ($ledger.assignment_id -ne $assignmentId -or $ledger.model -ne $resolvedModel -or $ledger.effort -ne $effort) {
                 Fail "resource ledger is pinned to a different assignment, model, or effort"
             }
@@ -672,25 +722,11 @@ if ($resolvedLedgerPath) {
         }
         $ledgerAttempts.Add([PSCustomObject]$attemptEntry)
         $ledger.attempts = @($ledgerAttempts)
-        [System.IO.File]::WriteAllText($resolvedLedgerPath, ($ledger | ConvertTo-Json -Depth 12), [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText($resolvedResourceLedgerPath, ($ledger | ConvertTo-Json -Depth 12), [System.Text.Encoding]::UTF8)
     } catch {
         if ($_.Exception.Message -like 'resource ledger*') { throw }
-        Fail "failed to read or write resource ledger '$resolvedLedgerPath': $($_.Exception.Message)" 1
+        Fail "failed to read or write resource ledger '$resolvedResourceLedgerPath': $($_.Exception.Message)" 1
     }
-}
-
-try {
-    $outDir = [System.IO.Path]::GetDirectoryName($resolvedOutputPath)
-    if (-not [string]::IsNullOrEmpty($outDir) -and -not [System.IO.Directory]::Exists($outDir)) {
-        [System.IO.Directory]::CreateDirectory($outDir) | Out-Null
-    }
-
-    $errDir = [System.IO.Path]::GetDirectoryName($resolvedErrorPath)
-    if (-not [string]::IsNullOrEmpty($errDir) -and -not [System.IO.Directory]::Exists($errDir)) {
-        [System.IO.Directory]::CreateDirectory($errDir) | Out-Null
-    }
-} catch {
-    Fail "failed to create parent directory for output or error: $($_.Exception.Message)" 1
 }
 
 $outFs = $null
@@ -699,6 +735,8 @@ $proc = $null
 $processStarted = $false
 $workerExitCode = 1
 $terminalStateRecorded = $false
+$ledgerRegistered = $false
+$ledgerScript = Join-Path $PSScriptRoot 'resource-ledger.ps1'
 
 try {
     try {
@@ -742,6 +780,16 @@ try {
     }
     $processStarted = $true
     Set-LifecycleState 'started' @{ pid = $proc.Id }
+
+    if ($seenLedger) {
+        $startTime = $null
+        try { $startTime = $proc.StartTime.ToUniversalTime().ToString('o') } catch { }
+        $ledgerArgs = @('register', '--ledger', $ledgerPath, '--assignment-id', $assignmentId, '--parent-id', $parentId, '--resource-type', 'worker-process', '--process-id', [string]$proc.Id, '--owner-marker', 'agy-worker=agy-worker-v1', '--resource-id', $resourceId, '--state', 'active')
+        if ($null -ne $startTime) { $ledgerArgs += @('--process-start-time', $startTime) }
+        & pwsh -NoProfile -NonInteractive -File $ledgerScript @ledgerArgs | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "failed to register worker process in resource ledger" }
+        $ledgerRegistered = $true
+    }
 
     try {
         $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
@@ -855,20 +903,33 @@ try {
         $script:Lifecycle.failure_class = 'tool_error'
         try { Set-LifecycleState 'failed' } catch { }
     }
-    if ($null -ne $outFs) {
+    if ($ledgerRegistered) {
+        $ledgerState = 'failed'
+        if ($script:Lifecycle.termination -eq 'timeout') {
+            $ledgerState = 'timed_out'
+        } elseif ($script:Lifecycle.termination -eq 'canceled') {
+            $ledgerState = 'cancelled'
+        } elseif ($script:Lifecycle.termination -eq 'quota-handoff') {
+            $ledgerState = 'quota_handoff'
+        } elseif ($script:Lifecycle.state -eq 'completed' -and $workerExitCode -eq 0) {
+            $ledgerState = 'completed'
+        }
         try {
-            $outFs.Dispose()
-        } catch { }
+            $updateArgs = @('update', '--ledger', $ledgerPath, '--resource-id', $resourceId, '--state', $ledgerState)
+            if ($ledgerState -eq 'failed') { $updateArgs += @('--error', 'worker or launcher failed') }
+            & pwsh -NoProfile -NonInteractive -File $ledgerScript @updateArgs | Out-Null
+        } catch {
+            # The worker result remains authoritative; reconciliation can repair a failed ledger update.
+        }
+    }
+    if ($null -ne $outFs) {
+        try { $outFs.Dispose() } catch { }
     }
     if ($null -ne $errFs) {
-        try {
-            $errFs.Dispose()
-        } catch { }
+        try { $errFs.Dispose() } catch { }
     }
     if ($null -ne $proc) {
-        try {
-            $proc.Dispose()
-        } catch { }
+        try { $proc.Dispose() } catch { }
     }
     try {
         if ($script:Lifecycle.state -in @('completed', 'failed', 'canceled', 'quota-handoff')) {
