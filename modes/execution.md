@@ -20,6 +20,8 @@ Check these before dispatching writing tasks:
 5. **Model policy and preflight check.** Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching the first worker. All workers route through `model-policy.json`.
 6. **Workspace isolation principle.** Writing workers are never dispatched directly into the caller's main checkout (`<repo root>`). All candidate mutations occur in isolated candidate worktrees created at the recorded baseline revision via `execution-workspace create`.
 
+Every execution dispatch supplies the shared lifecycle metadata to `run-agy-json`: `--assignment-id`, `--attempt`, `--mode execution`, `--verification-baseline`, `--resource-ledger`, and a distinct `--lifecycle` path. The launcher records the common state machine, waits for the worker to exit before cleanup, and records the exit result. Timeout and cancellation terminate the worker before cleanup; quota exhaustion hands off unfinished work immediately. Retries and resume read the resource ledger and preserve the pinned assignment, model, effort, verification baseline, and attempt limit.
+
 ## Roles and models
 
 Workers are dispatched by role using `run-agy-json` with `--role <role>`. The launcher resolves models dynamically from `model-policy.json`. Do not pass `--model` or `--effort` directly. Refer to [`SKILL.md`](../SKILL.md) for the shared model routing, preflight, and recovery contract.

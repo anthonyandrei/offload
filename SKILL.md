@@ -78,8 +78,8 @@ Offload routes all workers through the repository-root `model-policy.json`. Laun
 
 ### Launcher invocation
 
-- **POSIX shells**: `"$OFFLOAD_ROOT/scripts/run-agy-json.sh" --role <role> [--route <default|quality-retry>] --output <out> --error <err> -- <agy args...>`
-- **PowerShell**: `& "$OffloadRoot/scripts/run-agy-json.ps1" --role <role> [--route <default|quality-retry>] --output <out> --error <err> '--' <agy args...>`
+- **POSIX shells**: `"$OFFLOAD_ROOT/scripts/run-agy-json.sh" --role <role> [--route <default|quality-retry>] --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> -- <agy args...>`
+- **PowerShell**: `& "$OffloadRoot/scripts/run-agy-json.ps1" --role <role> [--route <default|quality-retry>] --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> '--' <agy args...>`
 
 In PowerShell command expressions, always quote the delimiter (`'--'`).
 
@@ -112,6 +112,18 @@ result described by that contract. Validate adapter results with
 running the existing execution scope check and gates.
 
 ## Shared recovery, retry accounting, and failure handling
+
+### Worker lifecycle contract
+
+Both native launchers write the same lifecycle artifact for every dispatched worker. The state machine is:
+
+`created -> started -> running -> completed|failed|canceled|quota-handoff -> retained -> cleaned`
+
+`started` includes the child process ID. The launcher waits for the child to exit, records its exit code, and only then records `retained` and `cleaned`. Timeout uses `failed` with `failure_class: "timeout"`; cancellation uses `canceled`; explicit quota diagnostics use `quota-handoff`. Output, error, lifecycle, and resource-ledger paths remain available as diagnosis evidence for every non-success terminal state.
+
+The launcher accepts `--timeout-seconds` and a testable `--cancel-file`. A timeout or cancellation terminates the worker, waits for exit, flushes both streams, and finalizes the lifecycle artifact before returning. A zero-exit worker advances to `completed` only when its output is a successful JSON envelope with `structured_output`; malformed output is recorded as `failed` with `failure_class: "malformed_output"`.
+
+`--resource-ledger` records the stable assignment, pinned model, effort, verification baseline, and attempt artifacts. Attempt 2 must use the same assignment and pinned model/effort as attempt 1. Attempt 3 is rejected before dispatch. Resume and retry consumers must read the ledger and select an explicit accepted attempt; they must not infer the latest artifact by wildcard.
 
 ### Stable worker IDs and retry ceiling
 
@@ -169,7 +181,7 @@ The orchestrator maintains `routing-outcomes.json` in each run's scratch workspa
   - `duration_seconds`: Observed elapsed time (null while running).
   - `exit_code`: Worker process exit code (null while running).
   - `state`: `"running"`, `"completed"`, `"failed"`, or `"interrupted"`.
-  - `failure_class`: `"none"`, `"quality"`, `"timeout"`, `"tool_error"`, `"quota"`, `"unrunnable"`, or `"unknown"`.
+  - `failure_class`: `"none"`, `"quality"`, `"timeout"`, `"tool_error"`, `"malformed_output"`, `"quota"`, `"unrunnable"`, or `"unknown"`.
   - `verification`: `"pending"`, `"passed"`, `"failed"`, or `"not_performed"`.
   - `evidence_paths`: Array of output, error, gate, review, or audit artifact paths.
   - `usage`: Source-attributed reported usage object with explicit units, or null when unavailable.
