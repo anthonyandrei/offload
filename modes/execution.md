@@ -6,8 +6,8 @@ Dispatches `agy` workers to implement file and code changes across independent g
 
 Select the helper family matching your current host shell:
 
-- **POSIX shells (Bash 3.2+)**: Use `scripts/run-agy-json.sh`, `scripts/check-execution-scope.sh`, and `scripts/execution-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
-- **PowerShell (PowerShell 7+)**: Use `scripts/run-agy-json.ps1`, `scripts/check-execution-scope.ps1`, and `scripts/execution-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+- **POSIX shells (Bash 3.2+)**: Use `scripts/run-agy-json.sh`, `scripts/check-execution-scope.sh`, `scripts/execute-gate.sh`, and `scripts/execution-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
+- **PowerShell (PowerShell 7+)**: Use `scripts/run-agy-json.ps1`, `scripts/check-execution-scope.ps1`, `scripts/execute-gate.ps1`, and `scripts/execution-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 Check these before dispatching writing tasks:
 
@@ -45,7 +45,7 @@ Break work into provisional tasks with a slug and a concise description of goals
 
 Assign each task exactly one gate:
 
-- **Machine gate.** An executable test command that exits 0 on success. A gate-author creates the test in Step 2; you run a red check and read the test before freezing it. Record whether the task is behavior-preserving (waives the red check failure requirement).
+- **Machine gate.** An executable test command executed through `execute-gate.sh` or `execute-gate.ps1`. A gate-author creates the test in Step 2; you run a red check and read the test before freezing it. The shared gate helper normalizes exit 0 to passed (`failure_class: none`), exit 126/127 to unrunnable (`verification: not_performed`, no quality retry), and other nonzero exits to quality failure (`verification: failed`). Record whether the task is behavior-preserving (waives the red check failure requirement).
 - **Diff gate.** Plain-text criteria for tasks without automated tests (documentation, configuration, refactoring). A reviewer worker evaluates the diff against these criteria in Step 5.
 
 ### Scout
@@ -288,7 +288,22 @@ Verify every worker reporting `SUCCESS`:
    Any violation printed by the helper represents an unowned modification or a frozen path violation. The helper exits nonzero when violations exist. Report violations regardless of gate results.
 
 2. **Candidate gate execution.**
-   - Machine gate: Run the frozen gate command in the candidate workspace (`$TASK_WORKSPACE`) and check exit code (0 required).
+   - Machine gate: Run the frozen gate command in the candidate workspace through the shell-native gate execution helper (`execute-gate.sh` or `execute-gate.ps1`), which captures diagnostic stdout/stderr to an artifact file and normalizes gate exit codes:
+
+     #### Bash
+     ```bash
+     GATE_REPORT="$("$OFFLOAD_ROOT/scripts/execute-gate.sh" --command "<gate cmd>" --workspace "$TASK_WORKSPACE")"
+     ```
+
+     #### PowerShell
+     ```powershell
+     $GateReport = & "$OffloadRoot/scripts/execute-gate.ps1" --command "<gate cmd>" --workspace $TaskWorkspace | ConvertFrom-Json
+     ```
+
+     Consume the normalized classification from the gate execution helper rather than requiring the process to exit 0 directly:
+     - `verification_status: "passed"` (`failure_class: "none"`, exit 0): The gate passed cleanly.
+     - `failure_class: "unrunnable"` (`verification_status: "not_performed"`, `allow_retry: false`, exit 126 or 127): The gate command could not be executed (command not found or permission denied). Retain the command, exit code, and `diagnostic_artifact_path` evidence in `routing-outcomes.json`. Exits 126 and 127 are not quality retries; do not schedule a quality retry.
+     - `failure_class: "quality"` (`verification_status: "failed"`, `allow_retry: true`, other non-zero exit codes): The test assertions failed. Record the diagnostic artifact path and schedule a quality retry if attempt budget remains.
    - Diff gate: Dispatch an adversarial reviewer worker to inspect the recorded artifact using `--role reviewer`:
 
      #### Bash
@@ -341,8 +356,8 @@ Verify every worker reporting `SUCCESS`:
    - Overlapping tasks: Run overlapping tasks serially. When Task 1 integrates, its resulting commit becomes the new baseline `$STAGE_BASELINE` for Task 2. Task 2's candidate worktree is created from this newly accepted baseline. Every accepted delta undergoes scope and gate verification before publication to the caller.
 
 4. **Final combined gate check.**
-   After all verified tasks are integrated into the integration target, execute all gate commands across all completed tasks together.
-   If any combined gate fails or conflicts arise, the caller's working tree remains intact (the integrated changes are aborted and not published). Only publish when all combined gates pass cleanly.
+   After all verified tasks are integrated into the integration target, execute all gate commands across all completed tasks together through the shared gate execution helper (`execute-gate.sh` or `execute-gate.ps1`).
+   Every gate must normalize to `verification_status: "passed"` (`failure_class: "none"`). If any combined gate normalizes to quality failure or unrunnable, or if conflicts arise, the caller's working tree remains intact (the integrated changes are aborted and not published). Only publish when all combined gates pass cleanly.
 
 ## Step 6: Retry, recovery, and cleanup
 
@@ -351,7 +366,8 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 - **Stable worker IDs and retry ceiling.** Assign a stable `worker_id` to each logical task. Attempt 1 is initial dispatch; attempt 2 is its only possible retry. Maximum two attempts total per task.
 - **Outcome tracking.** Record each attempt and verification outcome in `routing-outcomes.json`.
 - **Baseline retention on retry.** Retries must retain the original verification baseline for that writing stage (e.g. `$GATE_BASELINE`). A failed attempt never becomes an implicitly trusted baseline. Create a fresh candidate worktree at the original baseline for attempt 2.
-- **Implementer quality failure.** If a gate fails or an execution scope check violation occurs, this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output. Use `--route quality-retry` only if an evidence-backed escalation target is configured for `implementer` in `model-policy.json`; otherwise use `--route default`. If attempt 2 fails, halt that task.
+- **Implementer quality failure.** If an execution scope check violation occurs or a machine gate normalizes to `failure_class: "quality"` (non-zero exit code other than 126/127), this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output and diagnostic evidence. Use `--route quality-retry` only if an evidence-backed escalation target is configured for `implementer` in `model-policy.json`; otherwise use `--route default`. If attempt 2 fails, halt that task.
+- **Unrunnable gate execution.** If a gate command exits 126 or 127, it normalizes to `failure_class: "unrunnable"` with `verification_status: "not_performed"` and `allow_retry: false`. Gate exits 126 and 127 are not quality retries; preserve the command, exit code, and diagnostic evidence in `routing-outcomes.json` without spending or scheduling a quality retry.
 - **Scout or gate-author operational failure.** If a scout or gate-author crashes, times out, or produces unparsable output, retry once using `--route default`. If the retry fails, complete that step directly as the orchestrator (`orchestrator (fallback)`).
 - **Reviewer failure.** If reviewer output is unparsable or fails digest or quote verification, inspect the recorded artifact directly as the orchestrator (`agy→orchestrator`).
 - **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Record still-running candidates immediately without waiting for siblings, preserve completed artifacts, and return unfinished work to the calling orchestrator.

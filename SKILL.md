@@ -105,13 +105,14 @@ In PowerShell command expressions, always quote the delimiter (`'--'`).
 ### Failure classification and recovery rules
 
 1. **Verified success**: Output passes mechanical gates and verification checks. Accept result; no retry.
-2. **Quality failure**: The worker completed with a parsable response (exit code 0), but the output fails verification (e.g. machine gate failure, execution scope violation, reviewer quote mismatch, unsupported synthesis claim, or audit rejection).
+2. **Quality failure**: The worker completed with a parsable response (exit code 0), but the output fails verification (e.g. machine gate failure normalized to `quality` via `execute-gate.sh` or `execute-gate.ps1`, execution scope violation, reviewer quote mismatch, unsupported synthesis claim, or audit rejection).
    - If retry budget remains and mode permits correction: retry once (attempt 2) with concrete verification feedback. Use `--route quality-retry` only when an evidence-backed escalation target is configured in policy; otherwise use `--route default`.
    - If attempt 2 fails or the mode requires immediate fallback: stop retrying and follow that mode's halt, partial-result, or orchestrator fallback path.
-3. **Operational failure**: Process crash (nonzero exit code), timeout (20 minutes with no output), unparsable JSON, or tool failure.
+3. **Unrunnable failure**: Gate execution exited 126 or 127, normalized to `failure_class: "unrunnable"` with `verification: not_performed`. Preserve the command, exit code, and diagnostic evidence in `routing-outcomes.json`. Exits 126 and 127 are not quality retries; do not schedule or spend a model retry.
+4. **Operational failure**: Process crash (nonzero exit code), timeout (20 minutes with no output), unparsable JSON, or tool failure.
    - Follow mode's recovery rule with at most one same-model retry (`--route default`) where permitted. Never escalate models for operational failures.
-4. **Unknown failure**: Record uncertainty and follow the operational-failure path. Do not assume a quality failure or quota issue.
-5. **Quota exhaustion**: Explicit Gemini quota error reported by `agy` structured output or diagnostics. Trigger immediate quota handoff.
+5. **Unknown failure**: Record uncertainty and follow the operational-failure path. Do not assume a quality failure or quota issue.
+6. **Quota exhaustion**: Explicit Gemini quota error reported by `agy` structured output or diagnostics. Trigger immediate quota handoff.
 
 ### Immediate quota handoff
 

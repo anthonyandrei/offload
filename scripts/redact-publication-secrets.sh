@@ -15,9 +15,21 @@ import json, re, sys
 mark='[REDACTED]'
 query=re.compile(r'''(?i)([?&](?:access_token|refresh_token|id_token|token|api[_-]?key|secret|password|key)=)[^&#\s"']+''')
 assign=re.compile(r'''(?i)\b(password|secret|token|api[_-]?key)\s*([=:])\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)''')
+common_words = r"header|headers|failed|failure|required|requirement|denied|error|check|status|code|granted|missing|rejected|was|is|rule|rules|policy|policies|flow|attempt|request|requests|diagnostic|diagnostics|completed|endpoint|level|context|type|mode|info|information|parameter|param|params|service"
+param_header = re.compile(rf"""(?i)\b(authorization|proxy-authorization)(?::\s*|\s+(?!{common_words}\b))([A-Za-z0-9_.-]+)\s+([A-Za-z0-9_.-]+\s*=\s*(?:"[^"]*"|'[^']*'|[A-Za-z0-9_.~+-]+)(?:\s*,\s*[A-Za-z0-9_.-]+\s*=\s*(?:"[^"]*"|'[^']*'|[A-Za-z0-9_.~+-]+))*)""")
+token_header = re.compile(rf"""(?i)\b(authorization|proxy-authorization)(:\s*|\s+(?!{common_words}\b))([A-Za-z0-9_.-]+)\s+(?![A-Za-z0-9_.-]+\s*=\s*(?:"[^"]*"|'[^']*'|[A-Za-z0-9_.~+-]+))([^\s,;]+)""")
+param_secret = re.compile(r"""(?i)\b(response|mac|signature|secret|password|token|api[_-]?key|key|credential|credentials|auth[_-]?token)\s*=\s*(?:"[^"]*"|'[^']*'|[A-Za-z0-9_.~+-]+)""")
+
+def sub_param(m):
+    p = m.group(0)[:len(m.group(0)) - len(m.group(3))]
+    redacted_params = param_secret.sub(r'\1=' + mark, m.group(3))
+    return p + redacted_params
+
 def string(v):
     v=re.sub(r'(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----',mark,v)
     v=query.sub(r'\1'+mark,v)
+    v=param_header.sub(sub_param,v)
+    v=token_header.sub(r'\1\2\3 '+mark,v)
     v=re.sub(r'(?i)\b(Bearer)\s+[^\s,;]+',r'\1 '+mark,v)
     v=assign.sub(r'\1\2'+mark,v)
     return re.sub(r'(?i)\b(cookie|set-cookie)\s*:\s*[^\r\n]+',r'\1: '+mark,v)

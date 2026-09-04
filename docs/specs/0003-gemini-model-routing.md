@@ -136,7 +136,7 @@ Quota classification requires explicit AGY quota evidence from structured output
 
 The one-retry ceiling does not grant a retry in stages that currently fall back or return partial immediately. Preserve these mode distinctions:
 
-- Execution keeps its scout and gate-author fallback, implementer gate/scope retry, and direct orchestrator review fallback.
+- Execution keeps its scout and gate-author fallback, implementer gate/scope retry (consuming normalized `scripts/execute-gate.sh` / `scripts/execute-gate.ps1` outcomes where gate exit 126 or 127 is `unrunnable` without quality retry), and direct orchestrator review fallback.
 - Repository research keeps its bounded same-model operational retry and subsequent orchestrator fallback.
 - Web research keeps its minimum-angle requirement and partial-result behavior for failed mandatory synthesis or audit stages. Its allowed synthesis revision uses the synthesizer's second attempt; the final audit uses the auditor's second attempt. Earlier retries consume those same budgets. Exhaustion returns a partial result rather than creating a new assignment to repeat the stage.
 
@@ -146,7 +146,7 @@ On quota handoff, preserve completed artifacts and list verified, unverified, fa
 
 ## Outcome records and reporting
 
-Maintain a `routing-outcomes.json` artifact in each run's existing scratch workspace. The orchestrator owns it and updates it after dispatch and verification. This is a bounded run record, not a new service or persistent scheduler. Use a top-level `schema_version` of 1 and an `attempts` array.
+Maintain a `routing-outcomes.json` artifact in each run's existing scratch workspace. The orchestrator owns it and updates it after dispatch and verification. Machine gate executions route through the shared shell-native gate execution helper (`scripts/execute-gate.sh` or `scripts/execute-gate.ps1`), preserving the command, exit code, and diagnostic evidence in `evidence_paths`. This is a bounded run record, not a new service or persistent scheduler. Use a top-level `schema_version` of 1 and an `attempts` array.
 
 Each attempt records:
 
