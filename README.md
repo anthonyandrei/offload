@@ -47,6 +47,22 @@ cleanup, and acceptance gates.
 
 Orchestrators select helper scripts based on their current shell (`.sh` for Bash, `.ps1` for PowerShell), never by host operating system detection or universal launchers. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
+### Claude adapter
+
+The bounded Claude Code adapter is available as `scripts/run-claude-json.ps1` and
+`scripts/run-claude-json.sh`. It accepts the versioned assignment contract in
+[`docs/specs/0004-claude-adapter.md`](docs/specs/0004-claude-adapter.md), probes
+the installed Claude CLI, forwards only the assignment's bounded prompt and
+tool policy, and returns a normalized result with raw artifacts, process and
+worktree ledger records, and scope and gate verification.
+
+Set `CLAUDE_BIN` when Claude is not on `PATH`. The adapter accepts internal
+`fast`, `balanced`, and `deep` preferences without mapping them to published
+model IDs. A pinned model requires a caller-provided live catalog. Unsupported
+or unmarked sandboxes fail closed. On Windows, use an isolated runtime such as
+WSL, Git for Windows, or the supported native Claude binary; the adapter does
+not turn the caller checkout into a sandbox.
+
 ## Requirements
 
 - A CLI coding agent that can read skills and run shell commands (Claude Code, Codex CLI, or similar).
