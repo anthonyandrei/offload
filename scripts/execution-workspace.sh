@@ -942,6 +942,14 @@ command_verb="$1"
 shift
 
 case "$command_verb" in
+  create|verify-export|export|integrate|cleanup)
+    if [ "${OFFLOAD_WORKER_CONTEXT:-}" = '1' ]; then
+      fail 'worker context cannot create or mutate execution worktrees; only the orchestrator may invoke this lifecycle helper' 126
+    fi
+    ;;
+esac
+
+case "$command_verb" in
   create)
     cmd_create "$@"
     ;;

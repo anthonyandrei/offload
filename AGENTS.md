@@ -4,7 +4,9 @@ Agent-agnostic skill that delegates plan execution and research to headless `agy
 
 ## Key decisions and architecture
 
-- **Orchestrator-agnostic, worker-fixed**: Any agent capable of reading `SKILL.md` and running shell commands can orchestrate, including Claude Code, Codex CLI, and similar agents. `agy` is reserved for the worker role. The self-guard stops an `agy` process that loads this skill. Every assignment instructs workers not to dispatch nested workers, but the skill cannot enforce that prohibition if a worker ignores it.
+Dispatch control: `dispatch-worker.sh` and `dispatch-worker.ps1` are orchestrator-owned admission interfaces. They record bounded assignment parentage and budgets, create worktrees, and start workers. Worker-context calls to dispatch, launch, or execution-workspace lifecycle helpers fail closed and are recorded; worker follow-up requests remain data until the orchestrator admits them.
+
+- **Orchestrator-agnostic, worker-fixed**: Any agent capable of reading `SKILL.md` and running shell commands can orchestrate, including Claude Code, Codex CLI, and similar agents. `agy` is reserved for the worker role. The self-guard stops an `agy` process that loads this skill. Every assignment instructs workers not to dispatch nested workers, and the dispatcher plus worker-context guards enforce that workflow boundary.
 - **Modular mode architecture**: Root `SKILL.md` is a lightweight router under 500 lines owning shared preconditions, mode inference, explicit overrides, mode loading, and the shared report contract. Workflows are isolated into dedicated mode documents: `modes/execution.md` (code and file mutations), `modes/repo-research.md` (bounded local investigations and audits), and `modes/web-research.md` (online research, synthesis, and citation auditing).
 - **Routing hierarchy**: Once invoked, the router resolves mode in this order:
   1. Honor explicit mode override.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s --role ROLE [--route default|quality-retry] --output FILE --error FILE [lifecycle options] -- agy-arguments...\n' "$0" >&2
+  printf 'Usage: %s --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE [lifecycle options] -- agy-arguments...\n' "$0" >&2
 }
 
 fail() {
@@ -237,6 +237,17 @@ fi
 if ! $seen_role || [ -z "$role" ]; then
   usage
   fail '--role is required; specify a role and remove any caller --model flag'
+fi
+
+if [ "${OFFLOAD_WORKER_CONTEXT:-}" = '1' ]; then
+  fail 'worker process cannot invoke the launcher; only the orchestrator may create worker processes' 126
+fi
+
+if $seen_timeout; then
+  case "$timeout_seconds" in
+    ''|*[!0-9]*) fail '--timeout-seconds must be a positive integer' ;;
+  esac
+  [ "$timeout_seconds" -gt 0 ] || fail '--timeout-seconds must be a positive integer'
 fi
 
 case "$role" in
@@ -529,7 +540,7 @@ if [ -n "$cancel_file" ] && [ -f "$cancel_file" ]; then
 fi
 
 set +e
-"$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path" &
+OFFLOAD_WORKER_CONTEXT=1 "$agy_bin" --model "$resolved_model" "${worker_args[@]}" >"$output_path" 2>"$error_path" &
 worker_pid=$!
 set -e
 record_state started

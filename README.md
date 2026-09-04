@@ -29,6 +29,10 @@ cleanup, and acceptance gates.
 - **Mechanical verification.** Execution workflows require a clean git working tree, execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path checks, and automated test gates.
 - **Prohibition on nested dispatch.** Assignments instruct workers not to dispatch nested workers.
 - **Vendor-neutral worker adapters.** [`docs/worker-adapter-contract.md`](docs/worker-adapter-contract.md) defines the assignment, lifecycle, capability/model discovery, ownership, and normalized-result boundary. The current AGY launcher is the reference adapter; verification and cleanup remain with the orchestrator.
+- **Orchestrator-owned dispatch.** `dispatch-worker.sh` or `dispatch-worker.ps1` is the only workflow entry point that admits an assignment, creates its worktree, and starts its worker process. The dispatcher sets `OFFLOAD_WORKER_CONTEXT=1` for the worker. Worker-context calls to the dispatcher, launcher, or execution-workspace lifecycle helpers fail closed and record a `nested_dispatch_rejected` event.
+- **Structured follow-up requests.** A worker may return a request for more work in `structured_output`, but that request is data for the orchestrator to review. It never starts a process automatically.
+- **Bounded assignment ledger.** The dispatcher records assignment ID, parent ID, depth, child IDs, role, owned and frozen paths, lifecycle timestamps, output and error paths, worktree manifest, and timeout/resource budget in an `offload-dispatch-state-v1` ledger. Root limits for depth, child width, timeout, and total resource units are immutable for descendants; admission rejects attempts that would exceed them.
+- **Defense in depth.** Vendor sandbox behavior, including `agy --mode plan`, is a useful additional boundary but is not treated as enforcement. The workflow verifies the worker context, assignment ledger, worktree lifecycle, frozen paths, execution scope, and test gates mechanically.
 
 ## Supported environments
 
@@ -111,11 +115,11 @@ A historical live smoke comparison against Gemini 3.7 retained Flash for every r
 
 Used for code and file modifications across independent gated tasks.
 
-1. **Split and scout.** Break work into provisional tasks. Dispatch parallel scouts under `--mode plan` via `run-agy-json` with a JSON schema to identify touched files. If tasks overlap on files, serialize them.
+1. **Split and scout.** Break work into provisional tasks. Dispatch parallel scouts under `--mode plan` via `dispatch-worker`, which wraps `run-agy-json`, with a JSON schema to identify touched files. If tasks overlap on files, serialize them.
 2. **Assign gates.** Every task receives exactly one gate:
    - **Machine gate.** An automated test command exiting 0 on success. A gate-author worker writes the test. The orchestrator runs a red check against the untouched tree to verify failure, reads the test code to confirm intent, and commits the test to freeze it.
    - **Diff gate.** Plain-text criteria for tasks without test commands (such as documentation or configuration changes) receive stable IDs. A reviewer worker evaluates the immutable review artifact and returns exactly one verdict per ID. The orchestrator accepts only complete all-pass coverage whose evidence lines match the same artifact.
-3. **Dispatch implementers.** Dispatch implementers in parallel from a clean git tree with explicit owned files, frozen paths, and gate commands via `run-agy-json`.
+3. **Dispatch implementers.** Dispatch implementers in parallel from a clean git tree with explicit owned files, frozen paths, gate commands, and bounded budgets via `dispatch-worker`. The dispatcher wraps `execution-workspace` and `run-agy-json`; workers never call those lifecycle or launch interfaces directly.
 4. **Mechanical verification.**
    - Execution scope check: verify touched paths against assigned owned and frozen paths using `check-execution-scope`:
      #### Bash
@@ -361,7 +365,7 @@ unavailable.
 - **`agy` default `--print-timeout` is 5 minutes.** On expiry it writes no output at all. `offload` passes `--print-timeout 20m`.
 - **`--output-format json` returns one flat JSON object.** Parse top-level fields `status`, `response`, `duration_seconds`, `num_turns`, and `usage`.
 - **`--json-schema` outputs validated JSON in `structured_output`.** Parse `structured_output` rather than `response`.
-- **Use the bundled launcher helpers (`run-agy-json.sh` or `run-agy-json.ps1`) for worker calls.** They own result and error paths and reject the unsupported `agy --output` flag.
+- **Use `dispatch-worker.sh` or `dispatch-worker.ps1` for execution assignments.** They own assignment admission, worktree creation, result and error paths, and the bounded launch. The dispatcher wraps the lower-level `run-agy-json` helper, which rejects the unsupported `agy --output` flag.
 - **Use structured output extractors (`extract-structured-output.sh` or `extract-structured-output.ps1`) between research stages.** They forward only validated `structured_output`, keeping verbose worker prose out of later prompts.
 - **Model routing is governed by `model-policy.json`.** Launchers inject the policy-selected Gemini 3.8 Flash model (`gemini-3.8-flash-low` or `gemini-3.8-flash-high`) via `--role <role>`. Reasoning effort is encoded directly in the model ID; callers must not pass `--model` or `--effort`.
 - **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted probe on `agy 1.1.25` blocked the tested direct write outside the permitted artifact area, but this observation is not a guarantee. `--add-dir` grants access without confining writes. Security relies on filesystem isolation and mechanical verification.

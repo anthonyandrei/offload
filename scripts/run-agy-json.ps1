@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] --output FILE --error FILE [lifecycle options] '--' agy-arguments...")
+    [Console]::Error.WriteLine("Usage: run-agy-json.ps1 --role ROLE [--route default|quality-retry] [--timeout-seconds N] --output FILE --error FILE [lifecycle options] '--' agy-arguments...")
     [Console]::Error.WriteLine("In PowerShell command expressions, quote '--' because PowerShell consumes the bare delimiter before the helper receives it.")
 }
 
@@ -224,6 +224,16 @@ while ($i -lt $args.Count) {
         $cancelFile = $arg.Substring(14)
         if ([string]::IsNullOrWhiteSpace($cancelFile)) { Show-Usage; Fail "--cancel-file requires a path" }
         $seenCancelFile = $true
+    } elseif ($arg -eq '--timeout-seconds') {
+        if ($seenTimeout) { Fail "duplicate --timeout-seconds option" }
+        $i++
+        if ($i -ge $args.Count) { Show-Usage; Fail "--timeout-seconds requires a positive number" }
+        if (-not [int]::TryParse([string]$args[$i], [ref]$timeoutSeconds)) { Fail "--timeout-seconds requires a positive number" }
+        $seenTimeout = $true
+    } elseif ($arg.StartsWith('--timeout-seconds=')) {
+        if ($seenTimeout) { Fail "duplicate --timeout-seconds option" }
+        if (-not [int]::TryParse($arg.Substring(18), [ref]$timeoutSeconds)) { Fail "--timeout-seconds requires a positive number" }
+        $seenTimeout = $true
     } else {
         Show-Usage
         Fail "unknown launcher option: $arg"
@@ -246,6 +256,18 @@ if (-not $seenError -or [string]::IsNullOrWhiteSpace($errorPath)) {
 if (-not $seenRole -or [string]::IsNullOrWhiteSpace($role)) {
     Show-Usage
     Fail "--role is required; specify a role and remove any caller --model flag"
+}
+
+if ($env:OFFLOAD_WORKER_CONTEXT -eq '1') {
+    Fail 'worker process cannot invoke the launcher; only the orchestrator may create worker processes' 126
+}
+
+if ($seenTimeout) {
+    $parsedTimeout = 0
+    if (-not [int]::TryParse($timeoutSeconds, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedTimeout) -or $parsedTimeout -le 0) {
+        Fail '--timeout-seconds must be a positive integer'
+    }
+    $timeoutSeconds = $parsedTimeout
 }
 
 $knownRoles = @('scout', 'gate-author', 'implementer', 'reviewer', 'researcher', 'synthesizer', 'auditor')
@@ -706,6 +728,7 @@ try {
     $psi.WorkingDirectory = $callerWorkingDirectory
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    $psi.EnvironmentVariables['OFFLOAD_WORKER_CONTEXT'] = '1'
     $psi.ArgumentList.Add('--model')
     $psi.ArgumentList.Add($resolvedModel)
     foreach ($arg in $forwardedArgs) {

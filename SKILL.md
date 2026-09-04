@@ -5,7 +5,7 @@ description: Use when the user wants execution or research handed to another ven
 
 # offload
 
-If you are `agy`, stop here. Return worker results to your orchestrator. `agy` is the worker role this skill dispatches. Any other agent that can read instructions and run shell commands can orchestrate, including Claude Code, Codex CLI, and similar agents. Assignments prohibit nested worker dispatch, but the skill cannot enforce that rule if a worker ignores it.
+If you are `agy`, stop here. Return worker results to your orchestrator. `agy` is the worker role this skill dispatches. Any other agent that can read instructions and run shell commands can orchestrate, including Claude Code, Codex CLI, and similar agents. Assignments prohibit nested worker dispatch, and the workflow enforces that boundary with an orchestrator-owned dispatcher and worker-context guards.
 
 ## What this skill does
 
@@ -77,6 +77,8 @@ Load the matching mode document for the selected route and shell-specific comman
 Offload routes all workers through the repository-root `model-policy.json`. Launchers resolve model IDs and inject `--model` before launching `agy`. Callers must never pass `--model` or `--effort` after `--`.
 
 ### Launcher invocation
+
+Execution workers must use `scripts/dispatch-worker.sh` or `scripts/dispatch-worker.ps1`, which calls this lower-level launcher after admission. The direct forms below are for the isolated research stages described in the research mode documents.
 
 - **POSIX shells**: `"$OFFLOAD_ROOT/scripts/run-agy-json.sh" --role <role> [--route <default|quality-retry>] --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> -- <agy args...>`
 - **PowerShell**: `& "$OffloadRoot/scripts/run-agy-json.ps1" --role <role> [--route <default|quality-retry>] --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> '--' <agy args...>`
@@ -246,8 +248,11 @@ Sample recorded: 1/1 high checked, 1/2 med/low sampled.
 - **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at the live tree.
 - **Filesystem isolation.** Research modes run in disposable workspaces with scoped file snapshots. Live repository files are never exposed directly to research workers.
 - **Execution safety.** Execution mode requires a clean git baseline, mechanical execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path diffs, and test gates.
-- **Prohibition on nested dispatch.** Workers are instructed not to dispatch nested workers.
+- **Orchestrator-owned dispatch.** Use `scripts/dispatch-worker.sh` or `scripts/dispatch-worker.ps1` for every execution assignment. It is the only workflow interface that creates an assignment record, execution worktree, and worker process. The dispatcher sets `OFFLOAD_WORKER_CONTEXT=1`; worker-context calls to the dispatcher, `run-agy-json`, or `execution-workspace` fail with exit 126.
+- **Structured follow-up requests.** Workers may return a structured request for more work. The orchestrator records and evaluates that data explicitly. No worker response can automatically create a child assignment.
+- **Assignment ledger.** Every admitted assignment records its ID, parent ID, depth, child IDs, role, owned and frozen paths, lifecycle state and timestamps, output/error paths, worktree manifest, and timeout/resource budget. The root fixes maximum depth, child width, per-assignment timeout, and total resource units. Admission rejects a request before worktree or process creation when it would exceed any limit.
+- **Vendor boundary versus workflow verification.** `agy --mode plan` and any vendor sandbox are defense in depth. The workflow does not treat prompts or sandbox hints as its sole control; it verifies caller context, ledger admission, worktree lifecycle, scope, frozen paths, and gates.
 - **Bounded scope requirement.** Open-ended research without a bounded question, declared scope, and evidence expectations is out of scope.
-- **Worker timeout.** Every worker runs with a bounded timeout (`--print-timeout 20m`).
+- **Worker timeout.** Every dispatched worker has a bounded dispatcher timeout and forwards the normal AGY output deadline (`--print-timeout 20m`).
 
 Result acceptance is separate from process completion: a parsed envelope, substantive structured output, evidence/scope/gate checks, and (where applicable) review or citation checks must all pass before an explicit `accepted_attempt` is recorded. Exit code 0 alone does not establish verified success. Gate exits 126 or 127 are `unrunnable`, retain their command and diagnostic evidence, use `verification: not_performed`, and do not consume a model retry.
