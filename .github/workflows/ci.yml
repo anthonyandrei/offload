@@ -23,6 +23,9 @@ jobs:
       - name: Run publication compatibility suite
         run: bash tests/test_publication_compatibility.sh
 
+      - name: Check Codex adapter syntax
+        run: bash -n scripts/run-codex-json.sh
+
   macos-bash:
     name: macOS Bash contract suite
     runs-on: macos-latest
@@ -38,6 +41,9 @@ jobs:
 
       - name: Run publication compatibility suite
         run: bash tests/test_publication_compatibility.sh
+
+      - name: Check Codex adapter syntax
+        run: bash -n scripts/run-codex-json.sh
 
   windows-powershell:
     name: Windows PowerShell contract suite
@@ -57,3 +63,6 @@ jobs:
 
       - name: Run publication compatibility suite
         run: pwsh -File tests/test_publication_compatibility.ps1
+
+      - name: Run Codex adapter suite
+        run: pwsh -File tests/test_codex_adapter.ps1
