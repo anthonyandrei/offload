@@ -9,7 +9,7 @@ Select the helper family matching your current host shell:
 - **POSIX shells (Bash 3.2+)**: Use `scripts/make-research-workspace.sh`, `scripts/run-agy-json.sh`, and `scripts/cleanup-research-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
 - **PowerShell (PowerShell 7+)**: Use `scripts/make-research-workspace.ps1`, `scripts/run-agy-json.ps1`, and `scripts/cleanup-research-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
-Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. Researchers route through `model-policy.json` (`gemini-3.8-flash-high` default). Do not pass `--model` or `--effort` directly.
+Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. Researchers route through the role preference, effort, and required capabilities in `model-policy.json`; the adapter selects the current model. Do not pass `--model` or `--effort` directly.
 
 Every research dispatch supplies the shared lifecycle metadata to `run-agy-json`: `--assignment-id`, `--attempt`, `--mode repo-research`, `--verification-baseline`, `--resource-ledger`, and a distinct `--lifecycle` path. The launcher records worker exit results and retains diagnosis artifacts for failed, canceled, timed-out, malformed, or quota-handoff runs. Resume and retry must use the ledger's pinned identity, model, effort, verification baseline, and attempt limit.
 
@@ -46,7 +46,7 @@ The workspace helper creates a unique temporary directory, writes the `.offload-
 
 ## Worker dispatch
 
-Dispatch researchers in parallel using role `researcher` with a structured schema and the matching launcher helper. The launcher resolves `gemini-3.8-flash-high` from `model-policy.json`:
+Dispatch researchers in parallel using role `researcher` with a structured schema and the matching launcher helper. The launcher asks the adapter to select a current eligible model:
 
 #### Bash
 ```bash
@@ -105,7 +105,7 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 - **Outcome tracking.** Record each attempt and verification outcome in `routing-outcomes.json`.
 - **Operational failure.** If a worker crashes, times out, or produces unparsable output, redispatch once using `--route default`. No model escalation for operational failure.
 - **Orchestrator fallback.** If the second attempt fails or findings remain inconclusive, complete the investigation directly as the orchestrator (`orchestrator (fallback)`).
-- **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.
+- **Quota exhaustion.** Explicit adapter-reported quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.
 
 ## Cleanup
 

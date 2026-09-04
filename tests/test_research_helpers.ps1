@@ -195,6 +195,29 @@ exit 0
     $pathSep = [System.IO.Path]::PathSeparator
     $basePath = "$fakeBin$pathSep$env:PATH"
 
+    $fakeAdapter = Join-Path $RootDir 'tests/fixtures/fake-worker-adapter.ps1'
+    $fakeCatalog = Join-Path $TmpRoot 'fake-adapter-catalog.json'
+    @'
+{
+  "protocol_version": 1,
+  "adapter": "fake",
+  "adapter_revision": "fake-adapter-1",
+  "vendor": "fake-vendor",
+  "catalog_revision": "test-catalog-1",
+  "models": [
+    { "id": "scout-model", "family_hint": "fast", "available": true, "quota_available": true, "supported_efforts": ["low"], "capabilities": [], "scores": { "fast": 0 } },
+    { "id": "worker-model", "family_hint": "balanced", "available": true, "quota_available": true, "supported_efforts": ["high"], "capabilities": [], "scores": { "balanced": 0, "deep": 1 } }
+  ]
+}
+'@ | Set-Content -LiteralPath $fakeCatalog -Encoding utf8
+
+    $savedAdapterBin = $env:OFFLOAD_ADAPTER_BIN
+    $savedAdapterCatalog = $env:FAKE_ADAPTER_CATALOG
+    $savedAgyBin = $env:AGY_BIN
+    $env:OFFLOAD_ADAPTER_BIN = $fakeAdapter
+    $env:FAKE_ADAPTER_CATALOG = $fakeCatalog
+    $env:AGY_BIN = $fakeAgyPs
+
     # =======================================================================
     # 1. run-agy-json.ps1
     #    - fake agy forwarding / output separation
@@ -211,6 +234,8 @@ exit 0
     $envRun = @{
         'PATH' = $basePath
         'FAKE_AGY_ARGS' = $argsCapture
+        'AGY_BIN' = $fakeAgyPs
+        'FAKE_ADAPTER_CAPTURE' = (Join-Path $TmpRoot 'adapter.capture.json')
     }
     $res = Invoke-Helper -ScriptName 'run-agy-json.ps1' -ArgumentList @(
         '--role', 'scout',
@@ -225,12 +250,12 @@ exit 0
     Assert-True (Test-Path -LiteralPath $runOut) "run-agy-json: created output file"
     Assert-True (Test-Path -LiteralPath $runErr) "run-agy-json: created error file"
     $outData = Get-Content -LiteralPath $runOut -Raw | ConvertFrom-Json
-    Assert-True ($outData.structured_output.ok -eq $true) "run-agy-json: output file captured worker stdout JSON"
+    Assert-True ($outData.structured_output.ok -eq $true) "run-agy-json: output file captured worker stdout JSON" (Get-Content -LiteralPath $runOut -Raw)
     $errData = (Get-Content -LiteralPath $runErr -Raw).Trim()
     Assert-Equal $errData 'fake stderr' "run-agy-json: error file captured worker stderr"
     Assert-Equal $res.Stdout.Trim() "" "run-agy-json: helper emits no worker stdout to its own stdout"
     $forwarded = @(Get-Content -LiteralPath $argsCapture -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
-    Assert-StringArrayEqual $forwarded @('--model', 'gemini-3.8-flash-low', '--prompt', 'test prompt', '--output-format', 'json') "run-agy-json: preserves routed and forwarded argument boundaries"
+    Assert-StringArrayEqual $forwarded @('--model', 'scout-model', '--effort', 'low', '--prompt', 'test prompt', '--output-format', 'json') "run-agy-json: preserves routed and forwarded argument boundaries"
 
     # 1.2 PowerShell command expressions use the quoted delimiter and preserve spaces
     $commandRoot = Join-Path $TmpRoot 'command expression paths'
@@ -260,7 +285,7 @@ exit 0
     Assert-True ($commandOutData.structured_output.ok -eq $true) "run-agy-json: command expression captures worker stdout"
     Assert-Equal (Get-Content -LiteralPath $commandErr -Raw).Trim() 'fake stderr' "run-agy-json: command expression captures worker stderr separately"
     $commandForwarded = @(Get-Content -LiteralPath $commandArgs -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
-    Assert-StringArrayEqual $commandForwarded @('-p', 'prompt with several words', '--model', 'gemini-3.8-flash-low', '--path', $forwardedPath) "run-agy-json: command expression preserves routed and forwarded arguments"
+    Assert-StringArrayEqual $commandForwarded @('-p', 'prompt with several words', '--model', 'scout-model', '--effort', 'low', '--path', $forwardedPath) "run-agy-json: command expression preserves routed and forwarded arguments"
 
     # 1.3 PowerShell command expressions propagate non-zero worker exits
     $exitOut = Join-Path $commandRoot 'nonzero worker output.json'
@@ -1160,6 +1185,9 @@ exit 0
     exit 0
 }
 finally {
+    if ($null -eq $savedAdapterBin) { Remove-Item Env:OFFLOAD_ADAPTER_BIN -ErrorAction SilentlyContinue } else { $env:OFFLOAD_ADAPTER_BIN = $savedAdapterBin }
+    if ($null -eq $savedAdapterCatalog) { Remove-Item Env:FAKE_ADAPTER_CATALOG -ErrorAction SilentlyContinue } else { $env:FAKE_ADAPTER_CATALOG = $savedAdapterCatalog }
+    if ($null -eq $savedAgyBin) { Remove-Item Env:AGY_BIN -ErrorAction SilentlyContinue } else { $env:AGY_BIN = $savedAgyBin }
     if (Test-Path -LiteralPath $TmpRoot) {
         Remove-Item -LiteralPath $TmpRoot -Recurse -Force -ErrorAction SilentlyContinue
     }

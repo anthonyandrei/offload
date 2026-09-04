@@ -46,6 +46,11 @@ $result = [ordered]@{
 $result | ConvertTo-Json -Compress
 '@ | Set-Content -LiteralPath $fakeAgy -Encoding utf8
 
+    $catalog = Join-Path $tempRoot 'catalog.json'
+    @'
+{"protocol_version":1,"adapter":"agy","adapter_revision":"agy-1","vendor":"agy","catalog_revision":"dispatch-catalog","models":[{"id":"probe-model-low","family_hint":"unknown","available":true,"quota_available":true,"supported_efforts":["low"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}
+'@ | Set-Content -LiteralPath $catalog -Encoding utf8
+
     $state = Join-Path $tempRoot 'dispatch.json'
     $manifest = Join-Path $tempRoot 'root-worker.manifest.json'
     $timeoutManifest = Join-Path $tempRoot 'timeout-worker.manifest.json'
@@ -55,6 +60,7 @@ $result | ConvertTo-Json -Compress
     $baseline = (& git -C $root rev-parse HEAD).Trim()
     $envForWorker = @{
         AGY_BIN = $fakeAgy
+        OFFLOAD_ADAPTER_CATALOG = $catalog
         DISPATCH_SCRIPT = $dispatch
         DISPATCH_STATE = $state
         DISPATCH_SOURCE_REPO = $root

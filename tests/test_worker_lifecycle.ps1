@@ -67,6 +67,8 @@ $launcher = Join-Path $rootDir 'scripts/run-agy-json.ps1'
 $shLauncher = Join-Path $rootDir 'scripts/run-agy-json.sh'
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "offload-worker-lifecycle-$([System.Guid]::NewGuid().ToString('N'))"
 [System.IO.Directory]::CreateDirectory($tmpRoot) | Out-Null
+$savedAdapterBin = $env:OFFLOAD_ADAPTER_BIN
+$savedAdapterCatalog = $env:FAKE_ADAPTER_CATALOG
 
 try {
     $fakeDir = Join-Path $tmpRoot 'bin'
@@ -92,6 +94,28 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
 }
 [Console]::Out.WriteLine('{"status":"success","response":"ok","structured_output":{"ok":true}}')
 '@ | Set-Content -LiteralPath $fakeAgy -Encoding utf8
+
+    $fakeAdapter = Join-Path $rootDir 'tests/fixtures/fake-worker-adapter.ps1'
+    $fakeCatalog = Join-Path $tmpRoot 'lifecycle-catalog.json'
+    [ordered]@{
+        protocol_version = 1
+        adapter = 'fake'
+        adapter_revision = 'fake-1'
+        vendor = 'test-vendor'
+        catalog_revision = 'lifecycle-1'
+        models = @(
+            [ordered]@{
+                id = 'gemini-3.8-flash-high'
+                available = $true
+                quota_available = $true
+                supported_efforts = @('high')
+                capabilities = @()
+                scores = [ordered]@{ fast = 10; balanced = 10; deep = 10 }
+            }
+        )
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $fakeCatalog -Encoding utf8
+    $env:OFFLOAD_ADAPTER_BIN = $fakeAdapter
+    $env:FAKE_ADAPTER_CATALOG = $fakeCatalog
 
     $outputPath = Join-Path $tmpRoot 'attempt-1.json'
     $errorPath = Join-Path $tmpRoot 'attempt-1.err'
@@ -290,17 +314,22 @@ printf '{"status":"success","response":"ok","structured_output":{"ok":true}}\n'
 #!/usr/bin/env bash
 set -euo pipefail
 export AGY_BIN="$1"
-launcher="$2"
-out_file="$3"
-err_file="$4"
-lifecycle_file="$5"
-ledger_file="$6"
+export AGY_BIN="$(cygpath -u "$AGY_BIN")"
+export OFFLOAD_ADAPTER_BIN="$(cygpath -u "$7")"
+export FAKE_ADAPTER_CATALOG="$(cygpath -u "$FAKE_ADAPTER_CATALOG")"
+chmod +x "$AGY_BIN" "$OFFLOAD_ADAPTER_BIN"
+launcher="$(cygpath -u "$2")"
+out_file="$(cygpath -u "$3")"
+err_file="$(cygpath -u "$4")"
+lifecycle_file="$(cygpath -u "$5")"
+ledger_file="$(cygpath -u "$6")"
 "$launcher" --role implementer --output "$out_file" --error "$err_file" --lifecycle "$lifecycle_file" --assignment-id assignment-bash --attempt 1 --mode execution --verification-baseline baseline-bash --resource-ledger "$ledger_file" -- -p 'bash lifecycle test'
 '@ | Set-Content -LiteralPath $bashRunner -Encoding utf8
         if (-not $IsWindows) {
             [System.IO.File]::SetUnixFileMode($bashAgy, [System.IO.UnixFileMode]509)
             [System.IO.File]::SetUnixFileMode($bashRunner, [System.IO.UnixFileMode]509)
         }
+        $bashAdapter = Join-Path $rootDir 'tests/fixtures/fake-worker-adapter.sh'
         $bashOut = Join-Path $tmpRoot 'bash.json'
         $bashErr = Join-Path $tmpRoot 'bash.err'
         $bashLifecycle = Join-Path $tmpRoot 'bash.lifecycle.json'
@@ -308,7 +337,7 @@ ledger_file="$6"
         $bashResult = Invoke-Process -FilePath $bashCommand -ArgumentList @(
             ($bashRunner -replace '\\', '/'), ($bashAgy -replace '\\', '/'), ($shLauncher -replace '\\', '/'),
             ($bashOut -replace '\\', '/'), ($bashErr -replace '\\', '/'), ($bashLifecycle -replace '\\', '/'),
-            ($bashLedger -replace '\\', '/')
+            ($bashLedger -replace '\\', '/'), ($bashAdapter -replace '\\', '/')
         )
         Assert-Equal $bashResult.ExitCode 0 'bash worker exits successfully'
         $bashRecord = Get-Content -LiteralPath $bashLifecycle -Raw | ConvertFrom-Json
@@ -320,7 +349,7 @@ ledger_file="$6"
             ($bashRunner -replace '\\', '/'), ($bashAgy -replace '\\', '/'), ($shLauncher -replace '\\', '/'),
             ((Join-Path $tmpRoot 'bash-malformed.json') -replace '\\', '/'),
             ((Join-Path $tmpRoot 'bash-malformed.err') -replace '\\', '/'), ($bashMalformedLifecycle -replace '\\', '/'),
-            ((Join-Path $tmpRoot 'bash-malformed.ledger.json') -replace '\\', '/')
+            ((Join-Path $tmpRoot 'bash-malformed.ledger.json') -replace '\\', '/'), ($bashAdapter -replace '\\', '/')
         ) -Environment @{ FAKE_BASH_MODE = 'malformed' }
         Assert-True ($bashMalformed.ExitCode -ne 0) 'bash malformed worker exits unsuccessfully'
         $bashMalformedRecord = Get-Content -LiteralPath $bashMalformedLifecycle -Raw | ConvertFrom-Json
@@ -332,7 +361,7 @@ ledger_file="$6"
             ($bashRunner -replace '\\', '/'), ($bashAgy -replace '\\', '/'), ($shLauncher -replace '\\', '/'),
             ((Join-Path $tmpRoot 'bash-scalar.json') -replace '\\', '/'),
             ((Join-Path $tmpRoot 'bash-scalar.err') -replace '\\', '/'), ($bashScalarLifecycle -replace '\\', '/'),
-            ((Join-Path $tmpRoot 'bash-scalar.ledger.json') -replace '\\', '/')
+            ((Join-Path $tmpRoot 'bash-scalar.ledger.json') -replace '\\', '/'), ($bashAdapter -replace '\\', '/')
         ) -Environment @{ FAKE_BASH_MODE = 'scalar' }
         Assert-True ($bashScalar.ExitCode -ne 0) 'bash scalar structured output exits unsuccessfully'
         $bashScalarRecord = Get-Content -LiteralPath $bashScalarLifecycle -Raw | ConvertFrom-Json
@@ -343,7 +372,7 @@ ledger_file="$6"
             ($bashRunner -replace '\\', '/'), ($bashAgy -replace '\\', '/'), ($shLauncher -replace '\\', '/'),
             ((Join-Path $tmpRoot 'bash-quota.json') -replace '\\', '/'),
             ((Join-Path $tmpRoot 'bash-quota.err') -replace '\\', '/'), ($bashQuotaLifecycle -replace '\\', '/'),
-            ((Join-Path $tmpRoot 'bash-quota.ledger.json') -replace '\\', '/')
+            ((Join-Path $tmpRoot 'bash-quota.ledger.json') -replace '\\', '/'), ($bashAdapter -replace '\\', '/')
         ) -Environment @{ FAKE_BASH_MODE = 'quota' }
         Assert-Equal $bashQuota.ExitCode 75 'bash quota exhaustion returns handoff code'
         $bashQuotaRecord = Get-Content -LiteralPath $bashQuotaLifecycle -Raw | ConvertFrom-Json
@@ -353,6 +382,16 @@ ledger_file="$6"
         [Console]::Out.WriteLine('skip - bash not found on host; skipping worker lifecycle parity')
     }
 } finally {
+    if ($null -eq $savedAdapterBin) {
+        Remove-Item Env:OFFLOAD_ADAPTER_BIN -ErrorAction SilentlyContinue
+    } else {
+        $env:OFFLOAD_ADAPTER_BIN = $savedAdapterBin
+    }
+    if ($null -eq $savedAdapterCatalog) {
+        Remove-Item Env:FAKE_ADAPTER_CATALOG -ErrorAction SilentlyContinue
+    } else {
+        $env:FAKE_ADAPTER_CATALOG = $savedAdapterCatalog
+    }
     if (Test-Path -LiteralPath $tmpRoot) {
         Remove-Item -LiteralPath $tmpRoot -Recurse -Force
     }

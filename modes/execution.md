@@ -31,12 +31,12 @@ The command examples below show the `agy` arguments passed after the dispatcher'
 
 The examples use one assignment per ledger. For a parallel wave, share the ledger and set its root child-width and total resource limits to cover the whole wave.
 
-| Role | Wave | Default model | Effort | Mode | Job |
+| Role | Wave | Preference | Effort | Mode | Job |
 |---|---|---|---|---|---|
-| scout | 1 | `gemini-3.8-flash-low` | low | `plan` | Report repository-relative file paths a task touches. |
-| gate-author | 2 | `gemini-3.8-flash-high` | high | `accept-edits` | Author an executable test file from acceptance criteria. |
-| implementer | 3 | `gemini-3.8-flash-high` | high | `accept-edits` | Implement the task within owned files in candidate workspace. |
-| reviewer | 4 | `gemini-3.8-flash-high` | high | `plan` | Evaluate the recorded review artifact against criteria for diff-gated tasks. |
+| scout | 1 | fast | low | `plan` | Report repository-relative file paths a task touches. |
+| gate-author | 2 | balanced | high | `accept-edits` | Author an executable test file from acceptance criteria. |
+| implementer | 3 | balanced | high | `accept-edits` | Implement the task within owned files in candidate workspace. |
+| reviewer | 4 | deep | high | `plan` | Evaluate the recorded review artifact against criteria for diff-gated tasks. |
 
 `--mode plan` is a version-sensitive behavioral hint, not a write barrier. On `agy 1.1.25`, the compatibility probe blocked the tested direct write outside the permitted artifact area, but this is not a guarantee. `--add-dir` grants access without confining writes. Protection relies on isolated candidate worktrees, mechanical execution scope checks with explicit baselines, frozen path checks, and test gates.
 
@@ -298,7 +298,7 @@ Read worker JSON responses and record outcomes in `routing-outcomes.json`:
 - `status: SUCCESS`: Worker completed execution. Proceed to verification in Step 5.
 - Non-zero exit code or unparsable output: Worker crashed or encountered an operational failure. Record the attempt and follow Step 6.
 - Timeout (no output written before 20m timeout): Operational failure. Record the timeout and follow Step 6.
-- **Immediate quota handoff**: If explicit Gemini quota exhaustion is detected on any worker, record still-running candidates and all existing artifacts in `routing-outcomes.json` immediately without waiting for sibling completion, and hand off unfinished work directly to the calling orchestrator.
+- **Immediate quota handoff**: If explicit adapter-reported quota exhaustion is detected on any worker, record still-running candidates and all existing artifacts in `routing-outcomes.json` immediately without waiting for sibling completion, and hand off unfinished work directly to the calling orchestrator.
 
 ## Step 5: Verify and integrate
 
@@ -455,11 +455,11 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 - **Stable worker IDs and retry ceiling.** Assign a stable `worker_id` to each logical task. Attempt 1 is initial dispatch; attempt 2 is its only possible retry. Maximum two attempts total per task.
 - **Outcome tracking.** Record each attempt and verification outcome in `routing-outcomes.json`.
 - **Baseline retention on retry.** Retries must retain the original verification baseline for that writing stage (e.g. `$GATE_BASELINE`). A failed attempt never becomes an implicitly trusted baseline. Create a fresh candidate worktree at the original baseline for attempt 2.
-- **Implementer quality failure.** If an execution scope check violation occurs or a machine gate normalizes to `failure_class: "quality"` (non-zero exit code other than 126/127), this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output and diagnostic evidence. Use `--route quality-retry` only if an evidence-backed escalation target is configured for `implementer` in `model-policy.json`; otherwise use `--route default`. If attempt 2 fails, halt that task.
+- **Implementer quality failure.** If an execution scope check violation occurs or a machine gate normalizes to `failure_class: "quality"` (non-zero exit code other than 126/127), this constitutes a quality failure. If a retry remains (attempt 2), redispatch once with the specific failure output and diagnostic evidence using the pinned selection. If the pinned model is unavailable, record the explicit fallback or handoff and do not switch silently. If attempt 2 fails, halt that task.
 - **Unrunnable gate execution.** If a gate command exits 126 or 127, it normalizes to `failure_class: "unrunnable"` with `verification_status: "not_performed"` and `allow_retry: false`. Gate exits 126 and 127 are not quality retries; preserve the command, exit code, and diagnostic evidence in `routing-outcomes.json` without spending or scheduling a quality retry.
 - **Scout or gate-author operational failure.** If a scout or gate-author crashes, times out, or produces unparsable output, retry once using `--route default`. If the retry fails, complete that step directly as the orchestrator (`orchestrator (fallback)`).
 - **Reviewer failure.** If reviewer output is unparsable or fails digest or quote verification, inspect the recorded artifact directly as the orchestrator (`agy→orchestrator`).
-- **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Record still-running candidates immediately without waiting for siblings, preserve completed artifacts, and return unfinished work to the calling orchestrator.
+- **Quota exhaustion.** Explicit adapter-reported quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Record still-running candidates immediately without waiting for siblings, preserve completed artifacts, and return unfinished work to the calling orchestrator.
 - **Workspace cleanup.** After workers have terminated, clean up candidate worktrees:
   - Bash: `"$OFFLOAD_ROOT/scripts/execution-workspace.sh" cleanup --manifest "<manifest>" --status success|failed|retain`
   - PowerShell: `& "$OffloadRoot/scripts/execution-workspace.ps1" cleanup --manifest "<manifest>" --status success|failed|retain`

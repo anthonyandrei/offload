@@ -1,6 +1,6 @@
 # offload
 
-`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless `agy` workers (the Antigravity CLI, running Gemini models).
+`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless workers through a vendor adapter. The reference adapter launches `agy`.
 
 Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Code, Codex CLI, or any agent that can read instructions and run shell commands. `agy` is the worker, not the orchestrator. The orchestrator never accepts worker claims at face value. It verifies work mechanically through test gates, execution scope checks, verbatim quote matching, independent citation auditing, and direct repository checks.
 
@@ -111,17 +111,17 @@ Single factual lookups stay local with the orchestrator and are not offloaded.
 
 ## Worker roles
 
-| Role | Mode | Default model | Job |
+| Role | Mode | Preference | Job |
 |---|---|---|---|
-| scout | Execution | `gemini-3.8-flash-low` | Discovers repository-relative file paths touched by provisional tasks. |
-| gate-author | Execution | `gemini-3.8-flash-high` | Authors executable test files from acceptance criteria. |
-| implementer | Execution | `gemini-3.8-flash-high` | Modifies owned code files to satisfy gates. |
-| reviewer | Execution | `gemini-3.8-flash-high` | Evaluates diffs adversarially against criteria for diff-gated tasks. |
-| researcher | Research | `gemini-3.8-flash-high` | Collects structured findings for assigned evidence angles or bounded local scopes. |
-| synthesizer | Web research | `gemini-3.8-flash-high` | Builds claim ledgers, resolves conflicts, and drafts answers. |
-| auditor | Web research | `gemini-3.8-flash-high` | Independently verifies citation URLs and claims against live sources. |
+| scout | Execution | fast | Discovers repository-relative file paths touched by provisional tasks. |
+| gate-author | Execution | balanced | Authors executable test files from acceptance criteria. |
+| implementer | Execution | balanced | Modifies owned code files to satisfy gates. |
+| reviewer | Execution | deep | Evaluates diffs adversarially against criteria for diff-gated tasks. |
+| researcher | Research | balanced | Collects structured findings for assigned evidence angles or bounded local scopes. |
+| synthesizer | Web research | deep | Builds claim ledgers, resolves conflicts, and drafts answers. |
+| auditor | Web research | deep | Independently verifies citation URLs and claims against live sources. |
 
-Worker routing is governed by repository-root `model-policy.json`. Launchers accept `--role <role>` (and optional `--route default|quality-retry`) and resolve models dynamically. Callers must not supply `--model` or `--effort` flags.
+Worker routing is governed by repository-root `model-policy.json` and [`docs/adapter-contract.md`](docs/adapter-contract.md). Launchers accept `--role <role>` and select a current eligible catalog entry. Callers must not supply `--model` or `--effort` flags.
 
 A historical live smoke comparison against Gemini 3.7 retained Flash for every role. The proposed Pro split did not complete its mandatory synthesis stage, while the all-Flash control completed synthesis and citation audit with four supported claims. The recorded comparison is in [`tests/live-smoke-comparison.md`](tests/live-smoke-comparison.md).
 
@@ -219,8 +219,8 @@ The script copies only declared paths into `<workspace>/repo/` and creates the `
 Follow the shared recovery rules in `SKILL.md`:
 
 - **Stable worker IDs and retry ceiling.** Each assignment retains a stable identifier across attempts. Attempt 1 is initial dispatch; attempt 2 is the only permitted retry (maximum two attempts per task).
-- **Quality versus operational failures.** Failing a machine gate, scope check, or citation audit is a quality failure; operational failures include crashes, timeouts (20m), and unparsable output. Operational failures retry with `--route default` (no model escalation). Quality failures retry with `--route quality-retry` only when an evidence-backed target is configured in `model-policy.json`.
-- **Immediate quota handoff.** If Gemini quota is exhausted, stop dispatching immediately and hand all unfinished work back to the calling orchestrator while preserving completed artifacts.
+- **Quality versus operational failures.** Failing a machine gate, scope check, or citation audit is a quality failure; operational failures include crashes, timeouts (20m), and unparsable output. Operational failures retry with `--route default` using the recorded selection. Quality failures retry with `--route quality-retry` using the recorded pin; if it is unavailable, record an explicit fallback or handoff instead of switching silently.
+- **Immediate quota handoff.** If adapter-reported quota is exhausted, stop dispatching immediately and hand all unfinished work back to the calling orchestrator while preserving completed artifacts.
 - **Outcome tracking.** Every attempt and verification verdict is recorded in `routing-outcomes.json` in the scratch workspace. Web research provenance optionally records routing attempt data in `provenance.json`.
 - **Implementer failures.** If an implementer fails its gate or violates execution scope, retry once with the error output. If the retry fails, halt that task.
 - **Researcher failures.** If a researcher crashes or times out, retry once. If the retry fails, synthesis proceeds as long as at least two independent evidence angles remain. The final report explicitly names any omitted angle.
@@ -313,7 +313,7 @@ All modes format results into a consistent summary:
 | docs   | diff                        | agy+grep      | △ judged | as assigned (scout) |
 | auth-audit | audit (isolated)        | orchestrator+checked (high) + orchestrator+sampled (med/low) | complete | 3 findings (2 verified, 1 unverified) |
 
-### Claimed by Gemini, not verified
+### Claimed by worker, not verified
 - "also improved error messages"
 - "Legacy endpoints may be affected"
 ```
@@ -348,7 +348,7 @@ Place this instruction block in your agent's project context file (`AGENTS.md`, 
 ```markdown
 ## Offload delegation
 
-- Use Offload when the user asks to offload, run work on AGY, use Gemini subagents, or accepts an AGY offer.
+- Use Offload when the user asks to offload, run work through a specific vendor adapter, or accepts an AGY offer.
 - Offer AGY once, before starting, when implementation splits into three or more independently gated tasks in a clean Git repository, or when a read-only audit or external research requires multiple distinct work lanes. Count research lanes by distinct questions or evidence responsibilities, not browser tabs.
 - Keep narrow factual answers, explanations, single-source lookups, and focused code reviews local.
 - Ask before dispatching.
@@ -396,7 +396,7 @@ unavailable.
 - **`--json-schema` outputs validated JSON in `structured_output`.** Parse `structured_output` rather than `response`.
 - **Use `dispatch-worker.sh` or `dispatch-worker.ps1` for execution assignments.** They own assignment admission, worktree creation, result and error paths, and the bounded launch. The dispatcher wraps the lower-level `run-agy-json` helper, which rejects the unsupported `agy --output` flag.
 - **Use structured output extractors (`extract-structured-output.sh` or `extract-structured-output.ps1`) between research stages.** They forward only validated `structured_output`, keeping verbose worker prose out of later prompts.
-- **Model routing is governed by `model-policy.json`.** Launchers inject the policy-selected Gemini 3.8 Flash model (`gemini-3.8-flash-low` or `gemini-3.8-flash-high`) via `--role <role>`. Reasoning effort is encoded directly in the model ID; callers must not pass `--model` or `--effort`.
+- **Model routing is governed by `model-policy.json` and the adapter contract.** Launchers select a live eligible model using the role preference, effort, required capabilities, quota, and static security rules. The adapter receives the exact selection and translates it for its vendor. Reasoning effort stays separate from model identity, and callers must not pass `--model` or `--effort`.
 - **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted probe on `agy 1.1.25` blocked the tested direct write outside the permitted artifact area, but this observation is not a guarantee. `--add-dir` grants access without confining writes. Security relies on filesystem isolation and mechanical verification.
 
 Run the maintainer-only compatibility probe when the installed `agy` behavior needs a refresh (never as a deterministic CI gate):

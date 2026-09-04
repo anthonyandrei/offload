@@ -960,7 +960,7 @@ try {
         $routingRecord1 | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $wsBash1 'routing-outcomes.json') -Encoding utf8
 
         $resBash1 = Invoke-CleanupSh @('--workspace', $wsBash1, '--status', 'success')
-        Assert-Equal $resBash1.ExitCode 0 "bash-accept-three-workers-one-attempt: exit code is 0"
+        Assert-True ($resBash1.ExitCode -eq 0) "bash-accept-three-workers-one-attempt: exit code is 0" $resBash1.Stderr
         Assert-True (Test-Path -LiteralPath (Join-Path $wsBash1 'routing-outcomes.json')) "bash-accept-three-workers-one-attempt: routing retained"
         Assert-True (Test-Path -LiteralPath (Join-Path $wsBash1 'evidence-disposition.json')) "bash-accept-three-workers-one-attempt: disposition created"
         Assert-False (Test-Path -LiteralPath (Join-Path $wsBash1 'disposable.txt')) "bash-accept-three-workers-one-attempt: disposable pruned"

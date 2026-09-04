@@ -192,12 +192,12 @@ function Assert-RoutingRecord($record, [string]$path) {
             Fail "routing record contains a non-object attempt: $path"
         }
 
-        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'model', 'effort', 'reason', 'state', 'started_at', 'ended_at', 'duration_seconds', 'exit_code', 'failure_class', 'evidence_paths', 'usage')) {
+        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'effort', 'reason', 'state', 'started_at', 'ended_at', 'duration_seconds', 'exit_code', 'failure_class', 'evidence_paths', 'usage')) {
             if ($null -eq $attempt.PSObject.Properties[$field]) {
                 Fail "routing record attempt is missing field '$field': $path"
             }
         }
-        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'model', 'effort', 'reason', 'state', 'failure_class')) {
+        foreach ($field in @('worker_id', 'role', 'mode', 'policy_revision', 'route', 'effort', 'reason', 'state', 'failure_class')) {
             $value = Get-JsonProperty $attempt $field
             if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
                 Fail "routing record attempt is missing string field '$field': $path"
@@ -247,8 +247,18 @@ function Assert-RoutingRecord($record, [string]$path) {
         }
         $model = [string](Get-JsonProperty $attempt 'model')
         $effort = [string](Get-JsonProperty $attempt 'effort')
-        if ($model -notmatch '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$' -or $effort -notin @('low', 'medium', 'high') -or -not $model.EndsWith("-$effort")) {
-            Fail "routing record attempt has an invalid model or effort: $path"
+        $modelId = [string](Get-JsonProperty $attempt 'model_id')
+        if ([string]::IsNullOrWhiteSpace($model) -and [string]::IsNullOrWhiteSpace($modelId)) {
+            Fail "routing record attempt has no model or model_id: $path"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($modelId) -and -not [string]::IsNullOrWhiteSpace($model) -and $model -ne $modelId) {
+            Fail "routing record attempt model and model_id disagree: $path"
+        }
+        if ($effort -notin @('low', 'medium', 'high')) {
+            Fail "routing record attempt has invalid effort: $path"
+        }
+        if ([string]::IsNullOrWhiteSpace($modelId) -and ($model -notmatch '^gemini-[a-zA-Z0-9.-]+-(low|medium|high)$' -or -not $model.EndsWith("-$effort"))) {
+            Fail "legacy routing record model must be a Gemini model ID with an effort suffix: $path"
         }
         if ((Get-JsonProperty $attempt 'state') -notin @('running', 'completed', 'failed', 'interrupted')) {
             Fail "routing record attempt has an invalid state: $path"
