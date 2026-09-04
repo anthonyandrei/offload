@@ -31,6 +31,13 @@ printf '%s\n' '{"status":"success","response":"verbose worker text","structured_
 FAKE_AGY
 chmod +x "$fake_bin/agy"
 
+cat > "$TMP_ROOT/catalog.json" <<'CATALOG'
+{"protocol_version":1,"adapter":"fake","adapter_revision":"test-adapter-1","vendor":"test-vendor","catalog_revision":"test-catalog-1","models":[{"id":"test-model","family_hint":"test-family","available":true,"quota_available":true,"supported_efforts":["low","medium","high"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}
+CATALOG
+export OFFLOAD_ADAPTER_BIN="$ROOT/tests/fixtures/fake-worker-adapter.sh"
+export FAKE_ADAPTER_CATALOG="$TMP_ROOT/catalog.json"
+export AGY_BIN="$fake_bin/agy"
+
 run_output="$TMP_ROOT/run.json"
 run_error="$TMP_ROOT/run.err"
 launcher_stdout=$(FAKE_AGY_ARGS="$TMP_ROOT/agy.args" PATH="$fake_bin:$PATH" \

@@ -1,15 +1,15 @@
 ---
 name: offload
-description: Use when the user wants execution or research handed to another vendor's CLI agents instead of running it here. Triggers include "offload this", "run this on agy", "use gemini subagents", or after answering yes to the offload offer. Also offer unprompted when implementation splits into three or more independently gated tasks in a clean git repository, or when a read-only audit or online research fans out across multiple angles or files. Dispatches parallel headless agy workers, gates their output, and reports what was proven versus claimed.
+description: Use when the user wants execution or research handed to another CLI agent instead of running it here. Triggers include "offload this", "run this on a worker", or after answering yes to the offload offer. Also offer unprompted when implementation splits into three or more independently gated tasks in a clean git repository, or when a read-only audit or online research fans out across multiple angles or files. Dispatches parallel headless workers through an adapter, gates their output, and reports what was proven versus claimed.
 ---
 
 # offload
 
-If you are `agy`, stop here. Return worker results to your orchestrator. `agy` is the worker role this skill dispatches. Any other agent that can read instructions and run shell commands can orchestrate, including Claude Code, Codex CLI, and similar agents. Assignments prohibit nested worker dispatch, but the skill cannot enforce that rule if a worker ignores it.
+If you are a dispatched worker, stop here. Return worker results to your orchestrator. Workers do not dispatch nested workers. Any agent that can read instructions and run shell commands can orchestrate, including Claude Code, Codex CLI, and similar agents. Assignments prohibit nested worker dispatch, but the skill cannot enforce that rule if a worker ignores it.
 
 ## What this skill does
 
-`offload` delegates execution and research tasks to headless `agy` workers (the Antigravity CLI running Gemini models routed via `model-policy.json`). You remain the orchestrator. You decompose tasks, set acceptance criteria or bounded questions, and verify evidence and gates. Workers handle exploration, test authoring, code implementation, diff review, and research evidence collection.
+`offload` delegates execution and research tasks to headless workers through a vendor adapter. The reference adapter launches `agy`, but the workflow contract does not depend on a vendor or exact model ID. You remain the orchestrator. You decompose tasks, set acceptance criteria or bounded questions, and verify evidence and gates. Workers handle exploration, test authoring, code implementation, diff review, and research evidence collection.
 
 You never accept worker claims at face value. You verify output through mechanical checks, test execution, diff inspections, or secondary reviews.
 
@@ -28,15 +28,15 @@ Check these requirements before dispatching workers:
 4. **Git working tree.** Writing workflows (`modes/execution.md`) require a clean git repository (`git rev-parse --is-inside-work-tree` and empty `git status --porcelain`). Research workflows (`modes/repo-research.md`, `modes/web-research.md`) operate in isolated disposable workspaces.
 5. **Preflight model availability check.** Before dispatching the first worker in a run:
    - Read repository-root `model-policy.json` (resolved relative to helper scripts, never the caller's working directory).
-   - Check selected default models against available Gemini model IDs reported by the resolved `agy` installation.
-   - If a required model is absent or availability cannot be established, block dispatch and return the affected work to the caller. Do not silently downgrade to 3.7, fall back to AGY's unverified default, or pick a similarly named model.
-   - When a quality-retry escalation model is used, check its availability before dispatch as well.
-   - Avoid repeating catalog discovery for every worker in the same run unless AGY reports that availability changed.
+   - Ask the configured adapter for its live catalog, then filter by availability, quota, required capabilities, and supported effort.
+   - If no eligible model exists or availability cannot be established, block dispatch and return the affected work to the caller. Do not silently switch providers or fall back to an unverified default.
+   - Avoid repeating catalog discovery for every worker in the same run unless the adapter reports that availability changed.
 6. **Policy installation, updates, and revert.**
    - `model-policy.json` is located at repository root alongside helper scripts. Installation must copy the entire skill directory (including `model-policy.json`).
-   - The policy enforces `schema_version: 1`, a non-empty `policy_revision` (e.g. `"2026-09-03.1"`), `max_effort: "high"`, `max_retries_per_worker: 1`, `quota_action: "handoff"`, and exactly seven role mappings: `scout`, `gate-author`, `implementer`, `reviewer`, `researcher`, `synthesizer`, and `auditor`.
+   - The policy enforces `schema_version: 2`, a non-empty `policy_revision`, `max_effort: "high"`, `max_retries_per_worker: 1`, `quota_action: "handoff"`, and exactly seven role mappings: `scout`, `gate-author`, `implementer`, `reviewer`, `researcher`, `synthesizer`, and `auditor`.
+   - Each role declares an internal preference (`fast`, `balanced`, or `deep`), an independent effort (`low`, `medium`, or `high`), and required capabilities. It does not publish vendor names or exact model IDs.
    - To update policy: edit `model-policy.json` in the skill root and update `policy_revision`. To revert: restore the prior revision. Launchers validate the entire policy on every invocation. Missing or invalid policy fails closed before launching workers.
-   - A non-null `quality_escalation` entry must specify an eligible Gemini model and a valid, non-escaping repo-relative `evidence_path` pointing to an existing evaluation document inside the skill directory.
+   - There is no policy-level model escalation target. Quality retries use the pinned selection when one exists. A missing pin requires an explicit fallback or handoff record.
 
 ## Routing
 
@@ -59,7 +59,7 @@ Load the matching mode document for the selected route and shell-specific comman
 
 ## Shared model routing and launcher contract
 
-Offload routes all workers through the repository-root `model-policy.json`. Launchers resolve model IDs and inject `--model` before launching `agy`. Callers must never pass `--model` or `--effort` after `--`.
+Offload routes all workers through the repository-root `model-policy.json` and the adapter contract in [`docs/adapter-contract.md`](docs/adapter-contract.md). The launcher selects an eligible current catalog entry. The adapter translates that exact selection into vendor-specific arguments. Callers must never pass `--model` or `--effort` after `--`.
 
 ### Launcher invocation
 
@@ -68,22 +68,22 @@ Offload routes all workers through the repository-root `model-policy.json`. Laun
 
 In PowerShell command expressions, always quote the delimiter (`'--'`).
 
-### Roles and default models
+### Roles and preferences
 
-| Role | Default model | Effort | Primary mode |
+| Role | Preference | Effort | Primary mode |
 |---|---|---|---|
-| `scout` | `gemini-3.8-flash-low` | low | Execution |
-| `gate-author` | `gemini-3.8-flash-high` | high | Execution |
-| `implementer` | `gemini-3.8-flash-high` | high | Execution |
-| `reviewer` | `gemini-3.8-flash-high` | high | Execution |
-| `researcher` | `gemini-3.8-flash-high` | high | Repo research / Web research |
-| `synthesizer` | `gemini-3.8-flash-high` | high | Web research |
-| `auditor` | `gemini-3.8-flash-high` | high | Web research |
+| `scout` | fast | low | Execution |
+| `gate-author` | balanced | high | Execution |
+| `implementer` | balanced | high | Execution |
+| `reviewer` | deep | high | Execution |
+| `researcher` | balanced | high | Repo research / Web research |
+| `synthesizer` | deep | high | Web research |
+| `auditor` | deep | high | Web research |
 
 ### Routes
 
-- `--route default` (default): Resolves `default_model` for the specified role.
-- `--route quality-retry`: Resolves `quality_escalation.model` for that role. If `quality_escalation` is `null` or unconfigured, the launcher rejects the request with exit code 2 before starting `agy`. Never infer an escalation model or replace the route.
+- `--route default` (default): Selects the best eligible catalog entry for the role's preference, effort, and capabilities.
+- `--route quality-retry`: Requires a pin from the prior attempt and reuses that exact adapter, vendor, model ID, and effort. If the pin is missing or unavailable, the launcher records an explicit fallback or handoff condition and does not switch silently.
 
 ## Shared recovery, retry accounting, and failure handling
 
@@ -106,17 +106,17 @@ In PowerShell command expressions, always quote the delimiter (`'--'`).
 
 1. **Verified success**: Output passes mechanical gates and verification checks. Accept result; no retry.
 2. **Quality failure**: The worker completed with a parsable response (exit code 0), but the output fails verification (e.g. machine gate failure normalized to `quality` via `execute-gate.sh` or `execute-gate.ps1`, execution scope violation, reviewer quote mismatch, unsupported synthesis claim, or audit rejection).
-   - If retry budget remains and mode permits correction: retry once (attempt 2) with concrete verification feedback. Use `--route quality-retry` only when an evidence-backed escalation target is configured in policy; otherwise use `--route default`.
+   - If retry budget remains and mode permits correction: retry once (attempt 2) with concrete verification feedback. Use `--route quality-retry` with the recorded pin; if the pin is unavailable, record an explicit fallback or handoff instead of selecting a replacement silently.
    - If attempt 2 fails or the mode requires immediate fallback: stop retrying and follow that mode's halt, partial-result, or orchestrator fallback path.
 3. **Unrunnable failure**: Gate execution exited 126 or 127, normalized to `failure_class: "unrunnable"` with `verification: not_performed`. Preserve the command, exit code, and diagnostic evidence in `routing-outcomes.json`. Exits 126 and 127 are not quality retries; do not schedule or spend a model retry.
 4. **Operational failure**: Process crash (nonzero exit code), timeout (20 minutes with no output), unparsable JSON, or tool failure.
    - Follow mode's recovery rule with at most one same-model retry (`--route default`) where permitted. Never escalate models for operational failures.
 5. **Unknown failure**: Record uncertainty and follow the operational-failure path. Do not assume a quality failure or quota issue.
-6. **Quota exhaustion**: Explicit Gemini quota error reported by `agy` structured output or diagnostics. Trigger immediate quota handoff.
+6. **Quota exhaustion**: Explicit quota exhaustion reported by the adapter or worker diagnostics. Trigger immediate quota handoff.
 
 ### Immediate quota handoff
 
-When explicit Gemini quota exhaustion is detected:
+When explicit quota exhaustion is detected:
 - Stop dispatching new workers immediately.
 - Return unfinished work to the calling orchestrator without waiting for running siblings.
 - Do not retry automatically, wait for reset, switch models, or activate paid credits.
@@ -135,8 +135,14 @@ The orchestrator maintains `routing-outcomes.json` in each run's scratch workspa
   - `attempt`: Integer 1 or 2.
   - `policy_revision`: Policy revision string.
   - `route`: `"default"` or `"quality-retry"`.
-  - `model`: Resolved AGY model ID.
-  - `effort`: Derived effort suffix (`low`, `medium`, `high`).
+  - `adapter`: Adapter name and `adapter_revision`.
+  - `vendor`: Adapter-reported vendor family.
+  - `model_id`: Exact selected model ID. `model` may repeat it for compatibility with older records.
+  - `family_hint`: Descriptive adapter metadata. It never grants permissions or promises cross-vendor quality.
+  - `preference`: Internal policy preference (`fast`, `balanced`, or `deep`).
+  - `effort`: Selected reasoning effort (`low`, `medium`, or `high`), kept separate from model identity.
+  - `catalog_revision`: Adapter catalog or probe revision used for selection.
+  - `selection_reason`: Deterministic filtering and ranking reason.
   - `reason`: Initial dispatch or observed failure and recovery decision authorizing attempt 2.
   - `started_at`: ISO 8601 UTC timestamp.
   - `ended_at`: ISO 8601 UTC timestamp (null while running).
@@ -178,7 +184,7 @@ pass: 3/3 criteria, all quotes matched verbatim. No escalation.
 - [LOW]  [agy+unverified] "Legacy endpoints may be affected" — unverified (no location cited).
 Sample recorded: 1/1 high checked, 1/2 med/low sampled.
 
-### Claimed by Gemini, not verified
+### Claimed by worker, not verified
 - "also improved error messages"
 - "Legacy endpoints may be affected"
 ```

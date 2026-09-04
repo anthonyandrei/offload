@@ -314,8 +314,13 @@ exit 0
     }
 
     $pathSep = [System.IO.Path]::PathSeparator
+    $catalogFile = Join-Path $TmpRoot 'probe-catalog.json'
+    @'
+{"protocol_version":1,"adapter":"agy","adapter_revision":"agy-1","vendor":"agy","catalog_revision":"probe-catalog","models":[{"id":"probe-model-high","family_hint":"unknown","available":true,"quota_available":true,"supported_efforts":["high"],"capabilities":[],"scores":{"fast":2,"balanced":1,"deep":2}}]}
+'@ | Set-Content -LiteralPath $catalogFile -Encoding utf8
     $testEnv = @{
         'AGY_BIN'                   = $fakeAgyPs
+        'OFFLOAD_ADAPTER_CATALOG'   = $catalogFile
         'PATH'                      = "$fakeBin$pathSep$env:PATH"
         'FAKE_AGY_SENTINEL_TARGET'  = (Join-Path $TmpRoot 'sentinel.txt')
     }
@@ -323,6 +328,14 @@ exit 0
     $probeWorkspace = Join-Path $TmpRoot 'probe-workspace'
     [System.IO.Directory]::CreateDirectory($probeWorkspace) | Out-Null
     $probeReport = Join-Path $TmpRoot 'probe-report.json'
+
+    $gitStatusBeforePsi = [System.Diagnostics.ProcessStartInfo]::new('git', 'status --porcelain')
+    $gitStatusBeforePsi.WorkingDirectory = $RootDir
+    $gitStatusBeforePsi.RedirectStandardOutput = $true
+    $gitStatusBeforePsi.UseShellExecute = $false
+    $gitStatusBeforeProc = [System.Diagnostics.Process]::Start($gitStatusBeforePsi)
+    $statusBefore = $gitStatusBeforeProc.StandardOutput.ReadToEnd().Trim()
+    $gitStatusBeforeProc.WaitForExit()
 
     # Run the probe script in a disposable workspace
     $pwshBin = (Get-Process -Id $PID).MainModule.FileName
@@ -373,10 +386,7 @@ exit 0
     $statusOut = $gitProc.StandardOutput.ReadToEnd().Trim()
     $gitProc.WaitForExit()
 
-    $unrelatedChanges = @($statusOut -split "`r?`n" | Where-Object {
-        $_ -and $_ -notmatch 'test_verification_hardening_docs\.ps1'
-    })
-    Assert-True ($unrelatedChanges.Count -eq 0) "probe: does not modify or contaminate git repository"
+    Assert-Equal $statusOut $statusBefore "probe: does not modify or contaminate git repository"
 } finally {
     if (Test-Path -LiteralPath $TmpRoot) {
         Remove-Item -LiteralPath $TmpRoot -Recurse -Force -ErrorAction SilentlyContinue

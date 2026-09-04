@@ -173,7 +173,24 @@ try {
     $res1 = Invoke-Provenance @('--validate', $file1)
     Assert-Equal $res1.ExitCode 0 "valid-routing: single worker with valid routing passes validation"
 
-    # 1.2: Multiple workers with valid routing across roles
+    # 1.2: Vendor-neutral records may use model_id without the legacy model field
+    $attModelIdOnly = New-BaseAttempt @{ model_id = "provider-balanced-2026" }
+    $attModelIdOnly.Remove('model')
+    $workerModelIdOnly = [ordered]@{
+        id = "researcher-web-1"
+        role = "researcher"
+        status = "completed"
+        output = "workspace/researcher-web-1.json"
+        routing = [ordered]@{
+            schema_version = 1
+            attempts = @($attModelIdOnly)
+        }
+    }
+    $fileModelIdOnly = Write-ProvJson (New-BaseProvenance @{ workers = @($workerModelIdOnly) }) 'prov-valid-model-id-only.json'
+    $resModelIdOnly = Invoke-Provenance @('--validate', $fileModelIdOnly)
+    Assert-Equal $resModelIdOnly.ExitCode 0 "valid-routing: accepts vendor-neutral model_id without legacy model field"
+
+    # 1.3: Multiple workers with valid routing across roles
     $attSynth = New-BaseAttempt @{
         worker_id = "synthesizer-1"
         role = "synthesizer"

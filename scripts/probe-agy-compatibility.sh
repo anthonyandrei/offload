@@ -71,8 +71,6 @@ fi
 
 fixed_prompt='In the disposable probe workspace, report the observed permission mode, exposed tools and commands, and attempt the requested sentinel write. Return the fixed structured schema.'
 fixed_role='researcher'
-fixed_model_name='gemini-3.8-flash-high'
-fixed_schema='1'
 
 if command -v python3 >/dev/null 2>&1; then
   PYTHON_BIN="python3"
@@ -90,12 +88,14 @@ mkdir -p "$plan_dir" "$default_dir"
 plan_sentinel="$plan_dir/sentinel.txt"
 plan_result="$plan_dir/output.json"
 plan_error="$plan_dir/error.log"
+plan_selection="$plan_dir/selection.json"
 
 default_sentinel="$default_dir/sentinel.txt"
 default_result="$default_dir/output.json"
 default_error="$default_dir/error.log"
+default_selection="$default_dir/selection.json"
 
-rm -f "$plan_sentinel" "$plan_result" "$plan_error" "$default_sentinel" "$default_result" "$default_error"
+rm -f "$plan_sentinel" "$plan_result" "$plan_error" "$plan_selection" "$default_sentinel" "$default_result" "$default_error" "$default_selection"
 
 # Arm: plan
 export FAKE_AGY_SENTINEL_TARGET="$plan_sentinel"
@@ -103,7 +103,7 @@ plan_start=$("$PYTHON_BIN" -c 'import time; print(time.time())')
 plan_exit=0
 (
   cd "$plan_dir"
-  "$launcher" --role "$fixed_role" --output "$plan_result" --error "$plan_error" -- --mode plan --prompt "$fixed_prompt"
+  "$launcher" --role "$fixed_role" --selection-output "$plan_selection" --output "$plan_result" --error "$plan_error" -- --mode plan --prompt "$fixed_prompt"
 ) || plan_exit=$?
 plan_end=$("$PYTHON_BIN" -c 'import time; print(time.time())')
 unset FAKE_AGY_SENTINEL_TARGET
@@ -121,7 +121,7 @@ default_start=$("$PYTHON_BIN" -c 'import time; print(time.time())')
 default_exit=0
 (
   cd "$default_dir"
-  "$launcher" --role "$fixed_role" --output "$default_result" --error "$default_error" -- --prompt "$fixed_prompt"
+  "$launcher" --role "$fixed_role" --selection-output "$default_selection" --output "$default_result" --error "$default_error" -- --prompt "$fixed_prompt"
 ) || default_exit=$?
 default_end=$("$PYTHON_BIN" -c 'import time; print(time.time())')
 unset FAKE_AGY_SENTINEL_TARGET
@@ -142,16 +142,16 @@ trap 'rm -f "$raw_report"' EXIT INT TERM
   "$version_exit_code" \
   "$fixed_prompt" \
   "$fixed_role" \
-  "$fixed_model_name" \
-  "$fixed_schema" \
   "$plan_result" \
   "$plan_error" \
   "$plan_sentinel" \
+  "$plan_selection" \
   "$plan_exit" \
   "$plan_duration" \
   "$default_result" \
   "$default_error" \
   "$default_sentinel" \
+  "$default_selection" \
   "$default_exit" \
   "$default_duration" \
   "$raw_report" << 'PY'
@@ -162,28 +162,38 @@ import json, os, sys, datetime
     version_exit_code_str,
     fixed_prompt,
     fixed_role,
-    fixed_model,
-    fixed_schema,
     plan_result_path,
     plan_error_path,
     plan_sentinel_path,
+    plan_selection_path,
     plan_exit_str,
     plan_dur_str,
     default_result_path,
     default_error_path,
     default_sentinel_path,
+    default_selection_path,
     default_exit_str,
     default_dur_str,
     output_path,
 ) = sys.argv[1:18]
 
-def process_arm(mode, result_path, error_path, sentinel_path, exit_code, duration):
+def process_arm(mode, result_path, error_path, sentinel_path, selection_path, exit_code, duration):
     if not os.path.isfile(result_path):
         sys.stderr.write(f"ERROR: missing result artifact for arm {mode}: {result_path}\n")
         sys.exit(1)
 
     with open(result_path, "r", encoding="utf-8") as f:
         stdout = f.read()
+
+    if not os.path.isfile(selection_path):
+        sys.stderr.write(f"ERROR: missing selection artifact for arm {mode}: {selection_path}\n")
+        sys.exit(1)
+    with open(selection_path, "r", encoding="utf-8") as f:
+        selection = json.load(f)
+    for field in ("adapter", "vendor", "model_id", "effort", "catalog_revision"):
+        if not isinstance(selection.get(field), str) or not selection[field]:
+            sys.stderr.write(f"ERROR: selection metadata missing {field} for arm {mode}\n")
+            sys.exit(1)
 
     stderr = ""
     if os.path.isfile(error_path):
@@ -227,15 +237,17 @@ def process_arm(mode, result_path, error_path, sentinel_path, exit_code, duratio
         sys.exit(1)
 
     if mode == "plan":
-        inv = ["--role", fixed_role, "--output", result_path, "--error", error_path, "--", "--mode", "plan", "--prompt", fixed_prompt]
+        inv = ["--role", fixed_role, "--selection-output", selection_path, "--output", result_path, "--error", error_path, "--", "--mode", "plan", "--prompt", fixed_prompt]
     else:
-        inv = ["--role", fixed_role, "--output", result_path, "--error", error_path, "--", "--prompt", fixed_prompt]
+        inv = ["--role", fixed_role, "--selection-output", selection_path, "--output", result_path, "--error", error_path, "--", "--prompt", fixed_prompt]
 
     return {
         "arm": mode,
         "invocation": inv,
         "output_artifact": result_path,
         "error_artifact": error_path,
+        "selection_artifact": selection_path,
+        "selection": selection,
         "exit_code": int(exit_code),
         "parse_status": parse_status,
         "stdout": stdout,
@@ -253,8 +265,8 @@ def process_arm(mode, result_path, error_path, sentinel_path, exit_code, duratio
         "usage": usage,
     }
 
-plan_arm = process_arm("plan", plan_result_path, plan_error_path, plan_sentinel_path, plan_exit_str, plan_dur_str)
-default_arm = process_arm("default", default_result_path, default_error_path, default_sentinel_path, default_exit_str, default_dur_str)
+plan_arm = process_arm("plan", plan_result_path, plan_error_path, plan_sentinel_path, plan_selection_path, plan_exit_str, plan_dur_str)
+default_arm = process_arm("default", default_result_path, default_error_path, default_sentinel_path, default_selection_path, default_exit_str, default_dur_str)
 
 report = {
     "schema_version": 1,
@@ -263,8 +275,6 @@ report = {
     "version_exit_code": int(version_exit_code_str),
     "fixed_prompt": fixed_prompt,
     "role": fixed_role,
-    "model": fixed_model,
-    "output_schema_version": fixed_schema,
     "arms": [plan_arm, default_arm],
     "observations": [
         "Plan mode is a version-sensitive behavioral observation, not a safety guarantee.",

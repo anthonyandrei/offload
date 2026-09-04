@@ -11,7 +11,7 @@ Conducts cited online investigations and multi-angle technical research by dispa
    - **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 4. **`agy` availability.** Workers are launched using the matching `run-agy-json` helper, which handles `AGY_BIN` precedence and output capture.
 5. **Filesystem isolation.** Every research run operates in a disposable workspace outside the live repository.
-6. **Model policy and preflight check.** Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. All roles route through `model-policy.json` (`gemini-3.8-flash-high` default). Do not pass `--model` or `--effort` directly.
+6. **Model policy and preflight check.** Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. All roles route through the role preference, effort, and required capabilities in `model-policy.json`; the adapter selects a current eligible model. Do not pass `--model` or `--effort` directly.
 
 ## Worker isolation and mixed repositories
 
@@ -60,11 +60,11 @@ Record the specific deep trigger in the final report and in `provenance.json`. I
 
 Workers are dispatched by role using `run-agy-json` with `--role <role>`. The launcher resolves models dynamically from `model-policy.json`. Do not pass `--model` or `--effort` directly. Refer to [`SKILL.md`](../SKILL.md) for the shared model routing, preflight, and recovery contract.
 
-| Role | Stage | Default model | Effort | Alternative model | Mode | Job |
+| Role | Stage | Preference | Effort | Alternative model | Mode | Job |
 |---|---|---|---|---|---|---|
-| researcher | 1 | `gemini-3.8-flash-high` | high | — | `plan` | Gathers structured claims and citations for an assigned evidence angle. |
-| synthesizer | 2 | `gemini-3.8-flash-high` | high | — | `plan` | Builds claim ledger, resolves agreements/conflicts, and drafts synthesis. |
-| auditor | 3 | `gemini-3.8-flash-high` | high | — | `plan` | Independently verifies every citation in the proposed final answer. |
+| researcher | 1 | balanced | high | adapter catalog | `plan` | Gathers structured claims and citations for an assigned evidence angle. |
+| synthesizer | 2 | deep | high | adapter catalog | `plan` | Builds claim ledger, resolves agreements/conflicts, and drafts synthesis. |
+| auditor | 3 | deep | high | adapter catalog | `plan` | Independently verifies every citation in the proposed final answer. |
 
 A historical live smoke comparison against Gemini 3.7 retained Flash for every role. The proposed Pro synthesizer and auditor split did not complete its mandatory synthesis stage, while the all-Flash control completed synthesis and citation audit with four supported claims. See [`tests/live-smoke-comparison.md`](../tests/live-smoke-comparison.md) for the recorded judgment.
 
@@ -385,7 +385,7 @@ Follow the shared recovery, retry accounting, and failure handling rules in [`SK
 - **Researcher failure.** If a researcher crashes, times out, or produces unparsable output, retry once with the error details using `--route default`. The selection gate admits only the verified accepted attempt for each assignment. If a retry fails, synthesis proceeds as long as at least two distinct `angle_id` values remain; otherwise use the partial-result fallback. The final report explicitly names any omitted angle.
 - **Synthesis or audit failure.** Synthesis and citation audit are mandatory stages. The allowed synthesizer revision pass consumes the synthesizer's second attempt. The subsequent audit consumes the auditor's second attempt. If either stage crashes, times out, returns unparsable JSON, or fails to resolve citations after exhausting its 2-attempt budget, the run transitions to `partial` status.
 - **Partial result contract.** A `partial` run returns audited claims and raw findings collected up to the point of failure, but strictly withholds a firm synthesis or recommendation. State the failed stage explicitly and retain all raw artifacts for debugging.
-- **Quota exhaustion.** Explicit Gemini quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.
+- **Quota exhaustion.** Explicit adapter-reported quota exhaustion triggers immediate quota handoff per [`SKILL.md`](../SKILL.md). Do not retry or switch models. Preserve completed artifacts and return unfinished work to the calling orchestrator.
 
 ## Provenance and cleanup
 
@@ -410,10 +410,18 @@ At the conclusion of the research run:
            "role": "researcher",
            "mode": "web-research",
            "attempt": 1,
-           "policy_revision": "2026-09-03.1",
+           "policy_revision": "2026-09-04.1",
            "route": "default",
-           "model": "gemini-3.8-flash-high",
+           "adapter": "agy",
+           "adapter_revision": "adapter-revision",
+           "vendor": "vendor-family",
+           "model_id": "exact-model-id",
+           "model": "exact-model-id",
+           "family_hint": "family-hint",
+           "preference": "balanced",
            "effort": "high",
+           "catalog_revision": "catalog-revision",
+           "selection_reason": "Eligible catalog candidate ranked highest for the role preference",
            "reason": "Initial default dispatch",
            "started_at": "2026-09-03T00:00:00Z",
            "ended_at": "2026-09-03T00:01:30Z",
@@ -437,10 +445,18 @@ At the conclusion of the research run:
            "role": "researcher",
            "mode": "web-research",
            "attempt": 2,
-           "policy_revision": "2026-09-03.1",
+           "policy_revision": "2026-09-04.1",
            "route": "default",
-           "model": "gemini-3.8-flash-high",
+           "adapter": "agy",
+           "adapter_revision": "adapter-revision",
+           "vendor": "vendor-family",
+           "model_id": "exact-model-id",
+           "model": "exact-model-id",
+           "family_hint": "family-hint",
+           "preference": "balanced",
            "effort": "high",
+           "catalog_revision": "catalog-revision",
+           "selection_reason": "Pinned selection retained after a retry",
            "reason": "Retry authorized after quality gate failure on attempt 1",
            "started_at": "2026-09-03T00:02:00Z",
            "ended_at": "2026-09-03T00:03:30Z",

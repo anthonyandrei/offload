@@ -37,11 +37,11 @@ The host-independent rule that defines when an orchestrator offers offloading, h
 _Avoid_: Hook, Claude hook
 
 **Model routing**:
-The policy that selects a Gemini model and reasoning effort for an offload worker assignment. It uses role defaults and explicit escalation rules, prioritizing verified task success, then elapsed time and quota use.
+The policy and adapter process that selects an available model and independent reasoning effort for an offload worker assignment. It uses a role preference, task capabilities, live availability, static security rules, and quota state.
 _Avoid_: Mode routing, unrestricted model selection
 
 **Role default**:
-The model and reasoning effort assigned to an offload role unless a documented escalation rule applies.
+The internal preference, reasoning effort, and required capabilities assigned to an offload role. The adapter resolves those requirements to a current model.
 _Avoid_: Best model, permanent model assignment
 
 **Model policy**:

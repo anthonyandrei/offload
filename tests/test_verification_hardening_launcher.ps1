@@ -232,13 +232,35 @@ exit 0
     $pathSep = [System.IO.Path]::PathSeparator
     $basePath = "$fakeBin$pathSep$env:PATH"
 
+    $fakeAdapter = Join-Path $RootDir 'tests/fixtures/fake-worker-adapter.ps1'
+    $fakeCatalog = Join-Path $TmpRoot 'fake-adapter-catalog.json'
+    @'
+{
+  "protocol_version": 1,
+  "adapter": "fake",
+  "adapter_revision": "fake-adapter-1",
+  "vendor": "fake-vendor",
+  "catalog_revision": "test-catalog-1",
+  "models": [
+    { "id": "scout-model", "family_hint": "fast", "available": true, "quota_available": true, "supported_efforts": ["low"], "capabilities": [], "scores": { "fast": 0 } },
+    { "id": "worker-model", "family_hint": "balanced", "available": true, "quota_available": true, "supported_efforts": ["high"], "capabilities": [], "scores": { "balanced": 0, "deep": 1 } }
+  ]
+}
+'@ | Set-Content -LiteralPath $fakeCatalog -Encoding utf8
+    $savedAdapterBin = $env:OFFLOAD_ADAPTER_BIN
+    $savedAdapterCatalog = $env:FAKE_ADAPTER_CATALOG
+    $savedAgyBin = $env:AGY_BIN
+    $env:OFFLOAD_ADAPTER_BIN = $fakeAdapter
+    $env:FAKE_ADAPTER_CATALOG = $fakeCatalog
+    $env:AGY_BIN = $fakeAgyPs
+
     # =======================================================================
     # 1. Existing Launcher Contracts (Regression Suite)
-    #    Assert model injection, delimiter, output/error paths, exit code,
+    #    Assert adapter-selected model forwarding, delimiter, output/error paths, exit code,
     #    caller flag rejection, and no caller-facing --cwd option.
     # =======================================================================
 
-    # 1.1 Model injection for scout (gemini-3.8-flash-low) and implementer (gemini-3.8-flash-high)
+    # 1.1 Adapter selection for scout and implementer
     & {
         $argsScout = Join-Path $TmpRoot 'scout-args.json'
         $envScout = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsScout }
@@ -252,7 +274,7 @@ exit 0
         ) -Environment $envScout
         Assert-Equal $resScout.ExitCode 0 "regression: role 'scout' exits 0"
         $scoutCaptured = @(Get-Content -LiteralPath $argsScout -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
-        Assert-True ($scoutCaptured.Count -ge 2 -and $scoutCaptured[0] -eq '--model' -and $scoutCaptured[1] -eq 'gemini-3.8-flash-low') "regression: scout injects gemini-3.8-flash-low"
+        Assert-True ($scoutCaptured -contains '--model' -and $scoutCaptured -contains 'scout-model' -and $scoutCaptured -contains '--effort' -and $scoutCaptured -contains 'low') "regression: scout forwards adapter-selected model and policy effort"
 
         $argsImpl = Join-Path $TmpRoot 'impl-args.json'
         $envImpl = @{ 'AGY_BIN' = $fakeAgyPs; 'FAKE_AGY_ARGS' = $argsImpl }
@@ -266,7 +288,7 @@ exit 0
         ) -Environment $envImpl
         Assert-Equal $resImpl.ExitCode 0 "regression: role 'implementer' exits 0"
         $implCaptured = @(Get-Content -LiteralPath $argsImpl -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
-        Assert-True ($implCaptured.Count -ge 2 -and $implCaptured[0] -eq '--model' -and $implCaptured[1] -eq 'gemini-3.8-flash-high') "regression: implementer injects gemini-3.8-flash-high"
+        Assert-True ($implCaptured -contains '--model' -and $implCaptured -contains 'worker-model' -and $implCaptured -contains '--effort' -and $implCaptured -contains 'high') "regression: implementer forwards adapter-selected model and policy effort"
     }
 
     # 1.2 Delimiter enforcement
@@ -279,7 +301,7 @@ exit 0
             '-p', 'prompt without delimiter'
         ) -Environment @{ 'AGY_BIN' = $fakeAgyPs }
         Assert-Equal $resNoDelim.ExitCode 2 "regression: missing '--' delimiter exits 2"
-        Assert-True ($resNoDelim.Stderr -match '(?i)delimiter') "regression: missing delimiter mentions delimiter"
+        Assert-True ($resNoDelim.Stderr -match '(?i)(delimiter|unknown launcher option)') "regression: missing delimiter is rejected" $resNoDelim.Stderr
     }
 
     # 1.3 Output and error redirection & parent directory creation
@@ -423,9 +445,18 @@ sh_launcher="$3"
 out_file="$4"
 err_file="$5"
 cwd_file="$6"
+adapter_bin="$7"
+catalog_file="$8"
+if command -v cygpath >/dev/null 2>&1; then
+  adapter_bin="$(cygpath -u "$adapter_bin")"
+  catalog_file="$(cygpath -u "$catalog_file")"
+fi
 
 chmod +x "$agy_bin"
+chmod +x "$adapter_bin"
 export AGY_BIN="$agy_bin"
+export OFFLOAD_ADAPTER_BIN="$adapter_bin"
+export FAKE_ADAPTER_CATALOG="$catalog_file"
 export FAKE_AGY_RECORD_CWD="$cwd_file"
 
 cd "$target_ws"
@@ -442,9 +473,11 @@ cd "$target_ws"
                 ($ShLauncher -replace '\\', '/'),
                 ($bashOut -replace '\\', '/'),
                 ($bashErr -replace '\\', '/'),
-                ($bashCwdRecord -replace '\\', '/')
+                ($bashCwdRecord -replace '\\', '/'),
+                ((Join-Path $RootDir 'tests/fixtures/fake-worker-adapter.sh') -replace '\\', '/'),
+                ($fakeCatalog -replace '\\', '/')
             )
-            Assert-Equal $resBash.ExitCode 0 "bash parity: run-agy-json.sh exits 0"
+            Assert-True ($resBash.ExitCode -eq 0) "bash parity: run-agy-json.sh exits 0" $resBash.Stderr
             Assert-True (Test-Path -LiteralPath $bashCwdRecord) "bash parity: worker recorded observed working directory"
             $observedBashCwd = (Get-Content -LiteralPath $bashCwdRecord -Raw).Trim()
             Assert-Equal (Normalize-Path $observedBashCwd) (Normalize-Path $bashWs) "bash parity: bash worker inherits invoking shell working directory"
@@ -698,6 +731,9 @@ cd "$target_ws"
     exit 0
 }
 finally {
+    if ($null -eq $savedAdapterBin) { Remove-Item Env:OFFLOAD_ADAPTER_BIN -ErrorAction SilentlyContinue } else { $env:OFFLOAD_ADAPTER_BIN = $savedAdapterBin }
+    if ($null -eq $savedAdapterCatalog) { Remove-Item Env:FAKE_ADAPTER_CATALOG -ErrorAction SilentlyContinue } else { $env:FAKE_ADAPTER_CATALOG = $savedAdapterCatalog }
+    if ($null -eq $savedAgyBin) { Remove-Item Env:AGY_BIN -ErrorAction SilentlyContinue } else { $env:AGY_BIN = $savedAgyBin }
     if (Test-Path -LiteralPath $TmpRoot) {
         Remove-Item -LiteralPath $TmpRoot -Recurse -Force -ErrorAction SilentlyContinue
     }

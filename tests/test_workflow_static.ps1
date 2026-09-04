@@ -52,7 +52,10 @@ Assert-True ($skillContent -match 'Shared recovery, retry accounting, and failur
 Assert-True ($skillContent -match 'Stable worker IDs and retry ceiling') "skill: documents stable worker IDs and retry ceiling"
 Assert-True ($skillContent -match 'Immediate quota handoff') "skill: documents immediate quota handoff"
 Assert-True ($skillContent -match 'routing-outcomes\.json') "skill: documents routing-outcomes.json schema and fields"
-Assert-True ($skillContent -match 'gemini-3.8-flash-low' -and $skillContent -match 'gemini-3.8-flash-high') "skill: specifies Gemini 3.8 Flash baseline defaults"
+Assert-True ($skillContent -match 'adapter catalog' -and $skillContent -match 'catalog_revision') "skill: specifies adapter catalog selection and provenance"
+Assert-False ($skillContent -match 'gemini-3\.8-flash-(low|high)') "skill: has no published exact vendor model defaults"
+Assert-False (($skillContent -split "`r?`n")[2] -match '\bagy\b') "skill: public description has no vendor-specific trigger"
+Assert-False ($skillContent -match '(?m)^If you are `agy`') "skill: worker guard is vendor-neutral"
 
 # 2a. Diff-gated reviews use one recorded artifact, not the live checkout
 $executionContent = Get-Content -LiteralPath $ExecMd -Raw
@@ -129,14 +132,16 @@ foreach ($pair in @(
 
 # 7. Model policy matches role definitions
 $policy = Get-Content -LiteralPath $PolicyJson -Raw | ConvertFrom-Json
-Assert-Equal $policy.schema_version 1 "policy: schema_version is 1"
-Assert-Equal $policy.roles.scout.default_model "gemini-3.8-flash-low" "policy: scout default model"
-Assert-Equal $policy.roles.'gate-author'.default_model "gemini-3.8-flash-high" "policy: gate-author default model"
-Assert-Equal $policy.roles.implementer.default_model "gemini-3.8-flash-high" "policy: implementer default model"
-Assert-Equal $policy.roles.reviewer.default_model "gemini-3.8-flash-high" "policy: reviewer default model"
-Assert-Equal $policy.roles.researcher.default_model "gemini-3.8-flash-high" "policy: researcher default model"
-Assert-Equal $policy.roles.synthesizer.default_model "gemini-3.8-flash-high" "policy: synthesizer default model"
-Assert-Equal $policy.roles.auditor.default_model "gemini-3.8-flash-high" "policy: auditor default model"
+Assert-Equal $policy.schema_version 2 "policy: schema_version is 2"
+Assert-True ($null -eq $policy.PSObject.Properties['default_model']) "policy: has no top-level default model"
+Assert-True ($null -eq $policy.PSObject.Properties['quality_escalation']) "policy: has no top-level quality escalation model"
+$expectedPreferences = @{ scout = 'fast'; 'gate-author' = 'balanced'; implementer = 'balanced'; reviewer = 'deep'; researcher = 'balanced'; synthesizer = 'deep'; auditor = 'deep' }
+foreach ($roleName in $expectedPreferences.Keys) {
+    Assert-Equal $policy.roles.$roleName.preference $expectedPreferences[$roleName] "policy: $roleName internal preference"
+    Assert-True ($policy.roles.$roleName.effort -in @('low', 'medium', 'high')) "policy: $roleName keeps effort separate from model selection"
+    Assert-True ($null -ne $policy.roles.$roleName.PSObject.Properties['required_capabilities']) "policy: $roleName declares required capabilities"
+    Assert-False ($policy.roles.$roleName.PSObject.Properties.Name -contains 'default_model') "policy: $roleName has no exact model default"
+}
 
 # 8. Web research documents check-citation-audit helpers and exact coverage rules
 $webContent = Get-Content -LiteralPath $WebMd -Raw
@@ -199,6 +204,15 @@ Assert-True ($skillContent -match 'tests/fixtures/routing-worker\.json') "SKILL.
 Assert-True ($skillContent -match 'schema_version: 1, attempts:') "SKILL.md documents routing container contract"
 Assert-True ($webContent -match 'tests/fixtures/routing-worker\.json') "web-research.md links to routing fixture"
 Assert-True ($webContent -match 'schema_version: 1, attempts:') "web-research.md documents routing container contract"
+
+# 12. Routing attempts record the selected adapter and catalog decision
+$fixture = Get-Content -LiteralPath $FixtureJson -Raw | ConvertFrom-Json
+foreach ($attempt in $fixture.routing.attempts) {
+    foreach ($field in @('adapter', 'adapter_revision', 'vendor', 'model_id', 'model', 'family_hint', 'preference', 'effort', 'catalog_revision', 'selection_reason')) {
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$attempt.$field)) "fixture: attempt records $field"
+    }
+}
+Assert-True ($skillContent -match 'pinned') "skill: documents pinned retry selections"
 
 [Console]::Out.WriteLine("all workflow static checks passed ($script:TotalTests tests)")
 exit 0
