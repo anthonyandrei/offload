@@ -38,6 +38,10 @@ $WebMd = Join-Path $RootDir 'modes/web-research.md'
 $ReadmeMd = Join-Path $RootDir 'README.md'
 $AgentsMd = Join-Path $RootDir 'AGENTS.md'
 $PolicyJson = Join-Path $RootDir 'model-policy.json'
+$PublicationMd = Join-Path $RootDir 'docs/contracts/publication-compatibility.md'
+$PublicationAdr = Join-Path $RootDir 'docs/adr/0007-cross-library-publication-boundaries.md'
+$PublicationPs1 = Join-Path $RootDir 'scripts/check-publication-compatibility.ps1'
+$PublicationSh = Join-Path $RootDir 'scripts/check-publication-compatibility.sh'
 
 # 1. Line count check: SKILL.md must remain strictly under 500 lines
 $skillLines = (Get-Content -LiteralPath $SkillMd).Count
@@ -192,7 +196,20 @@ foreach ($mode in @(
 Assert-False ($webContent -match 'synthesizer\.json') "web-research.md does not reuse synthesizer.json"
 Assert-False ($webContent -match 'auditor\.json') "web-research.md does not reuse auditor.json"
 
-# 11. Routing provenance fixture and documentation alignment (Issue #13)
+# 11. Published skills use the vendor-neutral publication boundary.
+Assert-True (Test-Path -LiteralPath $PublicationMd -PathType Leaf) "publication contract document exists"
+Assert-True (Test-Path -LiteralPath $PublicationAdr -PathType Leaf) "publication boundary ADR exists"
+Assert-True (Test-Path -LiteralPath $PublicationPs1 -PathType Leaf) "PowerShell publication checker exists"
+Assert-True (Test-Path -LiteralPath $PublicationSh -PathType Leaf) "Bash publication checker exists"
+$publicationContent = Get-Content -LiteralPath $PublicationMd -Raw
+Assert-True ($publicationContent -match 'grill-with-docs' -and $publicationContent -match 'vendor-neutral') "publication contract names the source skill and neutral contract"
+Assert-True ($publicationContent -match 'optional adapter' -and $publicationContent -match 'execution scope check') "publication contract separates optional delegation and verification"
+Assert-True ($publicationContent -match 'capability support' -and $publicationContent -match 'security enforcement') "publication contract separates capability support from security enforcement"
+Assert-True ($publicationContent -match 'source of truth' -and $publicationContent -match 'generated|installed copies') "publication contract documents release ownership"
+Assert-True ($skillContent -match 'publication boundary' -and $skillContent -match 'vendor-neutral') "SKILL.md links the publication boundary"
+Assert-True ((Get-Content -LiteralPath $ReadmeMd -Raw) -match 'publication boundary') "README links the publication boundary"
+
+# 12. Routing provenance fixture and documentation alignment (Issue #13)
 $FixtureJson = Join-Path $RootDir 'tests/fixtures/routing-worker.json'
 Assert-True (Test-Path -LiteralPath $FixtureJson -PathType Leaf) "workflow-static: routing fixture exists"
 Assert-True ($skillContent -match 'tests/fixtures/routing-worker\.json') "SKILL.md links to routing fixture"

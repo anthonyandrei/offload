@@ -13,6 +13,21 @@ If you are `agy`, stop here. Return worker results to your orchestrator. `agy` i
 
 You never accept worker claims at face value. You verify output through mechanical checks, test execution, diff inspections, or secondary reviews.
 
+## Publication boundary
+
+Published source skills use the vendor-neutral contract in
+[`docs/contracts/publication-compatibility.md`](docs/contracts/publication-compatibility.md).
+`grill-with-docs` owns its interview and documentation workflow and can run
+without offload. Offload is an explicit optional delegation layer. Adapters own
+vendor command syntax, model catalogs, capability probes, and output parsing.
+
+Published consumers use capabilities, internal model preferences, separate
+reasoning effort, and normalized results. They do not depend on vendor names,
+family labels, or exact model IDs. The compatibility checker rejects
+unavailable adapters and vendor-specific references. Capability support does not
+enforce security. The orchestrator still owns isolation, execution scope
+checks, cleanup, and acceptance gates.
+
 ## Preconditions and helper selection
 
 Select the helper family matching your current host shell:

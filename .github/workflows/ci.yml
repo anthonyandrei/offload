@@ -20,6 +20,9 @@ jobs:
       - name: Run execution scope suite
         run: bash tests/test_execution_scope.sh
 
+      - name: Run publication compatibility suite
+        run: bash tests/test_publication_compatibility.sh
+
   macos-bash:
     name: macOS Bash contract suite
     runs-on: macos-latest
@@ -32,6 +35,9 @@ jobs:
 
       - name: Run execution scope suite
         run: bash tests/test_execution_scope.sh
+
+      - name: Run publication compatibility suite
+        run: bash tests/test_publication_compatibility.sh
 
   windows-powershell:
     name: Windows PowerShell contract suite
@@ -48,3 +54,6 @@ jobs:
 
       - name: Run execution scope suite
         run: pwsh -File tests/test_execution_scope.ps1
+
+      - name: Run publication compatibility suite
+        run: pwsh -File tests/test_publication_compatibility.ps1

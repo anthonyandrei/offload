@@ -2,6 +2,21 @@
 
 Offload delegates bounded work to `agy` processes while the calling agent remains responsible for scope, verification, and reporting.
 
+## Publication boundary
+
+Published source skills remain vendor-neutral. `grill-with-docs` owns its
+interview and documentation workflow and can run without offload. Offload is
+an optional delegation layer, while adapters own vendor launch syntax, model
+catalogs, capability probes, and output parsing. Consumers depend on stable
+capabilities, model preferences, separate reasoning effort, and normalized
+results, not vendor names or exact model IDs.
+
+Capability support does not enforce security. The orchestrator remains
+responsible for isolation, ownership, cleanup, execution scope checks, and
+acceptance gates. The source repository is authoritative; generated and
+installed copies are release outputs. See
+`docs/contracts/publication-compatibility.md` and ADR 0007.
+
 ## Language
 
 **Orchestrator**:

@@ -6,6 +6,21 @@ Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Co
 
 Offload's online-research workflow is adapted from Asa by Achibukz, used with permission. Do not publish a private repository URL, branch, commit, screenshots, or copied text.
 
+## Publication boundary
+
+Published source skills use the vendor-neutral contract in
+[`docs/contracts/publication-compatibility.md`](docs/contracts/publication-compatibility.md).
+`grill-with-docs` owns its interview and documentation workflow and can run
+without offload. Offload is an explicit optional delegation layer. Adapters own
+vendor command syntax, model catalogs, capability probes, and output parsing.
+
+Published consumers use stable capabilities and internal model preferences,
+with reasoning effort kept separate. They do not depend on vendor names, family
+labels, or exact model IDs. The compatibility checker rejects unavailable
+adapters and vendor-specific references. Capability support does not enforce
+security. The orchestrator still owns isolation, execution scope checks,
+cleanup, and acceptance gates.
+
 ## Worker safety and containment
 
 - **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted `agy 1.1.25` probe blocked the tested direct write outside the permitted artifact area, but plan mode is not a sole safety control. Never rely on it alone to protect live repository files.
