@@ -200,5 +200,31 @@ Assert-True ($skillContent -match 'schema_version: 1, attempts:') "SKILL.md docu
 Assert-True ($webContent -match 'tests/fixtures/routing-worker\.json') "web-research.md links to routing fixture"
 Assert-True ($webContent -match 'schema_version: 1, attempts:') "web-research.md documents routing container contract"
 
+# 12. Vendor-neutral worker adapter boundary (Issue #31)
+$AdapterDoc = Join-Path $RootDir 'docs/worker-adapter-contract.md'
+$AdapterCheckerPs = Join-Path $RootDir 'scripts/check-worker-adapter.ps1'
+$AdapterCheckerSh = Join-Path $RootDir 'scripts/check-worker-adapter.sh'
+Assert-True (Test-Path -LiteralPath $AdapterDoc -PathType Leaf) "adapter: contract document exists"
+Assert-True (Test-Path -LiteralPath $AdapterCheckerPs -PathType Leaf) "adapter: PowerShell checker exists"
+Assert-True (Test-Path -LiteralPath $AdapterCheckerSh -PathType Leaf) "adapter: Bash checker exists"
+$adapterContent = Get-Content -LiteralPath $AdapterDoc -Raw
+foreach ($term in @('orchestrator', 'worker', 'adapter', 'execution scope check')) {
+    Assert-True ($adapterContent -match [regex]::Escape($term)) "adapter: contract uses '$term'"
+}
+foreach ($phrase in @(
+    'discover-capabilities',
+    'discover-models',
+    'constraint_snapshot',
+    'model_selection',
+    'ownership',
+    'unpublished',
+    'cannot widen'
+)) {
+    Assert-True ($adapterContent -match [regex]::Escape($phrase)) "adapter: contract documents '$phrase'"
+}
+Assert-True ($skillContent -match 'worker-adapter-contract\.md') "skill: links to worker adapter contract"
+Assert-True ($execContent -match 'check-worker-adapter\.ps1' -and $execContent -match 'check-worker-adapter\.sh') "execution.md validates normalized adapter results"
+Assert-False ($adapterContent -match '(?i)grill-with-docs[^\n]*(agy|gemini|codex|claude)') "adapter: host skill guidance is vendor-neutral"
+
 [Console]::Out.WriteLine("all workflow static checks passed ($script:TotalTests tests)")
 exit 0
