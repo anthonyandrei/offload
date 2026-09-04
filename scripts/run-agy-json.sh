@@ -4,9 +4,11 @@ set -euo pipefail
 
 usage() { printf 'Usage: %s --role ROLE [--route default|quality-retry] [--adapter FILE] [--selection-output FILE] [--pin FILE] [lifecycle options] --output FILE --error FILE -- worker-arguments...\n' "$0" >&2; }
 fail() { printf 'ERROR: %s\n' "$1" >&2; exit "${2:-2}"; }
+mark_seen() { local name="$1" message="$2"; case "$seen_options" in *"|$name|"*) fail "$message" ;; *) seen_options="${seen_options}${name}|" ;; esac; }
+was_seen() { case "$seen_options" in *"|$1|"*) return 0 ;; *) return 1 ;; esac; }
 
 output_path=''; error_path=''; selection_output_path=''; pin_path=''; adapter_path=''; role=''; route='default'; lifecycle_path=''; attempt=1; mode='unknown'; verification_baseline=''; resource_ledger_path=''; timeout_seconds=0; cancel_file=''; ledger_path=''; assignment_id=''; parent_id=''; resource_id=''
-seen_output=false; seen_error=false; seen_role=false; seen_delimiter=false; worker_args=(); required_caps=(); declare -A seen=()
+seen_output=false; seen_error=false; seen_role=false; seen_delimiter=false; worker_args=(); required_caps=(); seen_options='|'
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --) seen_delimiter=true; shift; worker_args=("$@"); break ;;
@@ -20,22 +22,22 @@ while [ "$#" -gt 0 ]; do
   case "$option" in
     --output) $seen_output && fail 'duplicate --output option'; output_path="$value"; seen_output=true ;;
     --error) $seen_error && fail 'duplicate --error option'; error_path="$value"; seen_error=true ;;
-    --selection-output) [ -n "${seen[selection_output]:-}" ] && fail 'duplicate --selection-output option'; selection_output_path="$value"; seen[selection_output]=1 ;;
-    --pin) [ -n "${seen[pin]:-}" ] && fail 'duplicate --pin option'; pin_path="$value"; seen[pin]=1 ;;
-    --adapter) [ -n "${seen[adapter]:-}" ] && fail 'duplicate --adapter option'; adapter_path="$value"; seen[adapter]=1 ;;
+    --selection-output) mark_seen selection_output 'duplicate --selection-output option'; selection_output_path="$value" ;;
+    --pin) mark_seen pin 'duplicate --pin option'; pin_path="$value" ;;
+    --adapter) mark_seen adapter 'duplicate --adapter option'; adapter_path="$value" ;;
     --role) $seen_role && fail 'duplicate --role option'; role="$value"; seen_role=true ;;
-    --route) [ -n "${seen[route]:-}" ] && fail 'duplicate --route option'; route="$value"; seen[route]=1 ;;
-    --lifecycle) [ -n "${seen[lifecycle]:-}" ] && fail 'duplicate --lifecycle option'; lifecycle_path="$value"; seen[lifecycle]=1 ;;
-    --attempt) [ -n "${seen[attempt]:-}" ] && fail 'duplicate --attempt option'; attempt="$value"; seen[attempt]=1 ;;
-    --mode) [ -n "${seen[mode]:-}" ] && fail 'duplicate --mode option'; mode="$value"; seen[mode]=1 ;;
-    --verification-baseline) [ -n "${seen[baseline]:-}" ] && fail 'duplicate --verification-baseline option'; verification_baseline="$value"; seen[baseline]=1 ;;
-    --resource-ledger) [ -n "${seen[resource_ledger]:-}" ] && fail 'duplicate --resource-ledger option'; resource_ledger_path="$value"; seen[resource_ledger]=1 ;;
-    --timeout-seconds) [ -n "${seen[timeout]:-}" ] && fail 'duplicate --timeout-seconds option'; timeout_seconds="$value"; seen[timeout]=1 ;;
-    --cancel-file) [ -n "${seen[cancel]:-}" ] && fail 'duplicate --cancel-file option'; cancel_file="$value"; seen[cancel]=1 ;;
-    --ledger) [ -n "${seen[ledger]:-}" ] && fail 'duplicate --ledger option'; ledger_path="$value"; seen[ledger]=1 ;;
-    --assignment-id) [ -n "${seen[assignment]:-}" ] && fail 'duplicate --assignment-id option'; assignment_id="$value"; seen[assignment]=1 ;;
-    --parent-id) [ -n "${seen[parent]:-}" ] && fail 'duplicate --parent-id option'; parent_id="$value"; seen[parent]=1 ;;
-    --resource-id) [ -n "${seen[resource]:-}" ] && fail 'duplicate --resource-id option'; resource_id="$value"; seen[resource]=1 ;;
+    --route) mark_seen route 'duplicate --route option'; route="$value" ;;
+    --lifecycle) mark_seen lifecycle 'duplicate --lifecycle option'; lifecycle_path="$value" ;;
+    --attempt) mark_seen attempt 'duplicate --attempt option'; attempt="$value" ;;
+    --mode) mark_seen mode 'duplicate --mode option'; mode="$value" ;;
+    --verification-baseline) mark_seen baseline 'duplicate --verification-baseline option'; verification_baseline="$value" ;;
+    --resource-ledger) mark_seen resource_ledger 'duplicate --resource-ledger option'; resource_ledger_path="$value" ;;
+    --timeout-seconds) mark_seen timeout 'duplicate --timeout-seconds option'; timeout_seconds="$value" ;;
+    --cancel-file) mark_seen cancel 'duplicate --cancel-file option'; cancel_file="$value" ;;
+    --ledger) mark_seen ledger 'duplicate --ledger option'; ledger_path="$value" ;;
+    --assignment-id) mark_seen assignment 'duplicate --assignment-id option'; assignment_id="$value" ;;
+    --parent-id) mark_seen parent 'duplicate --parent-id option'; parent_id="$value" ;;
+    --resource-id) mark_seen resource 'duplicate --resource-id option'; resource_id="$value" ;;
   esac
 done
 $seen_delimiter || { usage; fail '-- delimiter is required'; }; $seen_output && [ -n "$output_path" ] || { usage; fail '--output is required'; }; $seen_error && [ -n "$error_path" ] || { usage; fail '--error is required'; }; $seen_role && [ -n "$role" ] || { usage; fail '--role is required'; }; [ "${#worker_args[@]}" -gt 0 ] || { usage; fail 'worker arguments are required after --'; }
@@ -58,7 +60,7 @@ catalog_adapter=$(jq -er '.adapter|strings|select(length>0)' "$catalog_tmp") || 
 selected=$(jq -c --arg pref "$preference" --arg effort "$effort" --argjson caps "$required_caps_json" --arg vendor "$catalog_vendor" '[.models[]? | select((.id|type)=="string" and (.id|length)>0) | select(.available==true and (.quota_available!=false)) | select((.supported_efforts//[])|index($effort)) | select(([$caps[] as $cap | select(((.capabilities//[])|index($cap))==null)]|length)==0) | {model:.,id:.id,vendor:(.vendor//$vendor),score:(((.scores//{})[$pref])//1000000)}] | sort_by(.score,.vendor,.id)|.[0]//empty' "$catalog_tmp") || true; [ -n "$selected" ] || fail "adapter catalog has no eligible model for role '$role', effort '$effort', and required capabilities" 4
 selection_reason="catalog selection preference=$preference effort=$effort; filtered unavailable, quota, effort, capability, and static-policy-incompatible candidates";if [ -n "$pin_path" ];then [ -f "$pin_path" ]||fail "pinned selection file not found: $pin_path" 3;pin_adapter=$(jq -er '.adapter//empty' "$pin_path")||fail 'pinned selection is invalid' 3;pin_vendor=$(jq -er '.vendor//empty' "$pin_path")||fail 'pinned selection is missing vendor' 3;pin_id=$(jq -er '.model_id//.model//empty' "$pin_path")||fail 'pinned selection is missing model_id' 3;pin_effort=$(jq -er '.effort//empty' "$pin_path")||fail 'pinned selection is missing effort' 3;[ "$pin_adapter" = "$catalog_adapter" ]&&[ "$pin_vendor" = "$catalog_vendor" ]&&[ "$pin_effort" = "$effort" ]||fail 'pinned selection does not match the current adapter, vendor, or policy effort; explicit fallback or handoff is required' 3;pinned=$(jq -c --arg id "$pin_id" --arg vendor "$pin_vendor" --arg effort "$effort" --argjson caps "$required_caps_json" '[.models[]? | select(.id==$id and ((.vendor// $vendor)==$vendor) and .available==true and (.quota_available!=false) and ((.supported_efforts//[])|index($effort)) and ([$caps[] as $cap|select(((.capabilities//[])|index($cap))==null)]|length)==0)]|.[0]//empty' "$catalog_tmp");[ -n "$pinned" ]||fail "pinned model '$pin_id' is unavailable in catalog revision '$catalog_revision'; explicit fallback or handoff is required" 3;selected=$(jq -c --argjson model "$pinned" --arg id "$pin_id" --arg vendor "$pin_vendor" '{model:$model,id:$id,vendor:$vendor,score:0}' <<<"$selected");selection_reason="pinned selection adapter=$catalog_adapter vendor=$catalog_vendor model_id=$pin_id; catalog_revision=$catalog_revision";fi
 jq -n --arg adapter "$catalog_adapter" --arg adapter_revision "$adapter_revision" --arg vendor "$(jq -r '.vendor' <<<"$selected")" --arg model_id "$(jq -r '.id' <<<"$selected")" --arg family_hint "$(jq -r '.model.family_hint // empty' <<<"$selected")" --arg preference "$preference" --arg effort "$effort" --arg catalog_revision "$catalog_revision" --arg policy_revision "$(jq -er '.policy_revision' "$policy_file")" --arg reason "$selection_reason" --arg route "$route" --argjson caps "$required_caps_json" '{protocol_version:1,adapter:$adapter,adapter_revision:$adapter_revision,vendor:$vendor,model_id:$model_id,model:$model_id,family_hint:$family_hint,preference:$preference,effort:$effort,catalog_revision:$catalog_revision,policy_revision:$policy_revision,required_capabilities:$caps,selection_reason:$reason,route:$route}' >"$selection_tmp"; [ -z "$selection_output_path" ] || cp "$selection_tmp" "$selection_output_path"
-lifecycle=false; if [ -n "${seen[lifecycle]:-}" ] || [ -n "${seen[attempt]:-}" ] || [ -n "${seen[resource_ledger]:-}" ] || [ -n "${seen[timeout]:-}" ] || [ -n "${seen[cancel]:-}" ]; then lifecycle=true; fi
+lifecycle=false; if was_seen lifecycle || was_seen attempt || was_seen resource_ledger || was_seen timeout || was_seen cancel; then lifecycle=true; fi
 if ! $lifecycle; then set +e; "${adapter_cmd[@]}" --operation launch --request "$selection_tmp" --output "$output_path" --error "$error_path" -- "${worker_args[@]}" >"$catalog_tmp" 2>"$adapter_err_tmp"; code=$?; set -e; if [ "$code" -ne 0 ] && [ -s "$adapter_err_tmp" ]; then printf 'ERROR: adapter launch failed with exit code %s: %s\n' "$code" "$(tr '\n' ' ' <"$adapter_err_tmp")" >&2; fi; exit "$code"; fi
 case "$attempt" in 1|2) ;; *) fail 'attempt must be 1 or 2; policy allows at most one retry per assignment' ;; esac;[ -n "$assignment_id" ]||assignment_id="$role-$(date -u +%Y%m%d%H%M%S)";[ -n "$lifecycle_path" ]||lifecycle_path="$output_path.lifecycle.json";lifecycle_path="$(resolve_path "$lifecycle_path" lifecycle)";[ -z "$resource_ledger_path" ]||resource_ledger_path="$(resolve_path "$resource_ledger_path" 'resource ledger')"
 if [ -n "$resource_ledger_path" ];then if [ -f "$resource_ledger_path" ];then ledger_assignment=$(jq -r '.assignment_id' "$resource_ledger_path");ledger_model=$(jq -r '.model' "$resource_ledger_path");ledger_effort=$(jq -r '.effort' "$resource_ledger_path");[ "$ledger_assignment" = "$assignment_id" ]&&[ "$ledger_model" = "$(jq -r '.model_id' "$selection_tmp")" ]&&[ "$ledger_effort" = "$effort" ]||fail 'resource ledger is pinned to a different assignment, model, or effort';[ -n "$verification_baseline" ]||verification_baseline=$(jq -r '.verification_baseline // empty' "$resource_ledger_path");jq -e --argjson attempt "$attempt" '[.attempts[]? | select(.attempt == $attempt)]|length == 0' "$resource_ledger_path" >/dev/null||fail "resource ledger already contains attempt $attempt";else jq -n --arg assignment "$assignment_id" --arg model "$(jq -r '.model_id' "$selection_tmp")" --arg effort "$effort" --arg baseline "${verification_baseline:-}" '{schema_version:1,assignment_id:$assignment,model:$model,effort:$effort,verification_baseline:($baseline|if length>0 then . else null end),attempts:[]}' >"$resource_ledger_path";fi;jq --argjson attempt "$attempt" --arg model "$(jq -r '.model_id' "$selection_tmp")" --arg effort "$effort" --arg baseline "${verification_baseline:-}" --arg lifecycle "$lifecycle_path" '.attempts += [{attempt:$attempt,model:$model,effort:$effort,verification_baseline:($baseline|if length>0 then . else null end),lifecycle:$lifecycle}]' "$resource_ledger_path" >"$resource_ledger_path.tmp";mv -f "$resource_ledger_path.tmp" "$resource_ledger_path";fi
