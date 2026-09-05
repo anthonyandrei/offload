@@ -32,8 +32,11 @@ FAKE_AGY
 chmod +x "$fake_bin/agy"
 
 cat > "$TMP_ROOT/catalog.json" <<'CATALOG'
-{"protocol_version":1,"adapter":"fake","adapter_revision":"test-adapter-1","vendor":"test-vendor","catalog_revision":"test-catalog-1","models":[{"id":"test-model","family_hint":"test-family","available":true,"quota_available":true,"supported_efforts":["low","medium","high"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}
+{"protocol_version":2,"adapter":"fake","adapter_revision":"test-adapter-2","vendor":"test-vendor","catalog_revision":"test-catalog-1","models":[{"id":"test-model","family_hint":"test-family","available":true,"quota_available":true,"supported_efforts":["low","medium","high"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}
 CATALOG
+observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq --arg observed_at "$observed_at" '.models |= map(. + {preflight:{access:{state:"verified",account_ref:"test-account"},entitlement:{state:"active",billing_route:"test-subscription"},usage:{state:"known",source:"test",observed_at:$observed_at,scopes:[{scope_id:"test-window",remaining_units:20,reserved_units:0}]}}})' "$TMP_ROOT/catalog.json" >"$TMP_ROOT/catalog.json.tmp"
+mv "$TMP_ROOT/catalog.json.tmp" "$TMP_ROOT/catalog.json"
 export OFFLOAD_ADAPTER_BIN="$ROOT/tests/fixtures/fake-worker-adapter.sh"
 export FAKE_ADAPTER_CATALOG="$TMP_ROOT/catalog.json"
 export AGY_BIN="$fake_bin/agy"

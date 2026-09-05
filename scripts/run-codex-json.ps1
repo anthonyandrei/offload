@@ -88,6 +88,15 @@ function Get-CatalogData {
     }
 }
 
+function Get-Preflight($model) {
+    if ($null -ne $model -and $model.PSObject.Properties['preflight']) { return $model.preflight }
+    return [ordered]@{
+        access = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify authenticated access'; account_ref = '' }
+        entitlement = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify model entitlement'; billing_route = 'unknown' }
+        usage = [ordered]@{ state = 'unknown'; reason = 'adapter did not query usage'; source = 'not-queried'; observed_at = ''; scopes = @() }
+    }
+}
+
 $operation = ''
 $requestPath = ''
 $outputPath = ''
@@ -167,6 +176,7 @@ if ($operation -eq 'catalog') {
                 supported_efforts = @($efforts | ForEach-Object { [string]$_ })
                 capabilities = @($caps | ForEach-Object { [string]$_ })
                 scores = $scores
+                preflight = Get-Preflight $m
             }
         }
     )
@@ -178,9 +188,9 @@ if ($operation -eq 'catalog') {
     }
 
     $catalogDoc = [ordered]@{
-        protocol_version = 1
+        protocol_version = 2
         adapter = 'codex'
-        adapter_revision = 'codex-1'
+        adapter_revision = 'codex-2'
         vendor = 'codex'
         catalog_revision = $revision
         models = $models
@@ -207,6 +217,7 @@ if ([string]::IsNullOrWhiteSpace($modelId)) { Fail 'selection is missing model_i
 $prompt = ''
 $worktree = ''
 $schemaPath = ''
+$schemaInline = ''
 $resumeSession = ''
 $j = 0
 while ($j -lt $workerArgs.Count) {
@@ -236,7 +247,7 @@ while ($j -lt $workerArgs.Count) {
         $j++; continue
     }
     if ($warg -in @('--output-schema', '--json-schema')) {
-        $j++; if ($j -lt $workerArgs.Count) { $schemaPath = [string]$workerArgs[$j] }
+        $j++; if ($j -lt $workerArgs.Count) { $candidateSchema = [string]$workerArgs[$j]; if ($candidateSchema.TrimStart().StartsWith('{') -or $candidateSchema.TrimStart().StartsWith('[')) { $schemaInline = $candidateSchema; $schemaPath = '' } else { $schemaPath = $candidateSchema } }
         $j++; continue
     }
     if ($warg -in @('--resume', '--resume-session')) {
@@ -275,7 +286,12 @@ if ($errParent -and -not (Test-Path -LiteralPath $errParent -PathType Container)
 }
 
 $tempSchema = $null
-if ([string]::IsNullOrWhiteSpace($schemaPath) -or -not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
+if (-not [string]::IsNullOrWhiteSpace($schemaInline)) {
+    try { $null = $schemaInline | ConvertFrom-Json -Depth 30 -ErrorAction Stop } catch { Fail "inline output schema is not valid JSON: $($_.Exception.Message)" 2 }
+    $tempSchema = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($tempSchema, $schemaInline, [System.Text.Encoding]::UTF8)
+    $schemaPath = $tempSchema
+} elseif ([string]::IsNullOrWhiteSpace($schemaPath) -or -not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
     $tempSchema = [System.IO.Path]::GetTempFileName()
     [System.IO.File]::WriteAllText($tempSchema, '{"type":"object","additionalProperties":true}', [System.Text.Encoding]::UTF8)
     $schemaPath = $tempSchema

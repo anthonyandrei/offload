@@ -61,6 +61,11 @@ $ArgsList = @($args)
 if ($env:FAKE_CODEX_RECORD_ARGS) {
     $ArgsList | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:FAKE_CODEX_RECORD_ARGS -Encoding utf8
 }
+$schema = $null
+for ($i = 0; $i -lt $ArgsList.Count; $i++) {
+    if ($ArgsList[$i] -eq '--output-schema') { $schema = $ArgsList[$i + 1] }
+}
+if ($env:FAKE_CODEX_SCHEMA_RECORD -and $schema) { Copy-Item -LiteralPath $schema -Destination $env:FAKE_CODEX_SCHEMA_RECORD -Force }
 $last = $null
 for ($i = 0; $i -lt $ArgsList.Count; $i++) {
     if ($ArgsList[$i] -eq '--output-last-message') { $last = $ArgsList[$i + 1] }
@@ -100,7 +105,7 @@ Write-Output '{"type":"turn.completed"}'
     # 1. Operation catalog test
     $catalogRequest = Join-Path $TmpRoot 'catalog-request.json'
     Write-JsonFile $catalogRequest ([ordered]@{
-        protocol_version = 1
+        protocol_version = 2
         role = 'worker'
         preference = 'balanced'
         effort = 'high'
@@ -113,7 +118,8 @@ Write-Output '{"type":"turn.completed"}'
     $capDoc = $cap.Stdout | ConvertFrom-Json
     Assert-Equal $capDoc.vendor 'codex' 'catalog report identifies Codex'
     Assert-Equal $capDoc.adapter 'codex' 'catalog report identifies adapter as codex'
-    Assert-Equal $capDoc.protocol_version 1 'catalog report specifies protocol_version 1'
+    Assert-Equal $capDoc.protocol_version 2 'catalog report specifies protocol_version 2'
+    Assert-Equal $capDoc.models[0].preflight.access.state 'unknown' 'catalog does not infer authenticated access'
     Assert-True ($capDoc.models.Count -ge 1) 'catalog report includes models'
     Assert-True ($capDoc.models[0].supported_efforts -contains 'low' -or $capDoc.models[0].supported_efforts -contains 'medium') 'catalog models include supported_efforts'
 
@@ -123,7 +129,7 @@ Write-Output '{"type":"turn.completed"}'
 
     $selection = Join-Path $TmpRoot 'selection.json'
     Write-JsonFile $selection ([ordered]@{
-        protocol_version = 1
+        protocol_version = 2
         model_id = 'fake-balanced-model'
         effort = 'high'
         preference = 'balanced'
@@ -133,6 +139,7 @@ Write-Output '{"type":"turn.completed"}'
     $resultOutput = Join-Path $TmpRoot 'success-result.json'
     $errorOutput = Join-Path $TmpRoot 'success.err'
     $recordedArgsFile = Join-Path $TmpRoot 'recorded-args.json'
+    $recordedSchemaFile = Join-Path $TmpRoot 'recorded-schema.json'
     $testPrompt = 'Return the bounded result with spaces and "quotes".'
 
     $success = Invoke-Adapter @(
@@ -143,10 +150,12 @@ Write-Output '{"type":"turn.completed"}'
         '--codex', $FakeCodex,
         '--',
         '--cd', $worktree,
-        '--prompt', $testPrompt
+        '--prompt', $testPrompt,
+        '--json-schema', '{"type":"object","required":["ok"]}'
     ) @{
         CODEX_MODEL_CATALOG = $Catalog
         FAKE_CODEX_RECORD_ARGS = $recordedArgsFile
+        FAKE_CODEX_SCHEMA_RECORD = $recordedSchemaFile
     }
 
     Assert-Equal $success.ExitCode 0 'successful launch exits successfully'
@@ -160,6 +169,10 @@ Write-Output '{"type":"turn.completed"}'
     $recordedArgs = Get-Content -LiteralPath $recordedArgsFile -Raw | ConvertFrom-Json
     Assert-True ($recordedArgs -contains $testPrompt) 'prompt argument boundary with spaces preserved'
     Assert-True ($recordedArgs -contains $worktree) 'worktree path argument boundary with spaces preserved'
+    $schemaArgIndex = [Array]::IndexOf([string[]]$recordedArgs, '--output-schema')
+    Assert-True ($schemaArgIndex -ge 0) 'inline schema is forwarded as output-schema'
+    $forwardedSchema = Get-Content -LiteralPath $recordedSchemaFile -Raw
+    Assert-Equal ($forwardedSchema.Trim()) '{"type":"object","required":["ok"]}' 'inline schema content is preserved'
 
     # 3. Malformed worker output test
     $malformedOutput = Join-Path $TmpRoot 'malformed-result.json'

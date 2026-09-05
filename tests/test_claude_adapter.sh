@@ -57,7 +57,7 @@ CATALOG
 catalog_request="$TMP_ROOT/catalog-request.json"
 cat >"$catalog_request" <<'CATREQ'
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "role": "worker",
   "preference": "balanced",
   "effort": "high",
@@ -70,14 +70,14 @@ CATREQ
 catalog_output=$(CLAUDE_BIN="$fake_claude" CLAUDE_MODEL_CATALOG="$catalog" "$ADAPTER" --operation catalog --request "$catalog_request")
 [ "$(printf '%s' "$catalog_output" | jq -r '.vendor')" = anthropic ] || fail 'catalog vendor is not anthropic'
 [ "$(printf '%s' "$catalog_output" | jq -r '.adapter')" = claude ] || fail 'catalog adapter is not claude'
-[ "$(printf '%s' "$catalog_output" | jq -r '.protocol_version')" = "1" ] || fail 'catalog protocol_version is not 1'
+[ "$(printf '%s' "$catalog_output" | jq -r '.protocol_version')" = "2" ] || fail 'catalog protocol_version is not 2'
 [ "$(printf '%s' "$catalog_output" | jq -r '.models | length')" -ge 1 ] || fail 'catalog has no models'
 pass 'Bash adapter catalog discovery succeeds'
 
 run_adapter() {
   local mode="$1" workspace="$2" cancel_file="${3:-}" prompt="${4:-bounded fake assignment}" record_args="${5:-}"
   local selection="$TMP_ROOT/$mode-selection.json" output="$TMP_ROOT/$mode-result.json" error="$TMP_ROOT/$mode-error.txt"
-  jq -n '{protocol_version:1,model_id:"claude-3-5-sonnet-20241022",effort:"high",preference:"balanced",vendor:"anthropic"}' >"$selection"
+  jq -n '{protocol_version:2,model_id:"claude-3-5-sonnet-20241022",effort:"high",preference:"balanced",vendor:"anthropic"}' >"$selection"
   set +e
   local cancel_args=()
   if [ -n "$cancel_file" ]; then

@@ -56,6 +56,15 @@ function Get-PreferenceScore([string]$family, [string]$preference) {
     return 100
 }
 
+function Get-Preflight($model) {
+    if ($null -ne $model -and $model.PSObject.Properties['preflight']) { return $model.preflight }
+    return [ordered]@{
+        access = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify authenticated access'; account_ref = '' }
+        entitlement = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify model entitlement'; billing_route = 'unknown' }
+        usage = [ordered]@{ state = 'unknown'; reason = 'adapter did not query usage'; source = 'not-queried'; observed_at = ''; scopes = @() }
+    }
+}
+
 function Convert-ModelListToCatalog([string]$raw) {
     $models = @(
         foreach ($line in ($raw -split "`r?`n")) {
@@ -76,6 +85,7 @@ function Convert-ModelListToCatalog([string]$raw) {
                     balanced = Get-PreferenceScore $family 'balanced'
                     deep = Get-PreferenceScore $family 'deep'
                 }
+                preflight = Get-Preflight $null
             }
         }
     )
@@ -84,9 +94,9 @@ function Convert-ModelListToCatalog([string]$raw) {
     try { $revision = [Convert]::ToHexString($hash.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($raw))).ToLowerInvariant() }
     finally { $hash.Dispose() }
     [ordered]@{
-        protocol_version = 1
+        protocol_version = 2
         adapter = 'agy'
-        adapter_revision = 'agy-1'
+        adapter_revision = 'agy-2'
         vendor = 'agy'
         catalog_revision = $revision
         models = $models

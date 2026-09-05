@@ -1,15 +1,15 @@
 # Web research mode
 
-Conducts cited online investigations and multi-angle technical research by dispatching parallel headless `agy` workers, synthesizing findings into a structured claim ledger, and validating every final citation with an independent auditor.
+Conducts cited online investigations and multi-angle technical research by dispatching parallel headless workers through the configured adapter, synthesizing findings into a structured claim ledger, and validating every final citation with an independent auditor.
 
 ## Preconditions and sources
 
 1. **Public-source default.** Research workers query public online sources by default.
 2. **Explicit authorization for private sources.** Accessing private, internal, or authenticated sources requires explicit authorization from the user for that specific run. Never forward cookies, session tokens, browser profiles, or environment credentials implicitly.
 3. **Helper family and environment requirements.** Select the helper family matching your host shell:
-   - **POSIX shells (Bash 3.2+)**: Use `.sh` scripts in `scripts/`. Requires Git, `agy`, `jq`, and Python 3.
-   - **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
-4. **`agy` availability.** Workers are launched using the matching `run-agy-json` helper, which handles `AGY_BIN` precedence and output capture.
+   - **POSIX shells (Bash 3.2+)**: Use `.sh` scripts in `scripts/`. Requires Git, `jq`, Python 3, and the configured adapter's executable.
+   - **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and the configured adapter. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+4. **Configured adapter availability.** Workers are launched using the matching `run-agy-json` helper, which handles adapter selection and output capture.
 5. **Filesystem isolation.** Every research run operates in a disposable workspace outside the live repository.
 6. **Model policy and preflight check.** Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. All roles route through the role preference, effort, and required capabilities in `model-policy.json`; the adapter selects a current eligible model. Do not pass `--model` or `--effort` directly.
 

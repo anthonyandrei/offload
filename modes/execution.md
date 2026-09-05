@@ -1,17 +1,17 @@
 # Execution mode
 
-Dispatches `agy` workers to implement file and code changes across independent gated tasks through isolated workspaces.
+Dispatches configured workers to implement file and code changes across independent gated tasks through isolated workspaces.
 
 ## Preconditions and helper selection
 
 Select the helper family matching your current host shell:
 
-- **POSIX shells (Bash 3.2+)**: Use `scripts/dispatch-worker.sh`, `scripts/run-agy-json.sh`, `scripts/check-execution-scope.sh`, `scripts/execute-gate.sh`, and `scripts/execution-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
-- **PowerShell (PowerShell 7+)**: Use `scripts/dispatch-worker.ps1`, `scripts/run-agy-json.ps1`, `scripts/check-execution-scope.ps1`, `scripts/execute-gate.ps1`, and `scripts/execution-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+- **POSIX shells (Bash 3.2+)**: Use `scripts/dispatch-worker.sh`, `scripts/run-agy-json.sh`, `scripts/check-execution-scope.sh`, `scripts/execute-gate.sh`, and `scripts/execution-workspace.sh`. Requires Git, `jq`, Python 3, and the configured adapter's executable.
+- **PowerShell (PowerShell 7+)**: Use `scripts/dispatch-worker.ps1`, `scripts/run-agy-json.ps1`, `scripts/check-execution-scope.ps1`, `scripts/execute-gate.ps1`, and `scripts/execution-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and the configured adapter. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 Check these before dispatching writing tasks:
 
-1. **`agy` is available.** Verify `agy` via `run-agy-json` or ensure `agy` is on `PATH`, user-local bin, or `AGY_BIN`.
+1. **The configured adapter is available.** Verify it through `run-agy-json` and require a protocol-2 catalog with verified access and capacity.
 2. **Target is a git repository.** Run `git rev-parse --is-inside-work-tree`.
 3. **Working tree is clean.** Run `git status --porcelain`. A clean tree is required to track edits, isolate changes, and roll back failed tasks.
 4. **Record baseline revision.** Record the caller repository baseline before creating workspaces:
@@ -27,7 +27,7 @@ Every execution dispatch supplies the shared lifecycle metadata to `run-agy-json
 
 Workers are admitted by role using `dispatch-worker` with `--role <role>` and a bounded budget. The dispatcher invokes `run-agy-json`, which resolves models dynamically from `model-policy.json`. Do not pass `--model` or `--effort` directly. Refer to [`SKILL.md`](../SKILL.md) for the shared model routing, preflight, and recovery contract.
 
-The command examples below show the `agy` arguments passed after the dispatcher's `--` delimiter. In a real run, put the state path, assignment identity, parent identity when applicable, source revision, owned and frozen paths, output and error paths, workspace path, budget, and root limits on the `dispatch-worker` invocation. Do not invoke `run-agy-json` directly for an execution assignment.
+The command examples below show adapter arguments passed after the dispatcher's `--` delimiter. In a real run, put the state path, assignment identity, parent identity when applicable, source revision, owned and frozen paths, output and error paths, workspace path, budget, and root limits on the `dispatch-worker` invocation. Do not invoke `run-agy-json` directly for an execution assignment.
 
 The examples use one assignment per ledger. For a parallel wave, share the ledger and set its root child-width and total resource limits to cover the whole wave.
 

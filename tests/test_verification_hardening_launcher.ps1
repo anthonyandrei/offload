@@ -236,17 +236,19 @@ exit 0
     $fakeCatalog = Join-Path $TmpRoot 'fake-adapter-catalog.json'
     @'
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "adapter": "fake",
-  "adapter_revision": "fake-adapter-1",
+  "adapter_revision": "fake-adapter-2",
   "vendor": "fake-vendor",
   "catalog_revision": "test-catalog-1",
   "models": [
-    { "id": "scout-model", "family_hint": "fast", "available": true, "quota_available": true, "supported_efforts": ["low"], "capabilities": [], "scores": { "fast": 0 } },
-    { "id": "worker-model", "family_hint": "balanced", "available": true, "quota_available": true, "supported_efforts": ["high"], "capabilities": [], "scores": { "balanced": 0, "deep": 1 } }
+    { "id": "scout-model", "family_hint": "fast", "available": true, "quota_available": true, "supported_efforts": ["low"], "capabilities": [], "scores": { "fast": 0 }, "preflight": { "access": { "state": "verified", "account_ref": "test-account" }, "entitlement": { "state": "active", "billing_route": "test-subscription" }, "usage": { "state": "known", "source": "test", "observed_at": "2026-09-05T00:00:00Z", "scopes": [{ "scope_id": "test-window", "remaining_units": 20, "reserved_units": 0 }] } } },
+    { "id": "worker-model", "family_hint": "balanced", "available": true, "quota_available": true, "supported_efforts": ["high"], "capabilities": [], "scores": { "balanced": 0, "deep": 1 }, "preflight": { "access": { "state": "verified", "account_ref": "test-account" }, "entitlement": { "state": "active", "billing_route": "test-subscription" }, "usage": { "state": "known", "source": "test", "observed_at": "2026-09-05T00:00:00Z", "scopes": [{ "scope_id": "test-window", "remaining_units": 20, "reserved_units": 0 }] } } }
   ]
 }
 '@ | Set-Content -LiteralPath $fakeCatalog -Encoding utf8
+    $catalogText = [System.IO.File]::ReadAllText($fakeCatalog).Replace('2026-09-05T00:00:00Z', [DateTime]::UtcNow.ToString('o'))
+    [System.IO.File]::WriteAllText($fakeCatalog, $catalogText, [System.Text.Encoding]::UTF8)
     $savedAdapterBin = $env:OFFLOAD_ADAPTER_BIN
     $savedAdapterCatalog = $env:FAKE_ADAPTER_CATALOG
     $savedAgyBin = $env:AGY_BIN

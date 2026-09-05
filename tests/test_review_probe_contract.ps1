@@ -282,8 +282,37 @@ exit 0
     }
 
     $pathSep = [System.IO.Path]::PathSeparator
+    $catalogPath = Join-Path $TmpRoot 'agy-catalog.json'
+    [ordered]@{
+        protocol_version = 2
+        adapter = 'agy'
+        adapter_revision = 'agy-2'
+        vendor = 'agy'
+        catalog_revision = 'probe-catalog-1'
+        models = @(
+            [ordered]@{
+                id = 'test-model-high'
+                available = $true
+                quota_available = $true
+                supported_efforts = @('high')
+                capabilities = @()
+                scores = [ordered]@{ fast = 10; balanced = 10; deep = 10 }
+                preflight = [ordered]@{
+                    access = [ordered]@{ state = 'verified'; account_ref = 'probe-account' }
+                    entitlement = [ordered]@{ state = 'active'; billing_route = 'probe-subscription' }
+                    usage = [ordered]@{
+                        state = 'known'
+                        source = 'probe'
+                        observed_at = [DateTime]::UtcNow.ToString('o')
+                        scopes = @([ordered]@{ scope_id = 'probe-window'; remaining_units = 20; reserved_units = 0 })
+                    }
+                }
+            }
+        )
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalogPath -Encoding utf8
     $testEnv = @{
         'AGY_BIN'                    = $fakeAgyPs
+        'OFFLOAD_ADAPTER_CATALOG'    = $catalogPath
         'PATH'                       = "$fakeBin$pathSep$env:PATH"
         'FAKE_AGY_INVOCATIONS_LOG'   = $invocationsLog
     }

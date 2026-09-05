@@ -428,7 +428,10 @@ FAKE_RETRY_AGY
 chmod +x "$retry_fake_bin/agy"
 
 retry_catalog="$TMP_ROOT/retry-catalog.json"
-printf '%s\n' '{"protocol_version":1,"adapter":"fake","adapter_revision":"test-adapter-1","vendor":"test-vendor","catalog_revision":"test-catalog-1","models":[{"id":"test-model","family_hint":"test-family","available":true,"quota_available":true,"supported_efforts":["low","medium","high"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}' > "$retry_catalog"
+printf '%s\n' '{"protocol_version":2,"adapter":"fake","adapter_revision":"test-adapter-2","vendor":"test-vendor","catalog_revision":"test-catalog-1","models":[{"id":"test-model","family_hint":"test-family","available":true,"quota_available":true,"supported_efforts":["low","medium","high"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}' > "$retry_catalog"
+observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq --arg observed_at "$observed_at" '.models |= map(. + {preflight:{access:{state:"verified",account_ref:"test-account"},entitlement:{state:"active",billing_route:"test-subscription"},usage:{state:"known",source:"test",observed_at:$observed_at,scopes:[{scope_id:"test-window",remaining_units:20,reserved_units:0}]}}})' "$retry_catalog" >"$retry_catalog.tmp"
+mv "$retry_catalog.tmp" "$retry_catalog"
 export OFFLOAD_ADAPTER_BIN="$ROOT/tests/fixtures/fake-worker-adapter.sh"
 export FAKE_ADAPTER_CATALOG="$retry_catalog"
 export AGY_BIN="$retry_fake_bin/agy"

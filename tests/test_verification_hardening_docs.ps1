@@ -316,8 +316,10 @@ exit 0
     $pathSep = [System.IO.Path]::PathSeparator
     $catalogFile = Join-Path $TmpRoot 'probe-catalog.json'
     @'
-{"protocol_version":1,"adapter":"agy","adapter_revision":"agy-1","vendor":"agy","catalog_revision":"probe-catalog","models":[{"id":"probe-model-high","family_hint":"unknown","available":true,"quota_available":true,"supported_efforts":["high"],"capabilities":[],"scores":{"fast":2,"balanced":1,"deep":2}}]}
+{"protocol_version":2,"adapter":"agy","adapter_revision":"agy-2","vendor":"agy","catalog_revision":"probe-catalog","models":[{"id":"probe-model-high","family_hint":"unknown","available":true,"quota_available":true,"supported_efforts":["high"],"capabilities":[],"scores":{"fast":2,"balanced":1,"deep":2},"preflight":{"access":{"state":"verified","account_ref":"test-account"},"entitlement":{"state":"active","billing_route":"test-subscription"},"usage":{"state":"known","source":"test","observed_at":"2026-09-05T00:00:00Z","scopes":[{"scope_id":"test-window","remaining_units":20,"reserved_units":0}]}}}]}
 '@ | Set-Content -LiteralPath $catalogFile -Encoding utf8
+    $catalogText = [System.IO.File]::ReadAllText($catalogFile).Replace('2026-09-05T00:00:00Z', [DateTime]::UtcNow.ToString('o'))
+    [System.IO.File]::WriteAllText($catalogFile, $catalogText, [System.Text.Encoding]::UTF8)
     $testEnv = @{
         'AGY_BIN'                   = $fakeAgyPs
         'OFFLOAD_ADAPTER_CATALOG'   = $catalogFile

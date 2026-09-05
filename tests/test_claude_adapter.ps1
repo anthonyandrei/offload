@@ -122,7 +122,7 @@ $catalog = Join-Path $tempRoot 'catalog.json'
 
 $catalogRequest = Join-Path $tempRoot 'catalog-request.json'
 @{
-    protocol_version = 1
+    protocol_version = 2
     role = 'worker'
     preference = 'balanced'
     effort = 'high'
@@ -147,7 +147,7 @@ function Invoke-Adapter {
     $outputPath = Join-Path $Artifacts "$Mode-result.json"
     $errorPath = Join-Path $Artifacts "$Mode-error.txt"
     @{
-        protocol_version = 1
+        protocol_version = 2
         model_id = 'claude-3-5-sonnet-20241022'
         effort = 'high'
         preference = 'balanced'
@@ -186,7 +186,8 @@ try {
     $capDoc = $cap.Stdout | ConvertFrom-Json
     Assert-Equal $capDoc.vendor 'anthropic' 'catalog identifies anthropic'
     Assert-Equal $capDoc.adapter 'claude' 'catalog identifies claude adapter'
-    Assert-Equal $capDoc.protocol_version 1 'catalog specifies protocol_version 1'
+    Assert-Equal $capDoc.protocol_version 2 'catalog specifies protocol_version 2'
+    Assert-Equal $capDoc.models[0].preflight.access.state 'unknown' 'catalog does not infer authenticated access'
     Assert-True ($capDoc.models.Count -ge 1) 'catalog includes models'
 
     # 2. Successful launch test with space preservation
