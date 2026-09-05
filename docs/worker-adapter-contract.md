@@ -115,12 +115,14 @@ does not parse vendor model catalogs.
 
 ## Reference adapter
 
-The current AGY path is the reference adapter. On PowerShell it launches
-through [`scripts/run-agy-json.ps1`](../scripts/run-agy-json.ps1); on POSIX
-hosts it uses [`scripts/run-agy-json.sh`](../scripts/run-agy-json.sh). Those
-files contain AGY argument syntax and model routing. A future adapter keeps
-its own command syntax and catalog parsing in its own directory, then emits
-the same assignment and normalized-result records.
+The repository includes a reference adapter and vendor-neutral launcher path.
+On PowerShell it uses [`scripts/run-agy-json.ps1`](../scripts/run-agy-json.ps1);
+on POSIX hosts it uses [`scripts/run-agy-json.sh`](../scripts/run-agy-json.sh).
+The filenames preserve compatibility with existing installations, but the
+launcher accepts a configured adapter and the catalog protocol is provider
+neutral. Each adapter keeps its command syntax and catalog parsing behind the
+adapter boundary, then emits the same assignment and normalized-result
+records.
 
 `grill-with-docs` and other host skills should depend only on this contract.
 They must not contain adapter names, vendor commands, or vendor model names.

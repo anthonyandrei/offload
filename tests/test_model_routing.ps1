@@ -21,10 +21,10 @@ $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("offload-routing-" + [g
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 
 function New-Catalog([string]$path, [string]$revision, [object[]]$models) {
-    [ordered]@{ protocol_version = 1; adapter = 'fake'; adapter_revision = 'fake-1'; vendor = 'test-vendor'; catalog_revision = $revision; models = $models } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $path -Encoding utf8
+    [ordered]@{ protocol_version = 2; adapter = 'fake'; adapter_revision = 'fake-2'; vendor = 'test-vendor'; catalog_revision = $revision; models = $models } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $path -Encoding utf8
 }
 function New-Model([string]$id, [bool]$available, [string[]]$efforts, [int]$fast, [int]$balanced, [int]$deep, [string[]]$capabilities = @(), [string]$family = '') {
-    [ordered]@{ id = $id; family_hint = $family; available = $available; quota_available = $true; supported_efforts = $efforts; capabilities = $capabilities; scores = [ordered]@{ fast = $fast; balanced = $balanced; deep = $deep } }
+    [ordered]@{ id = $id; family_hint = $family; available = $available; quota_available = $true; supported_efforts = $efforts; capabilities = $capabilities; scores = [ordered]@{ fast = $fast; balanced = $balanced; deep = $deep }; preflight = [ordered]@{ access = [ordered]@{ state = 'verified'; account_ref = 'test-account' }; entitlement = [ordered]@{ state = 'active'; billing_route = 'test-subscription' }; usage = [ordered]@{ state = 'known'; source = 'test'; observed_at = [DateTime]::UtcNow.ToString('o'); scopes = @([ordered]@{ scope_id = 'test-window'; remaining_units = 20; reserved_units = 0 }) } } }
 }
 function Invoke-Launcher([string[]]$arguments, [hashtable]$environment) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -72,13 +72,14 @@ try {
     Assert-Equal $result.ExitCode 0 'catalog selection launches worker' $result.Stderr
     $chosen = Get-Content -Raw $selection | ConvertFrom-Json
     Assert-Equal $chosen.model_id 'balanced-best' 'selection is deterministic across equal scores'
+    Assert-Equal $chosen.protocol_version 2 'selection uses preflight-aware protocol'
     Assert-Equal $chosen.vendor 'test-vendor' 'selection records vendor'
     Assert-Equal $chosen.adapter 'fake' 'selection records adapter'
     Assert-Equal $chosen.family_hint '' 'family hint remains metadata'
     Assert-Equal $chosen.preference 'balanced' 'selection records preference'
     Assert-Equal $chosen.effort 'high' 'selection records separate effort'
     Assert-Equal $chosen.catalog_revision 'catalog-a' 'selection records catalog revision'
-    Assert-True ($chosen.selection_reason -match 'filtered unavailable') 'selection records filtering reason'
+    Assert-True ($chosen.selection_reason -match 'preference=balanced') 'selection records ranking reason'
     $captured = Get-Content -Raw $capture | ConvertFrom-Json
     Assert-Equal $captured.selection.model_id 'balanced-best' 'adapter receives exact selected model'
     Assert-Equal $captured.selection.required_capabilities.Count 0 'adapter receives capability constraints'

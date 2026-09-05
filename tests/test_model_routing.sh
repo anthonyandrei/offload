@@ -25,7 +25,7 @@ selection="$TMP_ROOT/selection.json"
 capture="$TMP_ROOT/capture.json"
 cat >"$catalog_one" <<'JSON'
 {
-  "protocol_version": 1, "adapter": "fake", "adapter_revision": "fake-1",
+  "protocol_version": 2, "adapter": "fake", "adapter_revision": "fake-2",
   "vendor": "vendor-a", "catalog_revision": "catalog-1",
   "models": [
     {"id":"unavailable","family_hint":"fast","available":false,"supported_efforts":["low"],"capabilities":[],"scores":{"fast":0}},
@@ -37,7 +37,7 @@ cat >"$catalog_one" <<'JSON'
 JSON
 cat >"$catalog_three" <<'JSON'
 {
-  "protocol_version": 1, "adapter": "fake", "adapter_revision": "fake-1",
+  "protocol_version": 2, "adapter": "fake", "adapter_revision": "fake-2",
   "vendor": "vendor-a", "catalog_revision": "catalog-3",
   "models": [
     {"id":"model-without-scores","family_hint":"unknown","available":true,"quota_available":true,"supported_efforts":["high"],"capabilities":[]}
@@ -46,7 +46,7 @@ cat >"$catalog_three" <<'JSON'
 JSON
 cat >"$catalog_two" <<'JSON'
 {
-  "protocol_version": 1, "adapter": "fake", "adapter_revision": "fake-1",
+  "protocol_version": 2, "adapter": "fake", "adapter_revision": "fake-2",
   "vendor": "vendor-a", "catalog_revision": "catalog-2",
   "models": [
     {"id":"new-top-model","family_hint":"new-family","available":true,"quota_available":true,"supported_efforts":["high"],"capabilities":[],"scores":{"balanced":0}},
@@ -54,6 +54,12 @@ cat >"$catalog_two" <<'JSON'
   ]
 }
 JSON
+
+preflight=$(jq -n --arg observed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{access:{state:"verified",account_ref:"test-account"},entitlement:{state:"active",billing_route:"test-subscription"},usage:{state:"known",source:"test",observed_at:$observed,scopes:[{scope_id:"test-window",remaining_units:20,reserved_units:0}]}}')
+for catalog_file in "$catalog_one" "$catalog_two" "$catalog_three"; do
+  jq --argjson preflight "$preflight" '.protocol_version=2 | .adapter_revision="fake-2" | .models |= map(. + {preflight:$preflight})' "$catalog_file" >"$catalog_file.tmp"
+  mv "$catalog_file.tmp" "$catalog_file"
+done
 
 run_launcher() {
   local catalog="$1"; shift

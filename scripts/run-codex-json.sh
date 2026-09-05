@@ -92,9 +92,9 @@ if [ "$operation" = catalog ]; then
       elif $pref == "deep" then {fast: 3, balanced: 2, deep: 1}
       else {fast: 100, balanced: 100, deep: 100} end;
     {
-      protocol_version: 1,
+      protocol_version: 2,
       adapter: "codex",
-      adapter_revision: "codex-1",
+      adapter_revision: "codex-2",
       vendor: "codex",
       catalog_revision: (.revision // "codex-current"),
       models: [
@@ -105,7 +105,8 @@ if [ "$operation" = catalog ]; then
           quota_available: (if has("quota_available") then .quota_available else true end),
           supported_efforts: (.supported_efforts // .efforts // ["low", "medium", "high"]),
           capabilities: (.capabilities // ["structured-output"]),
-          scores: (.scores // score_map(.preference // "balanced"))
+          scores: (.scores // score_map(.preference // "balanced")),
+          preflight: (.preflight // {access:{state:"unknown",reason:"adapter did not verify authenticated access",account_ref:""},entitlement:{state:"unknown",reason:"adapter did not verify model entitlement",billing_route:"unknown"},usage:{state:"unknown",reason:"adapter did not query usage",source:"not-queried",observed_at:"",scopes:[]}})
         }
       ]
     }
@@ -123,6 +124,7 @@ model_id=$(jq -er '.model_id // .model // empty' "$request_path") || fail 'selec
 prompt=''
 worktree=''
 schema_path=''
+schema_inline=''
 resume_session=''
 
 idx=0
@@ -157,7 +159,13 @@ while [ "$idx" -lt "${#worker_args[@]}" ]; do
       ;;
     --output-schema|--json-schema)
       idx=$((idx + 1))
-      [ "$idx" -lt "${#worker_args[@]}" ] && schema_path="${worker_args[$idx]}"
+      if [ "$idx" -lt "${#worker_args[@]}" ]; then
+        candidate_schema="${worker_args[$idx]}"
+        case "$candidate_schema" in
+          \{*|\[* ) schema_inline="$candidate_schema"; schema_path='' ;;
+          *) schema_path="$candidate_schema" ;;
+        esac
+      fi
       idx=$((idx + 1))
       ;;
     --resume|--resume-session)
@@ -188,7 +196,12 @@ done
 [ -d "$worktree" ] || fail "worktree does not exist: $worktree"
 
 temp_schema=''
-if [ -z "$schema_path" ] || [ ! -f "$schema_path" ]; then
+if [ -n "$schema_inline" ]; then
+  jq empty <<<"$schema_inline" >/dev/null 2>&1 || fail 'inline output schema is not valid JSON'
+  temp_schema=$(mktemp)
+  printf '%s' "$schema_inline" > "$temp_schema"
+  schema_path="$temp_schema"
+elif [ -z "$schema_path" ] || [ ! -f "$schema_path" ]; then
   temp_schema=$(mktemp)
   printf '%s\n' '{"type":"object","additionalProperties":true}' > "$temp_schema"
   schema_path="$temp_schema"

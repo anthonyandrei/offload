@@ -88,6 +88,15 @@ function Get-CatalogData {
     }
 }
 
+function Get-Preflight($model) {
+    if ($null -ne $model -and $model.PSObject.Properties['preflight']) { return $model.preflight }
+    return [ordered]@{
+        access = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify authenticated access'; account_ref = '' }
+        entitlement = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify model entitlement'; billing_route = 'unknown' }
+        usage = [ordered]@{ state = 'unknown'; reason = 'adapter did not query usage'; source = 'not-queried'; observed_at = ''; scopes = @() }
+    }
+}
+
 function Get-FamilyHint([string]$ModelId) {
     if ($ModelId -match 'opus') { return 'opus' }
     if ($ModelId -match 'sonnet') { return 'sonnet' }
@@ -173,6 +182,7 @@ if ($operation -eq 'catalog') {
                     supported_efforts = @('low', 'medium', 'high')
                     capabilities = @('structured-output')
                     scores = Get-PreferenceScore $family
+                    preflight = Get-Preflight $null
                 }
             } elseif ($m -is [PSCustomObject]) {
                 $mId = [string]$m.id
@@ -188,6 +198,7 @@ if ($operation -eq 'catalog') {
                     supported_efforts = @($efforts | ForEach-Object { [string]$_ })
                     capabilities = @($caps | ForEach-Object { [string]$_ })
                     scores = $scores
+                    preflight = Get-Preflight $m
                 }
             }
         }
@@ -200,9 +211,9 @@ if ($operation -eq 'catalog') {
     }
 
     $catalogDoc = [ordered]@{
-        protocol_version = 1
+        protocol_version = 2
         adapter = 'claude'
-        adapter_revision = 'claude-1'
+        adapter_revision = 'claude-2'
         vendor = 'anthropic'
         catalog_revision = $revision
         models = $models

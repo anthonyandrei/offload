@@ -47,9 +47,32 @@ $result | ConvertTo-Json -Compress
 '@ | Set-Content -LiteralPath $fakeAgy -Encoding utf8
 
     $catalog = Join-Path $tempRoot 'catalog.json'
-    @'
-{"protocol_version":1,"adapter":"agy","adapter_revision":"agy-1","vendor":"agy","catalog_revision":"dispatch-catalog","models":[{"id":"probe-model-low","family_hint":"unknown","available":true,"quota_available":true,"supported_efforts":["low"],"capabilities":[],"scores":{"fast":1,"balanced":1,"deep":1}}]}
-'@ | Set-Content -LiteralPath $catalog -Encoding utf8
+    $catalogObject = [ordered]@{
+        protocol_version = 2
+        adapter = 'agy'
+        adapter_revision = 'agy-2'
+        vendor = 'agy'
+        catalog_revision = 'dispatch-catalog'
+        models = @([ordered]@{
+            id = 'probe-model-low'
+            family_hint = 'unknown'
+            available = $true
+            quota_available = $true
+            supported_efforts = @('low')
+            capabilities = @()
+            scores = [ordered]@{ fast = 1; balanced = 1; deep = 1 }
+            preflight = [ordered]@{
+                access = [ordered]@{ state = 'verified'; account_ref = 'test-account' }
+                entitlement = [ordered]@{ state = 'active'; billing_route = 'test-subscription' }
+                usage = [ordered]@{ state = 'known'; source = 'test'; observed_at = [DateTime]::UtcNow.ToString('o'); scopes = @([ordered]@{ scope_id = 'test-window'; remaining_units = 20; reserved_units = 0 }) }
+            }
+        })
+    }
+    $catalogObject | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $catalog -Encoding utf8
+    $previousAgyBin = $env:AGY_BIN
+    $previousAdapterCatalog = $env:OFFLOAD_ADAPTER_CATALOG
+    $env:AGY_BIN = $fakeAgy
+    $env:OFFLOAD_ADAPTER_CATALOG = $catalog
 
     $state = Join-Path $tempRoot 'dispatch.json'
     $manifest = Join-Path $tempRoot 'root-worker.manifest.json'
@@ -168,7 +191,9 @@ $process.WaitForExit()
     $ledger = Get-Content -LiteralPath $state -Raw | ConvertFrom-Json
     $timeoutAssignment = @($ledger.assignments | Where-Object { $_.assignment_id -eq 'timeout-worker' })[0]
     Assert-True ($timeoutAssignment.lifecycle_state -eq 'failed' -and $timeoutAssignment.exit_code -eq 124) 'ledger records a timed-out assignment as failed'
-} finally {
+ } finally {
+    if ($null -eq $previousAgyBin) { Remove-Item Env:AGY_BIN -ErrorAction SilentlyContinue } else { $env:AGY_BIN = $previousAgyBin }
+    if ($null -eq $previousAdapterCatalog) { Remove-Item Env:OFFLOAD_ADAPTER_CATALOG -ErrorAction SilentlyContinue } else { $env:OFFLOAD_ADAPTER_CATALOG = $previousAdapterCatalog }
     if (Test-Path -LiteralPath $manifest -PathType Leaf) {
         & $workspaceHelper cleanup --manifest $manifest --status success 2>$null | Out-Null
     }

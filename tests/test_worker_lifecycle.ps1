@@ -110,9 +110,9 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
     $fakeAdapter = Join-Path $rootDir 'tests/fixtures/fake-worker-adapter.ps1'
     $fakeCatalog = Join-Path $tmpRoot 'lifecycle-catalog.json'
     [ordered]@{
-        protocol_version = 1
+        protocol_version = 2
         adapter = 'fake'
-        adapter_revision = 'fake-1'
+        adapter_revision = 'fake-2'
         vendor = 'test-vendor'
         catalog_revision = 'lifecycle-1'
         models = @(
@@ -123,6 +123,11 @@ if ($env:FAKE_AGY_SLEEP_SECONDS) {
                 supported_efforts = @('high')
                 capabilities = @()
                 scores = [ordered]@{ fast = 10; balanced = 10; deep = 10 }
+                preflight = [ordered]@{
+                    access = [ordered]@{ state = 'verified'; account_ref = 'test-account' }
+                    entitlement = [ordered]@{ state = 'active'; billing_route = 'test-subscription' }
+                    usage = [ordered]@{ state = 'known'; source = 'test'; observed_at = [DateTime]::UtcNow.ToString('o'); scopes = @([ordered]@{ scope_id = 'test-window'; remaining_units = 20; reserved_units = 0 }) }
+                }
             }
         )
     } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $fakeCatalog -Encoding utf8

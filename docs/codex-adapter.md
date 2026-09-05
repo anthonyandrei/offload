@@ -38,13 +38,13 @@ JSON document or a path to one:
 }
 ```
 
-The adapter emits a protocol version 1 catalog document to standard output:
+The adapter emits a protocol version 2 catalog document to standard output:
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "adapter": "codex",
-  "adapter_revision": "codex-1",
+  "adapter_revision": "codex-2",
   "vendor": "codex",
   "catalog_revision": "host-catalog-1",
   "models": [
@@ -55,15 +55,29 @@ The adapter emits a protocol version 1 catalog document to standard output:
       "quota_available": true,
       "supported_efforts": ["low", "medium", "high"],
       "capabilities": ["structured-output"],
-      "scores": { "fast": 2, "balanced": 1, "deep": 2 }
+      "scores": { "fast": 2, "balanced": 1, "deep": 2 },
+      "preflight": {
+        "access": { "state": "verified", "account_ref": "account-ref" },
+        "entitlement": { "state": "active", "billing_route": "subscription" },
+        "usage": {
+          "state": "known",
+          "source": "codex-usage",
+          "observed_at": "2026-09-05T00:00:00Z",
+          "scopes": [
+            { "scope_id": "account-window", "remaining_units": 12, "reserved_units": 0 }
+          ]
+        }
+      }
     }
   ]
 }
 ```
 
 The catalog is supplied by the host; the adapter does not hardcode vendor model
-IDs. If the CLI flags or catalog are unavailable, the adapter fails closed and
-exits nonzero.
+IDs. Access, entitlement, billing, and usage are independent preflight facts.
+Missing or stale facts remain unknown and cannot be selected as compatible. If
+the CLI flags or catalog are unavailable, the adapter fails closed and exits
+nonzero.
 
 ### Worker launch
 

@@ -77,9 +77,9 @@ if [ "$operation" = catalog ]; then
       elif $preference == "balanced" then ({sonnet:1,flash:2,oss:3,pro:3,haiku:4,opus:5,unknown:100}[$family] // 100)
       else ({opus:1,pro:2,sonnet:3,oss:4,flash:5,haiku:6,unknown:100}[$family] // 100) end;
     {
-      protocol_version: 1,
+      protocol_version: 2,
       adapter: "agy",
-      adapter_revision: "agy-1",
+      adapter_revision: "agy-2",
       vendor: "agy",
       catalog_revision: $revision,
       models: [
@@ -99,7 +99,8 @@ if [ "$operation" = catalog ]; then
               fast: score($family; "fast"),
               balanced: score($family; "balanced"),
               deep: score($family; "deep")
-            }
+            },
+            preflight: {access:{state:"unknown",reason:"adapter did not verify authenticated access",account_ref:""},entitlement:{state:"unknown",reason:"adapter did not verify model entitlement",billing_route:"unknown"},usage:{state:"unknown",reason:"adapter did not query usage",source:"not-queried",observed_at:"",scopes:[]}}
           }
       ]
     }

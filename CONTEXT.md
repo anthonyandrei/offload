@@ -1,6 +1,6 @@
 # Offload context
 
-Offload delegates bounded work through compatible worker adapters while the calling agent remains responsible for scope, verification, and reporting. AGY is the current default adapter.
+Offload delegates bounded work through compatible worker adapters while the calling agent remains responsible for scope, verification, and reporting. The repository includes a reference adapter, but selection is provider-neutral.
 
 ## Publication boundary
 
@@ -32,8 +32,8 @@ An adapter that implements the worker contract and has verified support for the 
 _Avoid_: Any installed CLI, universal worker support
 
 **Worker selection**:
-The orchestrator's choice of a configured, compatible worker provider before making an offload offer. Selection checks authenticated access, current entitlement, and usage limits against the assignment, verification, and one retry, accounting for workers sharing quota. Rank eligible workers by task capability and expected quality, with remaining capacity as the tie-breaker. Unknown usage excludes automatic selection but permits explicit user selection with disclosed uncertainty and otherwise established access. An explicit user provider choice takes precedence, subject to eligibility checks. The offer names the selected worker and explains the choice. This accepted behavior is pending implementation. See ADR 0009.
-_Avoid_: Always offer AGY, implicit provider switch
+The orchestrator's choice of a configured, compatible worker provider before making an offload offer. Selection checks authenticated access, current entitlement, and usage limits against the assignment, verification, and one retry, accounting for workers sharing quota. Rank eligible workers by task capability and expected quality, with remaining capacity as the tie-breaker. Unknown usage excludes automatic selection but permits explicit user selection with disclosed uncertainty and otherwise established access. An explicit user provider choice takes precedence, subject to eligibility checks. The offer names the selected worker and explains the choice. The protocol-2 selector and capacity ledger implement this behavior. See ADR 0009.
+_Avoid_: Always offer one provider, implicit provider switch
 
 **Dispatch ledger**:
 The orchestrator-owned `offload-dispatch-state-v1` record for admitted assignments. It records parentage, depth, child IDs, budgets, owned and frozen paths, lifecycle state, artifacts, and rejected nested-dispatch events.

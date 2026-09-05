@@ -1,8 +1,8 @@
 # offload
 
-`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless workers through a vendor adapter. The reference adapter launches `agy`.
+`offload` is an agent-agnostic skill that delegates plan execution and research tasks to headless workers through a configured vendor adapter. The repository includes a reference adapter, but selection and admission use a provider-neutral contract.
 
-Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Code, Codex CLI, or any agent that can read instructions and run shell commands. `agy` is the worker, not the orchestrator. The orchestrator never accepts worker claims at face value. It verifies work mechanically through test gates, execution scope checks, verbatim quote matching, independent citation auditing, and direct repository checks.
+Whatever CLI coding agent loads this skill serves as the orchestrator: Claude Code, Codex CLI, or any agent that can read instructions and run shell commands. The configured adapter launches the worker, not the orchestrator. The orchestrator never accepts worker claims at face value. It verifies work mechanically through test gates, execution scope checks, verbatim quote matching, independent citation auditing, and direct repository checks.
 
 Offload's online-research workflow is adapted from Asa by Achibukz, used with permission. Do not publish a private repository URL, branch, commit, screenshots, or copied text.
 
@@ -28,7 +28,7 @@ cleanup, and acceptance gates.
 - **Filesystem isolation.** Research workflows run inside disposable workspaces outside the live repository. Workers receive only scoped snapshots of declared files, keeping live repository files untouched.
 - **Mechanical verification.** Execution workflows require a clean git working tree, execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path checks, and automated test gates.
 - **Prohibition on nested dispatch.** Assignments instruct workers not to dispatch nested workers.
-- **Vendor-neutral worker adapters.** [`docs/worker-adapter-contract.md`](docs/worker-adapter-contract.md) defines the assignment, lifecycle, capability/model discovery, ownership, and normalized-result boundary. The current AGY launcher is the reference adapter; verification and cleanup remain with the orchestrator.
+- **Vendor-neutral worker adapters.** [`docs/worker-adapter-contract.md`](docs/worker-adapter-contract.md) defines the assignment, lifecycle, capability/model discovery, ownership, and normalized-result boundary. The included launcher is a reference adapter; verification and cleanup remain with the orchestrator.
 - **Orchestrator-owned dispatch.** `dispatch-worker.sh` or `dispatch-worker.ps1` is the only workflow entry point that admits an assignment, creates its worktree, and starts its worker process. The dispatcher sets `OFFLOAD_WORKER_CONTEXT=1` for the worker. Worker-context calls to the dispatcher, launcher, or execution-workspace lifecycle helpers fail closed and record a `nested_dispatch_rejected` event.
 - **Structured follow-up requests.** A worker may return a request for more work in `structured_output`, but that request is data for the orchestrator to review. It never starts a process automatically.
 - **Bounded assignment ledger.** The dispatcher records assignment ID, parent ID, depth, child IDs, role, owned and frozen paths, lifecycle timestamps, output and error paths, worktree manifest, and timeout/resource budget in an `offload-dispatch-state-v1` ledger. Root limits for depth, child width, timeout, and total resource units are immutable for descendants; admission rejects attempts that would exceed them.
@@ -38,14 +38,14 @@ cleanup, and acceptance gates.
 
 | Host path | Required runtime | Required tools | CI system |
 |---|---|---|---|
-| Native Windows | PowerShell 7+ | Git and `agy` | `windows-latest` |
-| Linux with Bash | Bash 3.2+ | Git, `agy`, `jq`, and Python 3 | `ubuntu-latest` |
-| macOS with Bash | Bash 3.2+ | Git, `agy`, `jq`, and Python 3 | `macos-latest` |
-| Linux or macOS with PowerShell | PowerShell 7+ | Git and `agy` | Supported by contract, not a required CI job |
+| Native Windows | PowerShell 7+ | Git and a configured adapter | `windows-latest` |
+| Linux with Bash | Bash 3.2+ | Git, `jq`, Python 3, and a configured adapter | `ubuntu-latest` |
+| macOS with Bash | Bash 3.2+ | Git, `jq`, Python 3, and a configured adapter | `macos-latest` |
+| Linux or macOS with PowerShell | PowerShell 7+ | Git and a configured adapter | Supported by contract, not a required CI job |
 
 ### Helper family selection
 
-Orchestrators select helper scripts based on their current shell (`.sh` for Bash, `.ps1` for PowerShell), never by host operating system detection or universal launchers. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+Orchestrators select helper scripts based on their current shell (`.sh` for Bash, `.ps1` for PowerShell), never by host operating system detection or universal launchers. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and the configured adapter. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 ### Claude adapter
 
@@ -66,7 +66,7 @@ not turn the caller checkout into a sandbox.
 ## Requirements
 
 - A CLI coding agent that can read skills and run shell commands (Claude Code, Codex CLI, or similar).
-- [`agy`](https://antigravity.google), the Antigravity CLI, available on `PATH`, user-local bin (`~/.local/bin/agy` on POSIX, `%USERPROFILE%\.local\bin\agy.exe` on Windows), or configured via `AGY_BIN`.
+- The configured adapter, available on `PATH` or at the path accepted by the launcher. The included reference adapter can use `agy`, but no provider is assumed by the public contract.
 - For execution workflows: a git repository with a clean working tree (`git status --porcelain` is empty). Research workflows run in disposable workspaces.
 
 ## Installation
@@ -348,11 +348,11 @@ Place this instruction block in your agent's project context file (`AGENTS.md`, 
 ```markdown
 ## Offload delegation
 
-- Use Offload when the user asks to offload, run work through a specific vendor adapter, or accepts an AGY offer.
-- Offer AGY once, before starting, when implementation splits into three or more independently gated tasks in a clean Git repository, or when a read-only audit or external research requires multiple distinct work lanes. Count research lanes by distinct questions or evidence responsibilities, not browser tabs.
+- Use Offload when the user asks to offload, run work through a specific vendor adapter, or accepts a compatible-worker offer.
+- Offer a selected compatible worker once, before starting, when implementation splits into three or more independently gated tasks in a clean Git repository, or when a read-only audit or external research requires multiple distinct work lanes. Count research lanes by distinct questions or evidence responsibilities, not browser tabs.
 - Keep narrow factual answers, explanations, single-source lookups, and focused code reviews local.
 - Ask before dispatching.
-- Ask once per session. If the user declines, continue locally without offering AGY again in that session.
+- Ask once per session. If the user declines, continue locally without offering another worker in that session.
 - When Offload applies, let its skill instructions choose the appropriate workflow mode.
 ```
 

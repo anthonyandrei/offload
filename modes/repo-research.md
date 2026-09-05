@@ -6,8 +6,8 @@ Conducts bounded local repository investigations, audits, and invariant checks u
 
 Select the helper family matching your current host shell:
 
-- **POSIX shells (Bash 3.2+)**: Use `scripts/make-research-workspace.sh`, `scripts/run-agy-json.sh`, and `scripts/cleanup-research-workspace.sh`. Requires Git, `agy`, `jq`, and Python 3.
-- **PowerShell (PowerShell 7+)**: Use `scripts/make-research-workspace.ps1`, `scripts/run-agy-json.ps1`, and `scripts/cleanup-research-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+- **POSIX shells (Bash 3.2+)**: Use `scripts/make-research-workspace.sh`, `scripts/run-agy-json.sh`, and `scripts/cleanup-research-workspace.sh`. Requires Git, `jq`, Python 3, and the configured adapter's executable.
+- **PowerShell (PowerShell 7+)**: Use `scripts/make-research-workspace.ps1`, `scripts/run-agy-json.ps1`, and `scripts/cleanup-research-workspace.ps1`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and the configured adapter. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 Complete the shared preflight model availability check described in [`SKILL.md`](../SKILL.md) before dispatching workers. Researchers route through the role preference, effort, and required capabilities in `model-policy.json`; the adapter selects the current model. Do not pass `--model` or `--effort` directly.
 

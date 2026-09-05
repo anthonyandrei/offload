@@ -9,7 +9,7 @@ If you are a dispatched worker, stop here. Return worker results to your orchest
 
 ## What this skill does
 
-`offload` delegates execution and research tasks to headless workers through a vendor adapter. The reference adapter launches `agy`, but the workflow contract does not depend on a vendor or exact model ID. You remain the orchestrator. You decompose tasks, set acceptance criteria or bounded questions, and verify evidence and gates. Workers handle exploration, test authoring, code implementation, diff review, and research evidence collection.
+`offload` delegates execution and research tasks to headless workers through a configured adapter. A reference adapter is included, but the workflow contract does not depend on a vendor or exact model ID. You remain the orchestrator. You decompose tasks, set acceptance criteria or bounded questions, and verify evidence and gates. Workers handle exploration, test authoring, code implementation, diff review, and research evidence collection.
 
 You never accept worker claims at face value. You verify output through mechanical checks, test execution, diff inspections, or secondary reviews.
 
@@ -32,19 +32,20 @@ checks, cleanup, and acceptance gates.
 
 Select the helper family matching your current host shell:
 
-- **POSIX shells (Bash 3.2+)**: Use `.sh` scripts in `scripts/`. Requires Git, `agy`, `jq`, and Python 3.
-- **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require only PowerShell 7 (`pwsh`), Git, and `agy`. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+- **POSIX shells (Bash 3.2+)**: Use `.sh` scripts in `scripts/`. Requires Git, `jq`, Python 3, and the configured adapter's own executable.
+- **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require PowerShell 7 (`pwsh`), Git, and the configured adapter. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
 
 Check these requirements before dispatching workers:
 
 1. **Offer before dispatch.** When reaching this skill unprompted, offer the choice to the user first following the proactive offer contract. Describe the planned dispatch and ask for confirmation. Ask once per session. A negative response settles the decision for the rest of the session.
 2. **Local factual lookups.** Keep a single factual lookup local with the orchestrator; do not offer or route it to offload.
-3. **`agy` availability.** Verify `agy` is invokable. The launcher resolves `AGY_BIN` first if set, then `PATH`, then the user-local bin directory (`~/.local/bin/agy` on POSIX, `%USERPROFILE%\.local\bin\agy.exe` on Windows). An invalid explicit `AGY_BIN` fails immediately without fallback.
+3. **Adapter availability.** Verify the configured adapter is invokable and can return a protocol-2 catalog. The adapter must prove authenticated access, current entitlement, billing route, and usage capacity for the selected account and model. An installed CLI or static catalog entry is not enough.
 4. **Git working tree.** Writing workflows (`modes/execution.md`) require a clean git repository (`git rev-parse --is-inside-work-tree` and empty `git status --porcelain`). Research workflows (`modes/repo-research.md`, `modes/web-research.md`) operate in isolated disposable workspaces.
-5. **Preflight model availability check.** Before dispatching the first worker in a run:
+5. **Preflight compatible-worker check.** Before dispatching the first worker in a run:
    - Read repository-root `model-policy.json` (resolved relative to helper scripts, never the caller's working directory).
-   - Ask the configured adapter for its live catalog, then filter by availability, quota, required capabilities, and supported effort.
-   - If no eligible model exists or availability cannot be established, block dispatch and return the affected work to the caller. Do not silently switch providers or fall back to an unverified default.
+   - Ask the configured adapters for live catalogs, then filter by verified access, entitlement, billing route, fresh usage, required capabilities, and supported effort.
+   - Estimate assignment, verification, and one retry unit, including active shared reservations. If no eligible worker exists or availability cannot be established, block dispatch and return the affected work to the caller. Do not silently switch providers or fall back to an unverified default.
+   - An explicit provider is checked first and is never replaced silently. Unknown usage is allowed only for an explicit provider after the other checks pass, and the selection records the uncertainty.
    - Avoid repeating catalog discovery for every worker in the same run unless the adapter reports that availability changed.
 6. **Policy installation, updates, and revert.**
    - `model-policy.json` is located at repository root alongside helper scripts. Installation must copy the entire skill directory (including `model-policy.json`).
@@ -80,8 +81,8 @@ Offload routes all workers through the repository-root `model-policy.json` and t
 
 Execution workers must use `scripts/dispatch-worker.sh` or `scripts/dispatch-worker.ps1`, which calls this lower-level launcher after admission. The direct forms below are for the isolated research stages described in the research mode documents.
 
-- **POSIX shells**: `"$OFFLOAD_ROOT/scripts/run-agy-json.sh" --role <role> [--route <default|quality-retry>] --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> -- <agy args...>`
-- **PowerShell**: `& "$OffloadRoot/scripts/run-agy-json.ps1" --role <role> [--route <default|quality-retry>] --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> '--' <agy args...>`
+- **POSIX shells**: `"$OFFLOAD_ROOT/scripts/run-agy-json.sh" --role <role> [--route <default|quality-retry>] --adapter <adapter> --provider <provider> --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> -- <adapter args...>`
+- **PowerShell**: `& "$OffloadRoot/scripts/run-agy-json.ps1" --role <role> [--route <default|quality-retry>] --adapter <adapter> --provider <provider> --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> '--' <adapter args...>`
 
 In PowerShell command expressions, always quote the delimiter (`'--'`).
 

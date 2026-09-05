@@ -97,9 +97,9 @@ if [ "$operation" = catalog ]; then
       elif $fam == "opus" then {fast: 3, balanced: 2, deep: 1}
       else {fast: 100, balanced: 100, deep: 100} end;
     {
-      protocol_version: 1,
+      protocol_version: 2,
       adapter: "claude",
-      adapter_revision: "claude-1",
+      adapter_revision: "claude-2",
       vendor: "anthropic",
       catalog_revision: (.revision // "claude-current"),
       models: [
@@ -113,7 +113,8 @@ if [ "$operation" = catalog ]; then
           quota_available: (if has("quota_available") then .quota_available else true end),
           supported_efforts: (.supported_efforts // .efforts // ["low", "medium", "high"]),
           capabilities: (.capabilities // ["structured-output"]),
-          scores: (.scores // score_map($fam))
+          scores: (.scores // score_map($fam)),
+          preflight: (.preflight // {access:{state:"unknown",reason:"adapter did not verify authenticated access",account_ref:""},entitlement:{state:"unknown",reason:"adapter did not verify model entitlement",billing_route:"unknown"},usage:{state:"unknown",reason:"adapter did not query usage",source:"not-queried",observed_at:"",scopes:[]}})
         })
       ]
     }
