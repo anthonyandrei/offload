@@ -17,7 +17,7 @@ function Resolve-Program([string]$path) {
     return @{ File = $path; Prefix = @() }
 }
 
-function Invoke-Captured([string]$file, [string[]]$arguments, [string]$stdoutPath, [string]$stderrPath) {
+function Invoke-Captured([string]$file, [string[]]$arguments, [string]$stdoutPath, [string]$stderrPath, [int]$timeoutMilliseconds = 0) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $file
     $psi.UseShellExecute = $false
@@ -30,10 +30,19 @@ function Invoke-Captured([string]$file, [string[]]$arguments, [string]$stdoutPat
         if (-not $process.Start()) { Fail "failed to start adapter command: $file" 127 }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        $process.WaitForExit()
+        $timedOut = $false
+        if ($timeoutMilliseconds -gt 0) {
+            if (-not $process.WaitForExit($timeoutMilliseconds)) {
+                $timedOut = $true
+                try { $process.Kill($true) } catch { }
+                $process.WaitForExit()
+            }
+        } else {
+            $process.WaitForExit()
+        }
         [System.IO.File]::WriteAllText($stdoutPath, $stdoutTask.Result, [System.Text.Encoding]::UTF8)
         [System.IO.File]::WriteAllText($stderrPath, $stderrTask.Result, [System.Text.Encoding]::UTF8)
-        return $process.ExitCode
+        return [pscustomobject]@{ Code = $process.ExitCode; TimedOut = $timedOut }
     } finally {
         $process.Dispose()
     }
@@ -56,16 +65,108 @@ function Get-PreferenceScore([string]$family, [string]$preference) {
     return 100
 }
 
-function Get-Preflight($model) {
-    if ($null -ne $model -and $model.PSObject.Properties['preflight']) { return $model.preflight }
+function Get-UsageGroupForModel([string]$modelId) {
+    if ($modelId -match '^gemini-') { return 'gemini' }
+    if ($modelId -match '^(claude-|gpt-)') { return 'claude-and-gpt' }
+    return ''
+}
+
+function Get-UsageGroup([string]$name) {
+    $normalized = ([string]$name).ToLowerInvariant()
+    if ($normalized -match 'gemini') { return 'gemini' }
+    if ($normalized -match 'claude' -and $normalized -match 'gpt') { return 'claude-and-gpt' }
+    return ''
+}
+
+function Get-NormalizedResetTime($value) {
+    if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { return '' }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsed)) { return '' }
+    return $parsed.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+}
+
+function Get-UsageSnapshot([string]$raw) {
+    $snapshot = [ordered]@{
+        observed_at = ''
+        reason = 'AGY usage probe did not expose supported group-level usage'
+        groups = @{}
+    }
+    $document = $null
+    try { $document = ConvertFrom-Json -InputObject $raw -Depth 30 -ErrorAction Stop }
+    catch {
+        $snapshot.reason = 'AGY usage probe returned malformed JSON'
+        return [pscustomobject]$snapshot
+    }
+    $status = [string]$document.status
+    if ($status -notin @('SUCCESS', 'success')) {
+        $snapshot.reason = 'AGY usage probe returned a non-success status'
+        return [pscustomobject]$snapshot
+    }
+
+    $groups = @()
+    if ($null -ne $document.command -and $null -ne $document.command.data -and $null -ne $document.command.data.groups) {
+        $groups = @($document.command.data.groups)
+    } elseif ($null -ne $document.command -and $null -ne $document.command.groups) {
+        $groups = @($document.command.groups)
+    } elseif ($null -ne $document.groups) {
+        $groups = @($document.groups)
+    }
+    $recognizedGroups = 0
+    foreach ($group in $groups) {
+        if ($null -eq $group) { continue }
+        $groupName = if ($group.PSObject.Properties['id']) { [string]$group.id } else { [string]$group.name }
+        $groupKey = Get-UsageGroup $groupName
+        if ([string]::IsNullOrWhiteSpace($groupKey)) { continue }
+        $recognizedGroups++
+        $scopes = [System.Collections.Generic.List[object]]::new()
+        foreach ($bucket in @($group.buckets)) {
+            if ($null -eq $bucket -or -not $bucket.PSObject.Properties['id'] -or -not $bucket.PSObject.Properties['window'] -or -not $bucket.PSObject.Properties['remaining_fraction'] -or -not $bucket.PSObject.Properties['reset_time']) { continue }
+            $bucketId = [string]$bucket.id
+            $window = [string]$bucket.window
+            $remaining = 0.0
+            if ([string]::IsNullOrWhiteSpace($bucketId) -or [string]::IsNullOrWhiteSpace($window) -or -not [double]::TryParse([string]$bucket.remaining_fraction, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$remaining) -or $remaining -lt 0 -or $remaining -gt 1) { continue }
+            $resetAt = Get-NormalizedResetTime $bucket.reset_time
+            if ([string]::IsNullOrWhiteSpace($resetAt)) { continue }
+            $scopes.Add([ordered]@{
+                scope_id = $bucketId
+                window = $window
+                remaining_units = $remaining
+                reserved_units = 0
+                reset_at = $resetAt
+            })
+        }
+        if ($scopes.Count -gt 0) { $snapshot.groups[$groupKey] = @($scopes) }
+    }
+    if ($snapshot.groups.Count -eq 0) {
+        if ($recognizedGroups -gt 0) { $snapshot.reason = 'AGY usage probe returned no valid group-level usage bucket' }
+        return [pscustomobject]$snapshot
+    }
+    $snapshot.observed_at = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    $snapshot.reason = ''
+    return [pscustomobject]$snapshot
+}
+
+function Get-Preflight($usageSnapshot, [string]$usageGroup) {
+    $scopes = @()
+    $usageState = 'unknown'
+    $usageReason = [string]$usageSnapshot.reason
+    $observedAt = ''
+    if (-not [string]::IsNullOrWhiteSpace($usageGroup) -and $usageSnapshot.groups.Contains($usageGroup) -and @($usageSnapshot.groups[$usageGroup]).Count -gt 0) {
+        $usageState = 'known'
+        $usageReason = 'AGY reported group-level usage'
+        $observedAt = [string]$usageSnapshot.observed_at
+        $scopes = @($usageSnapshot.groups[$usageGroup])
+    } elseif ([string]::IsNullOrWhiteSpace($usageReason)) {
+        $usageReason = if ([string]::IsNullOrWhiteSpace($usageGroup)) { 'AGY model ID is not mapped to a supported usage group' } else { "AGY usage probe returned no valid usage bucket for model group '$usageGroup'" }
+    }
     return [ordered]@{
-        access = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify authenticated access'; account_ref = '' }
-        entitlement = [ordered]@{ state = 'unknown'; reason = 'adapter did not verify model entitlement'; billing_route = 'unknown' }
-        usage = [ordered]@{ state = 'unknown'; reason = 'adapter did not query usage'; source = 'not-queried'; observed_at = ''; scopes = @() }
+        access = [ordered]@{ state = 'unknown'; reason = 'AGY headless discovery does not expose a non-secret account identifier'; account_ref = '' }
+        entitlement = [ordered]@{ state = 'unknown'; reason = 'AGY headless discovery does not expose model entitlement'; billing_route = 'unknown' }
+        usage = [ordered]@{ state = $usageState; reason = $usageReason; source = 'agy-usage'; observed_at = $observedAt; scopes = @($scopes) }
     }
 }
 
-function Convert-ModelListToCatalog([string]$raw) {
+function Convert-ModelListToCatalog([string]$raw, $usageSnapshot) {
     $models = @(
         foreach ($line in ($raw -split "`r?`n")) {
             if ($line -notmatch '^\s*(?<id>\S+)\s+(?<label>.+?)\s*$') { continue }
@@ -76,8 +177,8 @@ function Convert-ModelListToCatalog([string]$raw) {
             [ordered]@{
                 id = $modelId
                 family_hint = $family
-                available = $true
-                quota_available = $true
+                available = $false
+                quota_available = $false
                 supported_efforts = @($effort)
                 capabilities = @()
                 scores = [ordered]@{
@@ -85,7 +186,7 @@ function Convert-ModelListToCatalog([string]$raw) {
                     balanced = Get-PreferenceScore $family 'balanced'
                     deep = Get-PreferenceScore $family 'deep'
                 }
-                preflight = Get-Preflight $null
+                preflight = Get-Preflight $usageSnapshot (Get-UsageGroupForModel $modelId)
             }
         }
     )
@@ -96,7 +197,7 @@ function Convert-ModelListToCatalog([string]$raw) {
     [ordered]@{
         protocol_version = 2
         adapter = 'agy'
-        adapter_revision = 'agy-2'
+        adapter_revision = 'agy-3'
         vendor = 'agy'
         catalog_revision = $revision
         models = $models
@@ -155,9 +256,23 @@ if ($operation -eq 'catalog') {
     $stdout = [System.IO.Path]::GetTempFileName()
     $stderr = [System.IO.Path]::GetTempFileName()
     try {
-        $code = Invoke-Captured $program.File ($program.Prefix + @('models')) $stdout $stderr
-        if ($code -ne 0) { Fail "AGY catalog discovery failed with exit code ${code}: $([System.IO.File]::ReadAllText($stderr))" 127 }
-        [Console]::Out.Write((Convert-ModelListToCatalog ([System.IO.File]::ReadAllText($stdout))))
+        $modelsResult = Invoke-Captured $program.File ($program.Prefix + @('models')) $stdout $stderr
+        if ($modelsResult.Code -ne 0) { Fail "AGY catalog discovery failed with exit code $($modelsResult.Code)" 127 }
+        $usageStdout = [System.IO.Path]::GetTempFileName()
+        $usageStderr = [System.IO.Path]::GetTempFileName()
+        try {
+            $usageResult = Invoke-Captured $program.File ($program.Prefix + @('-p', '/usage', '--output-format', 'json', '--print-timeout', '15s')) $usageStdout $usageStderr 15000
+            if ($usageResult.TimedOut) {
+                $usageSnapshot = [pscustomobject]@{ observed_at = ''; reason = 'AGY usage probe timed out'; groups = @{} }
+            } elseif ($usageResult.Code -ne 0) {
+                $usageSnapshot = [pscustomobject]@{ observed_at = ''; reason = "AGY usage probe failed with exit code $($usageResult.Code)"; groups = @{} }
+            } else {
+                $usageSnapshot = Get-UsageSnapshot ([System.IO.File]::ReadAllText($usageStdout))
+            }
+            [Console]::Out.Write((Convert-ModelListToCatalog ([System.IO.File]::ReadAllText($stdout)) $usageSnapshot))
+        } finally {
+            Remove-Item -LiteralPath $usageStdout, $usageStderr -Force -ErrorAction SilentlyContinue
+        }
     } finally {
         Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
     }
@@ -171,5 +286,5 @@ if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = [string]$request.model 
 if ([string]::IsNullOrWhiteSpace($modelId)) { Fail 'selection is missing model_id' }
 
 # AGY accepts the exact model ID here. The launcher never needs to know this syntax.
-$code = Invoke-Captured $program.File ($program.Prefix + @('--model', $modelId) + $workerArgs.ToArray()) $outputPath $errorPath
-exit $code
+$launchResult = Invoke-Captured $program.File ($program.Prefix + @('--model', $modelId) + $workerArgs.ToArray()) $outputPath $errorPath
+exit $launchResult.Code
