@@ -1,0 +1,154 @@
+{
+  "model_list": [
+    "gemini-3.8-flash-high Gemini 3.8 Flash high"
+  ],
+  "unsupported_probe_diagnostic": "AGY usage probe failed with exit code 2",
+  "redaction_sentinel": "agy-secret-token-should-never-escape",
+  "scenarios": [
+    {
+      "name": "verified",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": true,
+      "expected_normalized": "eligible"
+    },
+    {
+      "name": "unauthenticated",
+      "access_state": "unknown",
+      "account_ref": "",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:access"
+    },
+    {
+      "name": "expired",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "expired",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:entitlement"
+    },
+    {
+      "name": "paid-fallback",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "paid-fallback",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:billing"
+    },
+    {
+      "name": "exhausted",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "exhausted",
+      "usage_mode": "exhausted",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "continuing",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "continuing",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": true,
+      "expected_normalized": "eligible"
+    },
+    {
+      "name": "cancellation-pending",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "continuing",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "cancellation_pending": true,
+      "expected_eligible": true,
+      "expected_normalized": "eligible"
+    },
+    {
+      "name": "missing-usage",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "unknown",
+      "usage_mode": "missing",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "malformed-usage",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "unknown",
+      "usage_mode": "malformed",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "stale-usage",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "unknown",
+      "usage_mode": "stale",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "unsupported-usage",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "unknown",
+      "usage_mode": "unsupported",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "timed-out-usage",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "unknown",
+      "usage_mode": "timed-out",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "unknown-usage-explicit-provider",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "unknown",
+      "usage_mode": "missing",
+      "expected_eligible": true,
+      "expected_normalized": "eligible:unknown-usage",
+      "requires_explicit_provider": true
+    }
+  ]
+}
