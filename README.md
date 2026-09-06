@@ -385,6 +385,7 @@ Run the automated acceptance suite to verify contracts across supported helper f
 bash tests/test_research_modes.sh
 bash tests/test_execution_scope.sh
 bash tests/test_worker_adapter_contract.sh
+bash tests/test_agy_preflight.sh
 ```
 
 #### PowerShell
@@ -393,6 +394,7 @@ pwsh -File tests/test_research_helpers.ps1
 pwsh -File tests/test_execution_scope.ps1
 pwsh -File tests/test_worker_adapter_contract.ps1
 pwsh -File tests/test_codex_adapter.ps1
+pwsh -File tests/test_agy_preflight.ps1
 ```
 
 The Codex worker boundary is documented in docs/codex-adapter.md. It discovers
@@ -402,9 +404,9 @@ unavailable.
 
 ## Findings about agy
 
-- **`agy` default `--print-timeout` is 5 minutes.** On expiry it writes no output at all. `offload` passes `--print-timeout 20m`.
-- **`--output-format json` returns one flat JSON object.** Parse top-level fields `status`, `response`, `duration_seconds`, `num_turns`, and `usage`.
-- **`--json-schema` outputs validated JSON in `structured_output`.** Parse `structured_output` rather than `response`.
+- **Catalog preflight is bounded and read-only.** The AGY adapters bound both model discovery and the headless usage probe; timeout, malformed, missing, stale, and unsupported observations remain unknown.
+- **Group-level usage is not protocol capacity.** The current `agy /usage` response exposes fractions and reset times, but no protocol `remaining_units` or `reserved_units`, so the adapter does not infer unlimited or available capacity.
+- **The installed CLI does not prove full eligibility.** AGY 1.1.27 does not expose a supported non-secret account identifier, per-model entitlement, billing route, or per-model reservation capacity through the inspected headless surface. Automatic selection therefore fails closed. See [ADR 0010](docs/adr/0010-agy-preflight-discovery.md).
 - **Use `dispatch-worker.sh` or `dispatch-worker.ps1` for execution assignments.** They own assignment admission, worktree creation, result and error paths, and the bounded launch. The dispatcher wraps the lower-level `run-agy-json` helper, which rejects the unsupported `agy --output` flag.
 - **Use structured output extractors (`extract-structured-output.sh` or `extract-structured-output.ps1`) between research stages.** They forward only validated `structured_output`, keeping verbose worker prose out of later prompts.
 - **Model routing is governed by `model-policy.json` and the adapter contract.** Launchers select a live eligible model using the role preference, effort, required capabilities, quota, and static security rules. The adapter receives the exact selection and translates it for its vendor. Reasoning effort stays separate from model identity, and callers must not pass `--model` or `--effort`.

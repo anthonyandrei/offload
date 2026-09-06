@@ -48,10 +48,105 @@ if [ "$operation" = catalog ]; then
   usage_tmp=''
   usage_err=''
   usage_snapshot=''
-  trap 'rm -f "$models_tmp" "$models_err" "$usage_tmp" "$usage_err" "$usage_snapshot" "$usage_snapshot.tmp"' EXIT
+  bounded_marker=''
+  trap 'rm -f "$models_tmp" "$models_err" "$usage_tmp" "$usage_err" "$usage_snapshot" "$usage_snapshot.tmp" "$bounded_marker"' EXIT
+  terminate_descendants() {
+    local parent="$1"
+    local child
+    if command -v pgrep >/dev/null 2>&1; then
+      for child in $(pgrep -P "$parent" 2>/dev/null || true); do
+        terminate_descendants "$child"
+        kill -TERM "$child" 2>/dev/null || true
+      done
+    fi
+  }
+  terminate_bounded() {
+    local pid="$1"
+    local process_group="$2"
+    if [ "$process_group" = true ]; then
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    else
+      terminate_descendants "$pid"
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      terminate_descendants "$pid"
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  }
+  run_bounded() {
+    local stdout_path="$1"
+    local stderr_path="$2"
+    local pid
+    local process_group=false
+    local ticks=0
+    shift 2
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$@" >"$stdout_path" 2>"$stderr_path" &
+      pid=$!
+      process_group=true
+    else
+      "$@" >"$stdout_path" 2>"$stderr_path" &
+      pid=$!
+    fi
+    while kill -0 "$pid" 2>/dev/null; do
+      if [ "$ticks" -ge 15 ]; then
+        terminate_bounded "$pid" "$process_group"
+        wait "$pid" 2>/dev/null || true
+        bounded_timed_out=true
+        bounded_code=124
+        return 0
+      fi
+      sleep 1
+      ticks=$((ticks + 1))
+    done
+    if wait "$pid"; then bounded_code=0; else bounded_code=$?; fi
+    bounded_timed_out=false
+  }
+  run_with_timeout() {
+    local stdout_path="$1"
+    local stderr_path="$2"
+    local timeout_code
+    shift 2
+    bounded_marker=$(mktemp)
+    AGY_TIMEOUT_MARKER="$bounded_marker" timeout --signal=TERM --kill-after=2s 15s sh -c '
+      "$@"
+      command_code=$?
+      printf "%s\n" "$command_code" >"$AGY_TIMEOUT_MARKER"
+      exit "$command_code"
+    ' offload-agy-discovery "$@" >"$stdout_path" 2>"$stderr_path"
+    timeout_code=$?
+    if [ -s "$bounded_marker" ] && grep -Eq '^[0-9]+$' "$bounded_marker"; then
+      bounded_timed_out=false
+      bounded_code=$(cat "$bounded_marker")
+    else
+      bounded_timed_out=true
+      bounded_code=$timeout_code
+    fi
+    rm -f "$bounded_marker"
+    bounded_marker=''
+  }
+  if ! command -v timeout >/dev/null 2>&1 && ! command -v setsid >/dev/null 2>&1 && ! command -v pgrep >/dev/null 2>&1; then
+    printf '%s\n' 'ERROR: bounded AGY discovery requires timeout, setsid, or pgrep for process cleanup' >&2
+    exit 127
+  fi
   set +e
-  "$agy_bin" models >"$models_tmp" 2>"$models_err"
-  models_code=$?
+  models_timed_out=false
+  models_code=0
+  if command -v timeout >/dev/null 2>&1; then
+    run_with_timeout "$models_tmp" "$models_err" "$agy_bin" models
+    models_timed_out=$bounded_timed_out
+    models_code=$bounded_code
+  else
+    run_bounded "$models_tmp" "$models_err" "$agy_bin" models
+    models_timed_out=$bounded_timed_out
+    models_code=$bounded_code
+  fi
+  if [ "$models_timed_out" = true ]; then
+    printf 'ERROR: AGY catalog discovery timed out\n' >&2
+    exit 127
+  fi
   set -e
   if [ "$models_code" -ne 0 ]; then
     printf 'ERROR: AGY catalog discovery failed with exit code %s\n' "$models_code" >&2
@@ -61,25 +156,20 @@ if [ "$operation" = catalog ]; then
   usage_err=$(mktemp)
   usage_snapshot=$(mktemp)
   set +e
-  "$agy_bin" -p /usage --output-format json --print-timeout 15s >"$usage_tmp" 2>"$usage_err" &
-  usage_pid=$!
   usage_timed_out=false
-  usage_ticks=0
-  while kill -0 "$usage_pid" 2>/dev/null; do
-    if [ "$usage_ticks" -ge 15 ]; then
-      kill "$usage_pid" 2>/dev/null || true
-      wait "$usage_pid" 2>/dev/null || true
-      usage_timed_out=true
-      break
-    fi
-    sleep 1
-    usage_ticks=$((usage_ticks + 1))
-  done
+  usage_code=0
+  if command -v timeout >/dev/null 2>&1; then
+    run_with_timeout "$usage_tmp" "$usage_err" "$agy_bin" -p /usage --output-format json --print-timeout 15s
+    usage_timed_out=$bounded_timed_out
+    usage_code=$bounded_code
+  else
+    run_bounded "$usage_tmp" "$usage_err" "$agy_bin" -p /usage --output-format json --print-timeout 15s
+    usage_timed_out=$bounded_timed_out
+    usage_code=$bounded_code
+  fi
   if [ "$usage_timed_out" = true ]; then
     printf '%s\n' '{"ok":false,"reason":"AGY usage probe timed out","groups":{}}' >"$usage_snapshot"
   else
-    wait "$usage_pid"
-    usage_code=$?
     if [ "$usage_code" -ne 0 ]; then
       printf '%s\n' "{\"ok\":false,\"reason\":\"AGY usage probe failed with exit code $usage_code\",\"groups\":{}}" >"$usage_snapshot"
     elif ! jq -c '
@@ -163,15 +253,13 @@ if [ "$operation" = catalog ]; then
         | (.id | family) as $family
         | (.id | usage_group) as $usage_group
         | (if $usage_group != null and (($usage_result.groups[$usage_group] // []) | length) > 0 then
-             {state:"known",reason:"AGY reported group-level usage",source:"agy-usage",observed_at:($usage_result.observed_at // ""),scopes:$usage_result.groups[$usage_group]}
+             {state:"unknown",reason:"AGY usage exposes group-level fractions without protocol capacity units or reservation data",source:"agy-usage",observed_at:($usage_result.observed_at // ""),scopes:[]}
            else
-             {state:"unknown",reason:(if $usage_group == null then "AGY model ID is not mapped to a supported usage group" elif ($usage_result.reason // "") != "" then $usage_result.reason else ("AGY usage probe returned no valid usage bucket for model group '" + $usage_group + "'") end),source:"agy-usage",observed_at:"",scopes:[]}
+             {state:"unknown",reason:(if $usage_group == null then "AGY model ID is not mapped to a supported usage group" elif ($usage_result.reason // "") != "" then $usage_result.reason else ("AGY usage probe returned no valid usage bucket for model group " + $usage_group) end),source:"agy-usage",observed_at:"",scopes:[]}
            end) as $usage_record
         | {
             id: .id,
             family_hint: $family,
-            available: false,
-            quota_available: false,
             supported_efforts: [$effort.effort],
             capabilities: [],
             scores: {

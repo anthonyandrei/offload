@@ -97,28 +97,30 @@ function Get-UsageSnapshot([string]$raw) {
         $snapshot.reason = 'AGY usage probe returned malformed JSON'
         return [pscustomobject]$snapshot
     }
-    $status = [string]$document.status
+    $status = if ($document.PSObject.Properties['status']) { [string]$document.status } else { '' }
     if ($status -notin @('SUCCESS', 'success')) {
         $snapshot.reason = 'AGY usage probe returned a non-success status'
         return [pscustomobject]$snapshot
     }
 
     $groups = @()
-    if ($null -ne $document.command -and $null -ne $document.command.data -and $null -ne $document.command.data.groups) {
-        $groups = @($document.command.data.groups)
-    } elseif ($null -ne $document.command -and $null -ne $document.command.groups) {
-        $groups = @($document.command.groups)
-    } elseif ($null -ne $document.groups) {
+    $command = if ($document.PSObject.Properties['command']) { $document.command } else { $null }
+    if ($null -ne $command -and $command.PSObject.Properties['data'] -and $null -ne $command.data -and $command.data.PSObject.Properties['groups']) {
+        $groups = @($command.data.groups)
+    } elseif ($null -ne $command -and $command.PSObject.Properties['groups']) {
+        $groups = @($command.groups)
+    } elseif ($document.PSObject.Properties['groups']) {
         $groups = @($document.groups)
     }
     $recognizedGroups = 0
     foreach ($group in $groups) {
         if ($null -eq $group) { continue }
-        $groupName = if ($group.PSObject.Properties['id']) { [string]$group.id } else { [string]$group.name }
+        $groupName = if ($group.PSObject.Properties['id']) { [string]$group.id } elseif ($group.PSObject.Properties['name']) { [string]$group.name } else { '' }
         $groupKey = Get-UsageGroup $groupName
         if ([string]::IsNullOrWhiteSpace($groupKey)) { continue }
         $recognizedGroups++
         $scopes = [System.Collections.Generic.List[object]]::new()
+        if (-not $group.PSObject.Properties['buckets']) { continue }
         foreach ($bucket in @($group.buckets)) {
             if ($null -eq $bucket -or -not $bucket.PSObject.Properties['id'] -or -not $bucket.PSObject.Properties['window'] -or -not $bucket.PSObject.Properties['remaining_fraction'] -or -not $bucket.PSObject.Properties['reset_time']) { continue }
             $bucketId = [string]$bucket.id
@@ -147,22 +149,17 @@ function Get-UsageSnapshot([string]$raw) {
 }
 
 function Get-Preflight($usageSnapshot, [string]$usageGroup) {
-    $scopes = @()
-    $usageState = 'unknown'
     $usageReason = [string]$usageSnapshot.reason
-    $observedAt = ''
+    $observedAt = [string]$usageSnapshot.observed_at
     if (-not [string]::IsNullOrWhiteSpace($usageGroup) -and $usageSnapshot.groups.Contains($usageGroup) -and @($usageSnapshot.groups[$usageGroup]).Count -gt 0) {
-        $usageState = 'known'
-        $usageReason = 'AGY reported group-level usage'
-        $observedAt = [string]$usageSnapshot.observed_at
-        $scopes = @($usageSnapshot.groups[$usageGroup])
+        $usageReason = 'AGY usage exposes group-level fractions without protocol capacity units or reservation data'
     } elseif ([string]::IsNullOrWhiteSpace($usageReason)) {
         $usageReason = if ([string]::IsNullOrWhiteSpace($usageGroup)) { 'AGY model ID is not mapped to a supported usage group' } else { "AGY usage probe returned no valid usage bucket for model group '$usageGroup'" }
     }
     return [ordered]@{
         access = [ordered]@{ state = 'unknown'; reason = 'AGY headless discovery does not expose a non-secret account identifier'; account_ref = '' }
         entitlement = [ordered]@{ state = 'unknown'; reason = 'AGY headless discovery does not expose model entitlement'; billing_route = 'unknown' }
-        usage = [ordered]@{ state = $usageState; reason = $usageReason; source = 'agy-usage'; observed_at = $observedAt; scopes = @($scopes) }
+        usage = [ordered]@{ state = 'unknown'; reason = $usageReason; source = 'agy-usage'; observed_at = $observedAt; scopes = @() }
     }
 }
 
@@ -177,8 +174,6 @@ function Convert-ModelListToCatalog([string]$raw, $usageSnapshot) {
             [ordered]@{
                 id = $modelId
                 family_hint = $family
-                available = $false
-                quota_available = $false
                 supported_efforts = @($effort)
                 capabilities = @()
                 scores = [ordered]@{
@@ -256,7 +251,8 @@ if ($operation -eq 'catalog') {
     $stdout = [System.IO.Path]::GetTempFileName()
     $stderr = [System.IO.Path]::GetTempFileName()
     try {
-        $modelsResult = Invoke-Captured $program.File ($program.Prefix + @('models')) $stdout $stderr
+        $modelsResult = Invoke-Captured $program.File ($program.Prefix + @('models')) $stdout $stderr 15000
+        if ($modelsResult.TimedOut) { Fail 'AGY catalog discovery timed out' 127 }
         if ($modelsResult.Code -ne 0) { Fail "AGY catalog discovery failed with exit code $($modelsResult.Code)" 127 }
         $usageStdout = [System.IO.Path]::GetTempFileName()
         $usageStderr = [System.IO.Path]::GetTempFileName()

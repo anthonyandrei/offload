@@ -41,7 +41,7 @@ Check these requirements before dispatching workers:
 2. **Local factual lookups.** Keep a single factual lookup local with the orchestrator; do not offer or route it to offload.
 3. **Adapter availability.** Verify the configured adapter is invokable and can return a protocol-2 catalog. The adapter must prove authenticated access, current entitlement, billing route, and usage capacity for the selected account and model. An installed CLI or static catalog entry is not enough.
 4. **Git working tree.** Writing workflows (`modes/execution.md`) require a clean git repository (`git rev-parse --is-inside-work-tree` and empty `git status --porcelain`). Research workflows (`modes/repo-research.md`, `modes/web-research.md`) operate in isolated disposable workspaces.
-5. **Preflight compatible-worker check.** Before dispatching the first worker in a run:
+5. **Preflight model availability check.** Before dispatching the first worker in a run:
    - Read repository-root `model-policy.json` (resolved relative to helper scripts, never the caller's working directory).
    - Ask the configured adapters for live catalogs, then filter by verified access, entitlement, billing route, fresh usage, required capabilities, and supported effort.
    - Estimate assignment, verification, and one retry unit, including active shared reservations. If no eligible worker exists or availability cannot be established, block dispatch and return the affected work to the caller. Do not silently switch providers or fall back to an unverified default.
@@ -184,6 +184,8 @@ The orchestrator maintains `routing-outcomes.json` in each run's scratch workspa
   - `effort`: Selected reasoning effort (`low`, `medium`, or `high`), kept separate from model identity.
   - `catalog_revision`: Adapter catalog or probe revision used for selection.
   - `selection_reason`: Deterministic filtering and ranking reason.
+  - `preflight_reasons`: Exact sanitized diagnostics from the selection record. Copy them unchanged into every attempt.
+  - `usage_uncertain`: Boolean indicating that explicit provider or pin policy admitted unknown usage.
   - `reason`: Initial dispatch or observed failure and recovery decision authorizing attempt 2.
   - `started_at`: ISO 8601 UTC timestamp.
   - `ended_at`: ISO 8601 UTC timestamp (null while running).

@@ -13,6 +13,9 @@ if [[ "$scenario" == redaction* ]]; then
 fi
 
 if [ "$#" -eq 1 ] && [ "$1" = models ]; then
+  if [ "$scenario" = timed-out-models ]; then sleep 16; exit 124; fi
+  if [ "$scenario" = models-exit-124 ]; then exit 124; fi
+  if [ "$scenario" = models-exit-137 ]; then exit 137; fi
   jq -r '.model_list[]' "$fixture"
   exit 0
 fi
@@ -20,17 +23,23 @@ fi
 if [ "$#" -ge 4 ] && [ "$1" = -p ] && [ "$2" = /usage ] && \
    [ "$3" = --output-format ] && [ "$4" = json ]; then
   case "$scenario" in
-    unsupported|redaction-unsupported)
+    unsupported|unsupported-usage|redaction-unsupported|redaction-unsupported-usage)
       printf '%s\n' 'unknown option: /usage' >&2
       exit 2
       ;;
-    malformed)
+    malformed|malformed-usage)
       printf '%s\n' '{malformed usage response'
       exit 0
       ;;
-    timed-out)
-      sleep 2
+    timed-out|timed-out-usage)
+      sleep 16
       exit 124
+      ;;
+    usage-exit-124)
+      exit 124
+      ;;
+    usage-exit-137)
+      exit 137
       ;;
     *)
       printf '%s\n' '{"status":"SUCCESS","groups":[{"id":"gemini","buckets":[{"id":"gemini-fixture","window":"daily","remaining_fraction":0.75,"reset_time":"2099-01-01T00:00:00Z"}]}]}'

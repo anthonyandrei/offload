@@ -88,6 +88,14 @@ run_launcher "$catalog_one" -- --prompt "prompt with spaces" --output-format jso
 [ "$(jq -r '.worker_args[1]' "$capture")" = 'prompt with spaces' ] || fail "worker argument boundaries were not preserved"
 pass "filters availability, effort, and capability constraints"
 
+catalog_unknown="$TMP_ROOT/catalog-unknown-usage.json"
+jq '(.models |= map(if .id == "selected-model" then .preflight.usage = {state:"unknown",reason:"fixture usage verification unavailable",source:"fixture",observed_at:"",scopes:[]} else . end))' "$catalog_one" >"$catalog_unknown"
+run_launcher "$catalog_unknown" --provider vendor-a --allow-unknown-usage -- --prompt unknown-usage
+[ "$RUN_EXIT" -eq 0 ] || fail "explicit provider did not admit unknown usage"
+jq -e '.usage_uncertain == true and .preflight_reasons == ["usage verification unavailable or unsupported: fixture usage verification unavailable"]' "$selection" >/dev/null || fail "unknown usage selection did not preserve its exact diagnostic"
+jq -e --slurpfile selected "$selection" '.selection.preflight_reasons == ["usage verification unavailable or unsupported: fixture usage verification unavailable"] and .selection.preflight_reasons == $selected[0].preflight_reasons' "$capture" >/dev/null || fail "launcher did not hand exact preflight diagnostics to adapter"
+pass "explicit provider handoff preserves uncertain-usage diagnostics"
+
 run_launcher "$catalog_two" --pin "$selection" -- --prompt retry
 [ "$RUN_EXIT" -eq 0 ] || fail "pinned retry failed after catalog revision changed"
 [ "$(jq -r '.model_id' "$selection")" = selected-model ] || fail "pinned retry silently changed model"

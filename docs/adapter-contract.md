@@ -50,12 +50,33 @@ candidate:
 }
 ```
 
+Discovery probes must enforce a real process deadline and terminate the full
+probe process tree before returning. The Bash AGY adapter uses GNU `timeout`
+with a completion marker when available. Its fallback requires `setsid` or
+`pgrep` for process-tree cleanup and fails closed when neither is available.
+Provider exit codes, including 124 and 137, are not treated as timeout proof.
+
 Access, entitlement, billing, and usage observations must be current, scoped,
 and explainable. Missing, malformed, stale, unsupported, or optimistic
 observations never become available capacity. The selector requires known
 fresh usage for automatic selection. An explicit provider may proceed with
 unknown usage only after access, capability, entitlement, and billing checks
 pass, with the uncertainty recorded in the selection.
+
+When a candidate is rejected, the selector emits a sanitized diagnostic that
+preserves whether the provider confirmed a failure or verification was
+unavailable or unsupported. An eligible selection carries `preflight_reasons`
+and `usage_uncertain` so handoff and retry paths retain the same decision
+context. Adapter fields such as `available` or `quota_available` cannot turn
+an unknown observation into verified access or capacity.
+
+Selection accepts only these normalized billing routes: `included`,
+`subscription`, `test-subscription`, `probe-subscription`, `free`, `trial`,
+`community`, and `enterprise`. Denied, rejected, forbidden, paid-fallback,
+empty, unknown, or any other route remains ineligible. Eligible selection
+records contain only the allowlisted preflight fields, with account references
+and provider-controlled reasons redacted before they are written or handed
+off.
 
 The selector rejects expired entitlements, paid-fallback routes, explicit
 ineligibility, and candidates that cannot cover the assignment, verification,

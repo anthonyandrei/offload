@@ -86,6 +86,25 @@ try {
     Assert-Equal ($captured.worker_args -join '|') '--prompt|preserve this value: model and effort belong to policy' 'worker argument value is preserved'
     Assert-Equal (Get-Content -Raw $output | ConvertFrom-Json).model_id 'balanced-best' 'worker output is captured'
 
+    $unknownCatalog = Join-Path $testRoot 'catalog-unknown-usage.json'
+    $unknownModel = New-Model 'unknown-usage' $true @('high') 1 1 1
+    $unknownModel.preflight.usage.state = 'unknown'
+    $unknownModel.preflight.usage.reason = 'fixture usage verification unavailable'
+    $unknownModel.preflight.usage.observed_at = ''
+    $unknownModel.preflight.usage.scopes = @()
+    New-Catalog $unknownCatalog 'catalog-unknown-usage' @($unknownModel)
+    $unknownSelectionPath = Join-Path $testRoot 'unknown-selection.json'
+    $unknownCapturePath = Join-Path $testRoot 'unknown-capture.json'
+    $unknownResult = Invoke-Launcher (@('--provider', 'test-vendor', '--allow-unknown-usage') + (Common-Args (Join-Path $testRoot 'unknown.json') (Join-Path $testRoot 'unknown.err') $unknownSelectionPath $unknownCatalog)) @{ FAKE_ADAPTER_CATALOG = $unknownCatalog; FAKE_ADAPTER_CAPTURE = $unknownCapturePath }
+    Assert-Equal $unknownResult.ExitCode 0 'explicit provider admits unknown usage'
+    $unknownSelection = Get-Content -Raw $unknownSelectionPath | ConvertFrom-Json
+    $unknownCaptured = Get-Content -Raw $unknownCapturePath | ConvertFrom-Json
+    $unknownReasons = @($unknownSelection.preflight_reasons | ForEach-Object { [string]$_ }) -join '|'
+    $capturedUnknownReasons = @($unknownCaptured.selection.preflight_reasons | ForEach-Object { [string]$_ }) -join '|'
+    Assert-True ([bool]$unknownSelection.usage_uncertain) 'selection records uncertain usage'
+    Assert-Equal $unknownReasons 'usage verification unavailable or unsupported: fixture usage verification unavailable' 'selection preserves the exact usage diagnostic'
+    Assert-Equal $capturedUnknownReasons $unknownReasons 'launcher hands exact preflight diagnostics to adapter'
+
     $catalogB = Join-Path $testRoot 'catalog-b.json'
     New-Catalog $catalogB 'catalog-b-changed' @(
         (New-Model 'balanced-best' $true @('high') 9 99 9),

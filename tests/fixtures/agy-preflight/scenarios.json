@@ -18,7 +18,29 @@
     },
     {
       "name": "unauthenticated",
+      "access_state": "unauthenticated",
+      "account_ref": "",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:access"
+    },
+    {
+      "name": "missing-access",
       "access_state": "unknown",
+      "account_ref": "",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:access"
+    },
+    {
+      "name": "wrong-account",
+      "access_state": "denied",
       "account_ref": "",
       "entitlement_state": "active",
       "billing_route": "included",
@@ -50,6 +72,17 @@
       "expected_normalized": "blocked:billing"
     },
     {
+      "name": "wrong-billing",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "denied",
+      "usage_state": "known",
+      "usage_mode": "known",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:billing"
+    },
+    {
       "name": "exhausted",
       "access_state": "verified",
       "account_ref": "fixture-account",
@@ -59,6 +92,52 @@
       "usage_mode": "exhausted",
       "expected_eligible": false,
       "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "insufficient-capacity",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "insufficient",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage"
+    },
+    {
+      "name": "exhausted-explicit-provider",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "exhausted",
+      "usage_mode": "exhausted",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage",
+      "requires_explicit_provider": true
+    },
+    {
+      "name": "insufficient-capacity-explicit-provider",
+      "access_state": "verified",
+      "account_ref": "fixture-account",
+      "entitlement_state": "active",
+      "billing_route": "included",
+      "usage_state": "known",
+      "usage_mode": "insufficient",
+      "expected_eligible": false,
+      "expected_normalized": "blocked:usage",
+      "requires_explicit_provider": true
+    },
+    {
+      "name": "mixed-case-states",
+      "access_state": "VeRiFiEd",
+      "account_ref": "fixture-account",
+      "entitlement_state": "AcTiVe",
+      "billing_route": "InClUdEd",
+      "usage_state": "KNOWN",
+      "usage_mode": "known",
+      "expected_eligible": true,
+      "expected_normalized": "eligible"
     },
     {
       "name": "continuing",
