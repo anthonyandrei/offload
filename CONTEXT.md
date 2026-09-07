@@ -1,6 +1,6 @@
 # Offload context
 
-Offload is a lean, agent-agnostic workflow for delegating bounded implementation and research work. The orchestrator chooses how to execute the workflow from the tools and evidence available at runtime. See [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md).
+Offload is a lean, agent-agnostic workflow for delegating bounded implementation and research work. The orchestrator chooses how to execute the workflow from the tools and evidence available at runtime. See [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md) and [ADR 0013](docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md).
 
 ## Core contract
 

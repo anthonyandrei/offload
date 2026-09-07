@@ -13,6 +13,7 @@ $activeRelative = @(
     'SKILL.md', 'README.md', 'AGENTS.md', 'CONTEXT.md', 'CLAUDE.md',
     '.github/workflows/ci.yml',
     'docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md',
+    'docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md',
     'docs/research/2026-09-07-benchmark-references-for-runtime-routing.md'
 )
 $activeContent = foreach ($relative in $activeRelative) {
@@ -55,8 +56,25 @@ foreach ($relative in @(
 
 $skill = [IO.File]::ReadAllText((Join-Path $root 'SKILL.md'))
 $readme = [IO.File]::ReadAllText((Join-Path $root 'README.md'))
-foreach ($link in @('CONTEXT.md', 'docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md', 'docs/research/2026-09-07-benchmark-references-for-runtime-routing.md', 'scripts/check-execution-scope.sh', 'scripts/execution-workspace.sh')) {
+foreach ($link in @('CONTEXT.md', 'docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md', 'docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md', 'docs/research/2026-09-07-benchmark-references-for-runtime-routing.md', 'scripts/check-execution-scope.sh', 'scripts/execution-workspace.sh')) {
     Assert-True ($skill.Contains($link) -or $readme.Contains($link)) "active docs retain link: $link"
+}
+
+$supersededAdrs = @(
+    '0001-maintain-shell-native-helper-families.md',
+    '0003-use-a-portable-proactive-offer-contract.md',
+    '0005-bound-model-routing-to-gemini-and-explicit-rules.md',
+    '0007-cross-library-publication-boundaries.md',
+    '0008-runtime-model-selection-through-adapters.md',
+    '0009-select-compatible-workers-before-offering-offload.md',
+    '0010-agy-preflight-discovery.md',
+    '0011-launch-first-admission-and-orchestrator-fallback.md'
+)
+foreach ($docPath in @('SKILL.md', 'README.md', 'AGENTS.md', 'CONTEXT.md', 'CLAUDE.md')) {
+    $content = [IO.File]::ReadAllText((Join-Path $root $docPath))
+    foreach ($adr in $supersededAdrs) {
+        Assert-False ($content.Contains($adr)) "$docPath omits link to superseded ADR: $adr"
+    }
 }
 
 [Console]::Out.WriteLine("all repository consistency checks passed ($($script:TotalTests) tests)")

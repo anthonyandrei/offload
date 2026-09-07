@@ -45,11 +45,23 @@ $readme = $activeContent[$activePaths[1]]
 $ciPath = Join-Path $root '.github/workflows/ci.yml'
 $ci = [IO.File]::ReadAllText($ciPath)
 
-foreach ($phrase in @('bounded', 'runtime', 'native help', 'acceptance criteria', 'launch', 'unfinished', 'orchestrator', 'disposable', 'citation', 'inference', 'nested')) {
+foreach ($phrase in @('bounded', 'runtime', 'native help', 'acceptance criteria', 'launch', 'unfinished', 'orchestrator', 'disposable', 'citation', 'inference', 'nested', 'offer gate', 'two or more', 'consent', 'independent')) {
     Assert-Contains $skill $phrase "SKILL.md states $phrase"
 }
-foreach ($phrase in @('runtime', 'benchmark', 'launch', 'unfinished', 'isolated', 'citation', 'inference', 'provider')) {
+foreach ($phrase in @('runtime', 'benchmark', 'launch', 'unfinished', 'isolated', 'citation', 'inference', 'provider', 'offer gate', 'two or more', 'consent')) {
     Assert-Contains $readme $phrase "README.md states $phrase"
+}
+
+$expectedDescription = 'Delegate bounded implementation or research work to another worker provider. Use when the user explicitly asks to offload, names a worker provider, accepts an offload offer, or when the orchestrator is about to start a native multi-agent workflow for two or more independent, bounded assignments.'
+Assert-Contains $skill "description: $expectedDescription" 'SKILL.md uses exact settled frontmatter description'
+
+$frontmatterMatch = [regex]::Match($skill, '(?s)^---\r?\n(.*?)\r?\n---')
+Assert-True $frontmatterMatch.Success 'SKILL.md has YAML frontmatter'
+Assert-False ($frontmatterMatch.Groups[1].Value.Contains('Do NOT')) 'SKILL.md frontmatter omits negative Do NOT sentence'
+
+foreach ($stalePhrase in @('host instructions', 'host-approved', 'three independently gated', 'at least three')) {
+    Assert-NotContains $skill $stalePhrase "SKILL.md omits stale offer phrase: $stalePhrase"
+    Assert-NotContains $readme $stalePhrase "README.md omits stale offer phrase: $stalePhrase"
 }
 
 foreach ($content in @($skill, $readme)) {

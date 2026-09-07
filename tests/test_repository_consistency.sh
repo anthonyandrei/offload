@@ -9,7 +9,7 @@ assert_file() { [[ -f "$1" ]] || { printf 'FAIL: missing file: %s\n' "$1" >&2; e
 assert_absent() { [[ ! -e "$1" ]] || { printf 'FAIL: path exists: %s\n' "$1" >&2; exit 1; }; pass "$2"; }
 
 active_content=''
-for relative in SKILL.md README.md AGENTS.md CONTEXT.md CLAUDE.md .github/workflows/ci.yml docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md docs/research/2026-09-07-benchmark-references-for-runtime-routing.md; do
+for relative in SKILL.md README.md AGENTS.md CONTEXT.md CLAUDE.md .github/workflows/ci.yml docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md docs/research/2026-09-07-benchmark-references-for-runtime-routing.md; do
   assert_file "$root/$relative" "active repository file exists: $relative"
   active_content=$active_content$(cat "$root/$relative")
   active_content=$active_content$'\n'
@@ -47,9 +47,25 @@ done
 
 skill=$(<"$root/SKILL.md")
 readme=$(<"$root/README.md")
-for link in CONTEXT.md docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md docs/research/2026-09-07-benchmark-references-for-runtime-routing.md scripts/check-execution-scope.sh scripts/execution-workspace.sh; do
+for link in CONTEXT.md docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md docs/research/2026-09-07-benchmark-references-for-runtime-routing.md scripts/check-execution-scope.sh scripts/execution-workspace.sh; do
   [[ "$skill" == *"$link"* || "$readme" == *"$link"* ]] || { printf 'FAIL: active docs lack link: %s\n' "$link" >&2; exit 1; }
   pass "active docs retain link: $link"
+done
+
+for doc in SKILL.md README.md AGENTS.md CONTEXT.md CLAUDE.md; do
+  doc_content=$(<"$root/$doc")
+  for adr in \
+    0001-maintain-shell-native-helper-families.md \
+    0003-use-a-portable-proactive-offer-contract.md \
+    0005-bound-model-routing-to-gemini-and-explicit-rules.md \
+    0007-cross-library-publication-boundaries.md \
+    0008-runtime-model-selection-through-adapters.md \
+    0009-select-compatible-workers-before-offering-offload.md \
+    0010-agy-preflight-discovery.md \
+    0011-launch-first-admission-and-orchestrator-fallback.md; do
+    [[ "$doc_content" != *"$adr"* ]] || { printf 'FAIL: %s links to superseded ADR: %s\n' "$doc" "$adr" >&2; exit 1; }
+    pass "$doc omits link to superseded ADR: $adr"
+  done
 done
 
 printf 'all bash repository consistency checks passed (%s tests)\n' "$total"
