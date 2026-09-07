@@ -1,951 +1,451 @@
 #!/usr/bin/env pwsh
-# scripts/execution-workspace.ps1
-# Platform-agnostic execution workspace lifecycle manager for PowerShell 7+.
-# Manages isolated git worktrees for workers: create, verify-export, integrate, cleanup.
 
 $ErrorActionPreference = 'Stop'
-Set-StrictMode -Version 3.0
+Set-StrictMode -Version Latest
 
 $script:MarkerName = '.offload-execution-workspace'
-$script:MarkerContent = 'offload-execution-workspace-v1'
-$script:ManifestMarker = 'offload-execution-manifest-v1'
-
+$script:MarkerContent = 'offload-execution-workspace-v2'
 $script:ScriptDir = Split-Path -Parent $PSCommandPath
-$script:RootDir = Split-Path -Parent $script:ScriptDir
 $script:ScopeChecker = Join-Path $script:ScriptDir 'check-execution-scope.ps1'
-$script:ResourceLedger = Join-Path $script:ScriptDir 'resource-ledger.ps1'
 
-function Show-Usage {
-    [Console]::Error.WriteLine(@"
-Usage:
-  execution-workspace.ps1 create --source-repo <path> --task-id <id> --baseline <rev> --owned <path> [--owned <path> ...] [--frozen <path> ...] [--manifest <path>] [--workspace-dir <path>] [--ledger <path>]
-  execution-workspace.ps1 verify-export --manifest <path> [--patch-output <path>]
-  execution-workspace.ps1 integrate --manifest <path> [--target-repo <path>]
-  execution-workspace.ps1 cleanup --manifest <path> [--status <success|failed|retain>]
-
-Commands:
-  create           Create an isolated Git worktree and external manifest for a task
-  verify-export    Verify candidate scope, export unified binary patch, record SHA-256 digest
-  integrate        Preflight in disposable integration checkout and apply verified patch
-  cleanup          Safely remove manifest-owned worktree and artifacts
-"@)
+function Fail([string]$Message, [int]$Code = 1) {
+    [Console]::Error.WriteLine("Error: $Message")
+    exit $Code
 }
 
-function Fail([string]$message, [int]$exitCode = 1) {
-    [Console]::Error.WriteLine("Error: $message")
-    exit $exitCode
-}
-
-function Canonicalize-Path([string]$path) {
-    if ([string]::IsNullOrWhiteSpace($path)) {
-        return ""
+function Canonicalize-Path([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
     }
-    return [System.IO.Path]::GetFullPath($path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    if ([string]::Equals($full, $root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $root
+    }
+
+    return $full.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
 }
 
-function Test-PathWithin([string]$child, [string]$parent) {
-    $childPath = Canonicalize-Path $child
-    $parentPath = Canonicalize-Path $parent
-    if ([string]::Equals($childPath, $parentPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+function Same-Path([string]$Left, [string]$Right) {
+    return [string]::Equals((Canonicalize-Path $Left), (Canonicalize-Path $Right), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Path-IsWithin([string]$Child, [string]$Parent) {
+    $childPath = Canonicalize-Path $Child
+    $parentPath = Canonicalize-Path $Parent
+    if ([string]::IsNullOrEmpty($childPath) -or [string]::IsNullOrEmpty($parentPath)) {
+        return $false
+    }
+    if (Same-Path $childPath $parentPath) {
         return $true
     }
-    $separator = [System.IO.Path]::DirectorySeparatorChar
-    return $childPath.StartsWith("$parentPath$separator", [System.StringComparison]::OrdinalIgnoreCase)
+    $prefix = $parentPath.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) + [System.IO.Path]::DirectorySeparatorChar
+    return $childPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-function Normalize-RelPath([string]$path) {
-    if ([string]::IsNullOrWhiteSpace($path)) {
-        return ""
-    }
-    $norm = $path.Replace('\', '/')
-    while ($norm.StartsWith('./')) {
-        $norm = $norm.Substring(2)
-    }
-    while ($norm.StartsWith('/') -and $norm -ne '/') {
-        $norm = $norm.Substring(1)
-    }
-    while ($norm.EndsWith('/') -and $norm -ne '/') {
-        $norm = $norm.Substring(0, $norm.Length - 1)
-    }
-    if ($norm -eq '.' -or $norm -eq '/') {
-        return ""
-    }
-    return $norm
-}
-
-function Get-FileSha256([string]$filePath) {
-    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
-        Fail "file does not exist for sha256 calculation: $filePath"
-    }
-    $hasher = [System.Security.Cryptography.SHA256]::Create()
-    $stream = [System.IO.File]::OpenRead($filePath)
-    try {
-        $hashBytes = $hasher.ComputeHash($stream)
-        return [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $stream.Dispose()
-        $hasher.Dispose()
+function Assert-NoReparsePointsInPath([string]$Path) {
+    $probe = Canonicalize-Path $Path
+    while (-not [string]::IsNullOrWhiteSpace($probe)) {
+        if (Test-Path -LiteralPath $probe) {
+            $item = Get-Item -LiteralPath $probe -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Fail ("refusing to use a path containing a reparse point: " + $probe)
+            }
+        }
+        $parent = [System.IO.Directory]::GetParent($probe)
+        if ($null -eq $parent) {
+            break
+        }
+        $probe = $parent.FullName
     }
 }
 
-function Get-IsoTimestamp {
-    return [System.DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-}
-
-function Run-GitCommand {
+function Run-Process {
     param(
-        [Parameter(Mandatory=$true)][string]$WorkingDir,
-        [Parameter(Mandatory=$true)][string[]]$GitArgs
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
     )
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = 'git'
-    foreach ($a in $GitArgs) {
-        $psi.ArgumentList.Add($a)
+
+    $info = [System.Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = $FileName
+    $info.WorkingDirectory = $WorkingDirectory
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    foreach ($argument in $Arguments) {
+        $info.ArgumentList.Add($argument)
     }
-    $psi.WorkingDirectory = $WorkingDir
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
 
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
-
-    return [PSCustomObject]@{
-        ExitCode = $proc.ExitCode
-        Stdout   = $stdout
-        Stderr   = $stderr
+    try {
+        $process = [System.Diagnostics.Process]::Start($info)
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout = $stdout
+            Stderr = $stderr
+        }
+    } catch {
+        Fail ("failed to start " + $FileName + ": " + $_.Exception.Message)
     }
 }
 
-# ---------------------------------------------------------------------------
-# Command: create
-# ---------------------------------------------------------------------------
-function Cmd-Create([string[]]$cmdArgs) {
-    $sourceRepo = ""
-    $taskId = ""
-    $baseline = ""
+function Run-Git {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+    return Run-Process -FileName 'git' -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+}
+
+function Require-GitRepository([string]$Path) {
+    $result = Run-Git -WorkingDirectory $Path -Arguments @('rev-parse', '--show-toplevel')
+    if ($result.ExitCode -ne 0) {
+        Fail ("not a Git repository: " + $Path + " " + $result.Stderr.Trim())
+    }
+    return Canonicalize-Path $result.Stdout.Trim()
+}
+
+function Resolve-Commit([string]$Repository, [string]$Revision) {
+    if ([string]::IsNullOrWhiteSpace($Revision)) {
+        Fail 'baseline is required'
+    }
+    $result = Run-Git -WorkingDirectory $Repository -Arguments @('rev-parse', '--verify', ("{0}^{{commit}}" -f $Revision))
+    if ($result.ExitCode -ne 0) {
+        Fail ("baseline does not resolve to a commit: " + $Revision + " " + $result.Stderr.Trim())
+    }
+    return $result.Stdout.Trim()
+}
+
+function Test-SafeWorkspacePath([string]$Workspace, [string]$SourceRepository) {
+    $workspacePath = Canonicalize-Path $Workspace
+    if ([string]::IsNullOrWhiteSpace($workspacePath)) {
+        Fail 'workspace path is empty'
+    }
+    Assert-NoReparsePointsInPath $workspacePath
+
+    $root = Canonicalize-Path ([System.IO.Path]::GetPathRoot($workspacePath))
+    if (Same-Path $workspacePath $root) {
+        Fail ("refusing to use a filesystem root as a workspace: " + $workspacePath)
+    }
+
+    $currentPaths = @((Get-Location).Path, [Environment]::CurrentDirectory)
+    foreach ($current in $currentPaths) {
+        if (-not [string]::IsNullOrWhiteSpace($current) -and (Same-Path $workspacePath $current)) {
+            Fail ("refusing to use the current directory as a workspace: " + $workspacePath)
+        }
+    }
+
+    $homePaths = @($env:USERPROFILE, $env:HOME) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    foreach ($homePath in $homePaths) {
+        if (Same-Path $workspacePath $homePath) {
+            Fail ("refusing to use a user home directory as a workspace: " + $workspacePath)
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SourceRepository) -and (Path-IsWithin $workspacePath $SourceRepository)) {
+        Fail ("workspace must be outside the source repository: " + $workspacePath)
+    }
+}
+
+function Read-Marker([string]$Workspace) {
+    if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+        Fail ("workspace does not exist: " + $Workspace)
+    }
+    $workspaceItem = Get-Item -LiteralPath $Workspace -Force
+    if (($workspaceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail ("refusing to use a reparse point as a workspace: " + $Workspace)
+    }
+    $marker = Join-Path $Workspace $script:MarkerName
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+        Fail ("workspace is not marked as disposable: " + $Workspace)
+    }
+    $content = [System.IO.File]::ReadAllText($marker).Trim()
+    if ($content -ne $script:MarkerContent) {
+        Fail ("workspace marker is invalid: " + $Workspace)
+    }
+}
+
+function Get-RegisteredWorktrees([string]$SourceRepository) {
+    $result = Run-Git -WorkingDirectory $SourceRepository -Arguments @('worktree', 'list', '--porcelain')
+    if ($result.ExitCode -ne 0) {
+        Fail ("could not inspect Git worktrees: " + $result.Stderr.Trim())
+    }
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ($result.Stdout -split '\r?\n')) {
+        if ($line.StartsWith('worktree ')) {
+            $paths.Add((Canonicalize-Path $line.Substring('worktree '.Length)))
+        }
+    }
+    return $paths
+}
+
+function Require-RegisteredWorktree([string]$SourceRepository, [string]$Workspace) {
+    foreach ($path in (Get-RegisteredWorktrees $SourceRepository)) {
+        if (Same-Path $path $Workspace) {
+            return
+        }
+    }
+    Fail ("workspace is not registered as a worktree of " + $SourceRepository + ": " + $Workspace)
+}
+
+function Remove-EmptyGeneratedParent([string]$Workspace) {
+    $parent = Split-Path -Parent $Workspace
+    if ([string]::IsNullOrWhiteSpace($parent)) {
+        return
+    }
+    $name = Split-Path -Leaf $parent
+    if (-not $name.StartsWith('offload-exec-', [System.StringComparison]::Ordinal)) {
+        return
+    }
+    if (@(Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+        Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Show-Usage {
+    [Console]::Error.WriteLine(@'
+Usage:
+  execution-workspace.ps1 create --source-repo <path> --task-id <id> --baseline <revision> [--workspace <path>]
+  execution-workspace.ps1 check --workspace <path> --baseline <revision> --owned <path> [--owned <path> ...] [--frozen <path> ...]
+  execution-workspace.ps1 cleanup --source-repo <path> --workspace <path> [--retain]
+
+The create command makes a marked detached Git worktree. The check command
+delegates final scope inspection to the generic scope checker. The cleanup
+command removes only a marked worktree registered with the source repository.
+'@)
+}
+
+function Command-Create([string[]]$CommandArgs) {
+    $source = ''
+    $taskId = ''
+    $baseline = ''
+    $workspace = ''
+    $i = 0
+
+    while ($i -lt $CommandArgs.Count) {
+        $argument = [string]$CommandArgs[$i]
+        switch -Regex ($argument) {
+            '^--source-repo$' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--source-repo requires a path' }
+                $source = [string]$CommandArgs[$i]
+            }
+            '^--source-repo=' { $source = $argument.Substring(14) }
+            '^--task-id$' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--task-id requires a value' }
+                $taskId = [string]$CommandArgs[$i]
+            }
+            '^--task-id=' { $taskId = $argument.Substring(10) }
+            '^--baseline$' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--baseline requires a revision' }
+                $baseline = [string]$CommandArgs[$i]
+            }
+            '^--baseline=' { $baseline = $argument.Substring(11) }
+            '^--workspace$' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--workspace requires a path' }
+                $workspace = [string]$CommandArgs[$i]
+            }
+            '^--workspace=' { $workspace = $argument.Substring(12) }
+            '^(--help|-h)$' { Show-Usage; exit 0 }
+            default { Fail ("unrecognized argument for create: " + $argument) }
+        }
+        $i++
+    }
+
+    if ($env:OFFLOAD_WORKER_CONTEXT -eq '1') {
+        Fail 'worker context cannot create or mutate an execution workspace' 126
+    }
+    if ([string]::IsNullOrWhiteSpace($source)) { Fail '--source-repo is required' }
+    if ([string]::IsNullOrWhiteSpace($taskId) -or $taskId -notmatch '^[A-Za-z0-9._-]+$') {
+        Fail '--task-id must contain only letters, numbers, dots, underscores, and hyphens'
+    }
+
+    $sourcePath = Require-GitRepository (Canonicalize-Path $source)
+    $resolvedBaseline = Resolve-Commit $sourcePath $baseline
+    if ([string]::IsNullOrWhiteSpace($workspace)) {
+        $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("offload-exec-{0}-{1}" -f $taskId, ([Guid]::NewGuid().ToString('N')))
+    } else {
+        $workspace = Canonicalize-Path $workspace
+    }
+    Test-SafeWorkspacePath $workspace $sourcePath
+    if (Test-Path -LiteralPath $workspace) {
+        Fail ("workspace already exists: " + $workspace)
+    }
+
+    $parent = Split-Path -Parent $workspace
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+    }
+
+    $result = Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'add', '--detach', $workspace, $resolvedBaseline)
+    if ($result.ExitCode -ne 0) {
+        Fail ("could not create execution worktree: " + $result.Stderr.Trim())
+    }
+
+    try {
+        [System.IO.File]::WriteAllText((Join-Path $workspace $script:MarkerName), $script:MarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+    } catch {
+        Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'remove', '--force', $workspace) | Out-Null
+        Fail ("could not mark execution worktree: " + $_.Exception.Message)
+    }
+
+    [Console]::Out.WriteLine($workspace)
+}
+
+function Command-Check([string[]]$CommandArgs) {
+    $workspace = ''
+    $baseline = ''
     $owned = [System.Collections.Generic.List[string]]::new()
     $frozen = [System.Collections.Generic.List[string]]::new()
-    $manifestPath = ""
-    $workspaceDir = ""
-    $ledgerPath = ""
-
     $i = 0
-    while ($i -lt $cmdArgs.Count) {
-        $arg = [string]$cmdArgs[$i]
-        if ($arg -eq '--source-repo') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--source-repo requires a path" }
-            $sourceRepo = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--source-repo=')) {
-            $sourceRepo = $arg.Substring('--source-repo='.Length)
-        } elseif ($arg -eq '--task-id') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--task-id requires a value" }
-            $taskId = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--task-id=')) {
-            $taskId = $arg.Substring('--task-id='.Length)
-        } elseif ($arg -eq '--baseline') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--baseline requires a value" }
-            $baseline = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--baseline=')) {
-            $baseline = $arg.Substring('--baseline='.Length)
-        } elseif ($arg -eq '--owned') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--owned requires a path" }
-            $owned.Add([string]$cmdArgs[$i])
-        } elseif ($arg.StartsWith('--owned=')) {
-            $owned.Add($arg.Substring('--owned='.Length))
-        } elseif ($arg -eq '--frozen') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--frozen requires a path" }
-            $frozen.Add([string]$cmdArgs[$i])
-        } elseif ($arg.StartsWith('--frozen=')) {
-            $frozen.Add($arg.Substring('--frozen='.Length))
-        } elseif ($arg -eq '--manifest') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--manifest requires a path" }
-            $manifestPath = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--manifest=')) {
-            $manifestPath = $arg.Substring('--manifest='.Length)
-        } elseif ($arg -eq '--workspace-dir') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--workspace-dir requires a path" }
-            $workspaceDir = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--workspace-dir=')) {
-            $workspaceDir = $arg.Substring('--workspace-dir='.Length)
-        } elseif ($arg -eq '--ledger') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--ledger requires a path" }
-            $ledgerPath = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--ledger=')) {
-            $ledgerPath = $arg.Substring('--ledger='.Length)
-        } elseif ($arg -eq '-h' -or $arg -eq '--help') {
-            Show-Usage
-            exit 0
-        } else {
-            Fail "unrecognized argument for create: $arg"
+
+    while ($i -lt $CommandArgs.Count) {
+        $argument = [string]$CommandArgs[$i]
+        switch ($argument) {
+            '--workspace' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--workspace requires a path' }
+                $workspace = [string]$CommandArgs[$i]
+            }
+            '--baseline' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--baseline requires a revision' }
+                $baseline = [string]$CommandArgs[$i]
+            }
+            '--owned' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--owned requires a path' }
+                $owned.Add([string]$CommandArgs[$i])
+            }
+            '--frozen' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--frozen requires a path' }
+                $frozen.Add([string]$CommandArgs[$i])
+            }
+            { $_ -like '--workspace=*' } { $workspace = $argument.Substring(12) }
+            { $_ -like '--baseline=*' } { $baseline = $argument.Substring(11) }
+            { $_ -like '--owned=*' } { $owned.Add($argument.Substring(8)) }
+            { $_ -like '--frozen=*' } { $frozen.Add($argument.Substring(9)) }
+            { $_ -in @('--help', '-h') } { Show-Usage; exit 0 }
+            default { Fail ("unrecognized argument for check: " + $argument) }
         }
         $i++
     }
 
-    if ([string]::IsNullOrWhiteSpace($sourceRepo)) { Fail "--source-repo is required" }
-    if ([string]::IsNullOrWhiteSpace($taskId)) { Fail "--task-id is required" }
-    if ([string]::IsNullOrWhiteSpace($baseline)) { Fail "--baseline is required" }
-    if ($owned.Count -eq 0) { Fail "at least one --owned path is required" }
+    if ([string]::IsNullOrWhiteSpace($workspace)) { Fail '--workspace is required' }
+    if ([string]::IsNullOrWhiteSpace($baseline)) { Fail '--baseline is required' }
+    if ($owned.Count -eq 0) { Fail 'at least one --owned path is required' }
+    $workspacePath = Canonicalize-Path $workspace
+    Read-Marker $workspacePath
 
-    if (-not ($taskId -match '^[a-zA-Z0-9._-]+$')) {
-        Fail "task-id must contain only alphanumeric characters, dots, underscores, or dashes: $taskId"
+    $arguments = [System.Collections.Generic.List[string]]::new()
+    $arguments.Add('-NoProfile')
+    $arguments.Add('-NonInteractive')
+    $arguments.Add('-File')
+    $arguments.Add($script:ScopeChecker)
+    $arguments.Add('--baseline')
+    $arguments.Add($baseline)
+    $arguments.Add('--owned')
+    $arguments.Add($script:MarkerName)
+    foreach ($path in $owned) {
+        $arguments.Add('--owned')
+        $arguments.Add([string]$path)
     }
-
-    if (-not (Test-Path -LiteralPath $sourceRepo -PathType Container)) {
-        Fail "source repository directory does not exist: $sourceRepo"
-    }
-    $canonRepo = Canonicalize-Path $sourceRepo
-    $resInside = Run-GitCommand -WorkingDir $canonRepo -GitArgs @('rev-parse', '--is-inside-work-tree')
-    if ($resInside.ExitCode -ne 0 -or $resInside.Stdout.Trim() -ne 'true') {
-        Fail "source repository is not a git worktree: $sourceRepo"
-    }
-
-    # Verify baseline revision
-    $resBase = Run-GitCommand -WorkingDir $canonRepo -GitArgs @('rev-parse', '--verify', "${baseline}^{commit}")
-    if ($resBase.ExitCode -ne 0) {
-        Fail "baseline revision does not resolve to a commit: $baseline"
-    }
-    $resolvedBaseline = $resBase.Stdout.Trim()
-
-    # Validate owned and frozen paths
-    $normOwned = [System.Collections.Generic.List[string]]::new()
-    foreach ($o in $owned) {
-        $no = Normalize-RelPath $o
-        if ([string]::IsNullOrWhiteSpace($no)) { Fail "owned path cannot be empty or root: $o" }
-        if ($no.Contains('..')) { Fail "owned path escapes repository: $o" }
-        $normOwned.Add($no)
+    foreach ($path in $frozen) {
+        $arguments.Add('--frozen')
+        $arguments.Add([string]$path)
     }
 
-    $normFrozen = [System.Collections.Generic.List[string]]::new()
-    foreach ($f in $frozen) {
-        $nf = Normalize-RelPath $f
-        if ([string]::IsNullOrWhiteSpace($nf)) { Fail "frozen path cannot be empty or root: $f" }
-        if ($nf.Contains('..')) { Fail "frozen path escapes repository: $f" }
-        $normFrozen.Add($nf)
+    $result = Run-Process -FileName 'pwsh' -Arguments $arguments.ToArray() -WorkingDirectory $workspacePath
+    if (-not [string]::IsNullOrEmpty($result.Stdout)) {
+        [Console]::Out.Write($result.Stdout)
     }
-
-    if ([string]::IsNullOrWhiteSpace($workspaceDir)) {
-        $tempBase = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "offload-exec-$taskId-" + [System.Guid]::NewGuid().ToString('N'))
-        $workspaceDir = [System.IO.Path]::Combine($tempBase, 'checkout')
+    if (-not [string]::IsNullOrEmpty($result.Stderr)) {
+        [Console]::Error.Write($result.Stderr)
     }
-    $canonWorkspace = Canonicalize-Path $workspaceDir
-
-    # Safety checks against roots and repos
-    if ([string]::Equals($canonWorkspace, $canonRepo, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Fail "workspace directory cannot be the source repository: $workspaceDir"
+    if ($result.ExitCode -eq 0) {
+        Read-Marker $workspacePath
     }
-    $cwdLocation = Canonicalize-Path (Get-Location).Path
-    if ([string]::Equals($canonWorkspace, $cwdLocation, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Fail "workspace directory cannot be process current directory: $workspaceDir"
-    }
-    $pathRoot = [System.IO.Path]::GetPathRoot($canonWorkspace)
-    $trimmedRoot = Canonicalize-Path $pathRoot
-    if ([string]::Equals($canonWorkspace, $trimmedRoot, [System.StringComparison]::OrdinalIgnoreCase) -or [string]::IsNullOrEmpty($canonWorkspace)) {
-        Fail "workspace directory cannot be filesystem root: $workspaceDir"
-    }
-    $homeDirs = @($env:USERPROFILE, $env:HOME) | Where-Object { -not [string]::IsNullOrEmpty($_) }
-    foreach ($h in $homeDirs) {
-        if ([string]::Equals($canonWorkspace, (Canonicalize-Path $h), [System.StringComparison]::OrdinalIgnoreCase)) {
-            Fail "workspace directory cannot be user home directory: $workspaceDir"
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($manifestPath)) {
-        $wsParent = Split-Path -Parent $canonWorkspace
-        $manifestPath = [System.IO.Path]::Combine($wsParent, "$taskId.manifest.json")
-    }
-    $canonManifest = Canonicalize-Path $manifestPath
-
-    if ($canonManifest.StartsWith($canonWorkspace + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $canonManifest.StartsWith($canonWorkspace + '/', [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($canonManifest, $canonWorkspace, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Fail "manifest path must be outside the worker checkout: $manifestPath"
-    }
-
-    if ([string]::IsNullOrWhiteSpace($ledgerPath)) {
-        $ledgerPath = [System.IO.Path]::Combine((Split-Path -Parent $canonManifest), 'resource-ledger.json')
-    }
-    $canonLedger = Canonicalize-Path $ledgerPath
-    if (Test-PathWithin $canonLedger $canonWorkspace) {
-        Fail "ledger path must be outside the worker checkout: $ledgerPath"
-    }
-
-    $manifestDir = Split-Path -Parent $canonManifest
-    if (-not (Test-Path -LiteralPath $manifestDir -PathType Container)) {
-        [System.IO.Directory]::CreateDirectory($manifestDir) | Out-Null
-    }
-    $wsParentDir = Split-Path -Parent $canonWorkspace
-    if (-not (Test-Path -LiteralPath $wsParentDir -PathType Container)) {
-        [System.IO.Directory]::CreateDirectory($wsParentDir) | Out-Null
-    }
-
-    if (Test-Path -LiteralPath $canonWorkspace -PathType Container) {
-        $items = Get-ChildItem -LiteralPath $canonWorkspace -Force
-        if ($items.Count -gt 0) {
-            Fail "workspace directory already exists and is not empty: $workspaceDir"
-        }
-    }
-
-    $resourceId = "worktree:$taskId"
-    & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger register --ledger $canonLedger --assignment-id $taskId --parent-id $canonRepo --parent-path $canonRepo --resource-type git-worktree --path $canonWorkspace --owner-marker "$($script:MarkerName)=$($script:MarkerContent)" --resource-id $resourceId --state registered | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail "failed to register execution workspace in resource ledger" }
-
-    # Add git worktree
-    $resAdd = Run-GitCommand -WorkingDir $canonRepo -GitArgs @('worktree', 'add', '--detach', $canonWorkspace, $resolvedBaseline)
-    if ($resAdd.ExitCode -ne 0) {
-        Fail "failed to create git worktree at $canonWorkspace from baseline $resolvedBaseline : $($resAdd.Stderr)"
-    }
-
-    # Write workspace marker
-    $markerFile = [System.IO.Path]::Combine($canonWorkspace, $script:MarkerName)
-    [System.IO.File]::WriteAllText($markerFile, "$($script:MarkerContent)`n", [System.Text.UTF8Encoding]::new($false))
-
-    # Ensure marker is in git exclude so it is not treated as an untracked change
-    $resExclude = Run-GitCommand -WorkingDir $canonRepo -GitArgs @('rev-parse', '--git-path', 'info/exclude')
-    $excludePath = if ($resExclude.ExitCode -eq 0 -and (-not [string]::IsNullOrWhiteSpace($resExclude.Stdout))) {
-        $rawEx = $resExclude.Stdout.Trim()
-        if ([System.IO.Path]::IsPathRooted($rawEx)) {
-            Canonicalize-Path $rawEx
-        } else {
-            Canonicalize-Path ([System.IO.Path]::Combine($canonRepo, $rawEx))
-        }
-    } else {
-        Canonicalize-Path ([System.IO.Path]::Combine($canonRepo, '.git', 'info', 'exclude'))
-    }
-    $infoDir = Split-Path -Parent $excludePath
-    if (-not (Test-Path -LiteralPath $infoDir -PathType Container)) {
-        [System.IO.Directory]::CreateDirectory($infoDir) | Out-Null
-    }
-    $needExclude = $true
-    if (Test-Path -LiteralPath $excludePath -PathType Leaf) {
-        $lines = Get-Content -LiteralPath $excludePath -ErrorAction SilentlyContinue
-        if ($lines -contains $script:MarkerName) {
-            $needExclude = $false
-        }
-    }
-    if ($needExclude) {
-        [System.IO.File]::AppendAllText($excludePath, "`n$($script:MarkerName)`n", [System.Text.UTF8Encoding]::new($false))
-    }
-
-    & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $canonLedger --resource-id $resourceId --state active | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail "failed to activate execution workspace in resource ledger" }
-
-    $manifestData = [ordered]@{
-        schema_version = 1
-        marker         = $script:ManifestMarker
-        task_id        = $taskId
-        source_repo    = $canonRepo
-        workspace_dir  = $canonWorkspace
-        manifest_path  = $canonManifest
-        baseline       = $resolvedBaseline
-        owned_paths    = @($normOwned)
-        frozen_paths   = @($normFrozen)
-        ledger_path    = $canonLedger
-        resource_id    = $resourceId
-        status         = "created"
-        created_at     = Get-IsoTimestamp
-    }
-
-    $manifestJson = $manifestData | ConvertTo-Json -Depth 5
-    [System.IO.File]::WriteAllText($canonManifest, "$manifestJson`n", [System.Text.UTF8Encoding]::new($false))
-
-    [Console]::Out.WriteLine($canonWorkspace)
+    exit $result.ExitCode
 }
 
-# ---------------------------------------------------------------------------
-# Command: verify-export
-# ---------------------------------------------------------------------------
-function Cmd-VerifyExport([string[]]$cmdArgs) {
-    $manifestPath = ""
-    $patchOutput = ""
-
+function Command-Cleanup([string[]]$CommandArgs) {
+    $source = ''
+    $workspace = ''
+    $retain = $false
     $i = 0
-    while ($i -lt $cmdArgs.Count) {
-        $arg = [string]$cmdArgs[$i]
-        if ($arg -eq '--manifest') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--manifest requires a path" }
-            $manifestPath = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--manifest=')) {
-            $manifestPath = $arg.Substring('--manifest='.Length)
-        } elseif ($arg -eq '--patch-output') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--patch-output requires a path" }
-            $patchOutput = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--patch-output=')) {
-            $patchOutput = $arg.Substring('--patch-output='.Length)
-        } elseif ($arg -eq '-h' -or $arg -eq '--help') {
-            Show-Usage
-            exit 0
-        } else {
-            Fail "unrecognized argument for verify-export: $arg"
+
+    while ($i -lt $CommandArgs.Count) {
+        $argument = [string]$CommandArgs[$i]
+        switch ($argument) {
+            '--source-repo' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--source-repo requires a path' }
+                $source = [string]$CommandArgs[$i]
+            }
+            '--workspace' {
+                $i++
+                if ($i -ge $CommandArgs.Count) { Fail '--workspace requires a path' }
+                $workspace = [string]$CommandArgs[$i]
+            }
+            '--retain' { $retain = $true }
+            { $_ -like '--source-repo=*' } { $source = $argument.Substring(14) }
+            { $_ -like '--workspace=*' } { $workspace = $argument.Substring(12) }
+            { $_ -in @('--help', '-h') } { Show-Usage; exit 0 }
+            default { Fail ("unrecognized argument for cleanup: " + $argument) }
         }
         $i++
     }
 
-    if ([string]::IsNullOrWhiteSpace($manifestPath)) { Fail "--manifest is required" }
-    $canonManifest = Canonicalize-Path $manifestPath
-    if (-not (Test-Path -LiteralPath $canonManifest -PathType Leaf)) {
-        Fail "manifest file does not exist: $manifestPath"
+    if ($env:OFFLOAD_WORKER_CONTEXT -eq '1') {
+        Fail 'worker context cannot remove an execution workspace' 126
     }
+    if ([string]::IsNullOrWhiteSpace($source)) { Fail '--source-repo is required' }
+    if ([string]::IsNullOrWhiteSpace($workspace)) { Fail '--workspace is required' }
+    $sourcePath = Require-GitRepository (Canonicalize-Path $source)
+    $workspacePath = Canonicalize-Path $workspace
+    Test-SafeWorkspacePath $workspacePath $sourcePath
+    Read-Marker $workspacePath
+    Require-RegisteredWorktree $sourcePath $workspacePath
 
-    $manifestContent = [System.IO.File]::ReadAllText($canonManifest, [System.Text.Encoding]::UTF8)
-    $manifest = $manifestContent | ConvertFrom-Json
-
-    if ($manifest.marker -ne $script:ManifestMarker) {
-        Fail "invalid manifest marker in $manifestPath"
-    }
-
-    $workspaceDir = Canonicalize-Path $manifest.workspace_dir
-    $sourceRepo = Canonicalize-Path $manifest.source_repo
-    $baseline = [string]$manifest.baseline
-    $taskId = [string]$manifest.task_id
-
-    if (-not (Test-Path -LiteralPath $workspaceDir -PathType Container)) {
-        Fail "candidate workspace directory does not exist: $workspaceDir"
-    }
-    $markerFile = [System.IO.Path]::Combine($workspaceDir, $script:MarkerName)
-    if (-not (Test-Path -LiteralPath $markerFile -PathType Leaf)) {
-        Fail "candidate directory lacks execution workspace marker: $workspaceDir"
-    }
-    $markerContent = ([System.IO.File]::ReadAllText($markerFile)).Trim()
-    if ($markerContent -ne $script:MarkerContent) {
-        Fail "invalid execution workspace marker content in $workspaceDir"
-    }
-
-    $ownedPaths = @($manifest.owned_paths)
-    $frozenPaths = @($manifest.frozen_paths)
-
-    if ($ownedPaths.Count -eq 0) {
-        Fail "manifest contains no owned paths"
-    }
-
-    # The review artifact must live outside the candidate so the worker cannot
-    # change the evidence after export.
-    if ([string]::IsNullOrWhiteSpace($patchOutput)) {
-        $mDir = Split-Path -Parent $canonManifest
-        $patchOutput = [System.IO.Path]::Combine($mDir, "$taskId.patch")
-    }
-    $canonPatch = Canonicalize-Path $patchOutput
-    if (Test-PathWithin $canonPatch $workspaceDir) {
-        Fail "patch output must be outside candidate workspace: $patchOutput"
-    }
-
-    # 1. Run scope verification via check-execution-scope.ps1 inside candidate workspace
-    $scopeArgs = [System.Collections.Generic.List[string]]::new()
-    $scopeArgs.Add('-NoProfile')
-    $scopeArgs.Add('-NonInteractive')
-    $scopeArgs.Add('-File')
-    $scopeArgs.Add($script:ScopeChecker)
-    $scopeArgs.Add('--baseline')
-    $scopeArgs.Add($baseline)
-    foreach ($o in $ownedPaths) {
-        $scopeArgs.Add('--owned')
-        $scopeArgs.Add([string]$o)
-    }
-    foreach ($f in $frozenPaths) {
-        $scopeArgs.Add('--frozen')
-        $scopeArgs.Add([string]$f)
-    }
-
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = (Get-Process -Id $PID).Path
-    foreach ($sa in $scopeArgs) {
-        $psi.ArgumentList.Add($sa)
-    }
-    $psi.WorkingDirectory = $workspaceDir
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-
-    $scopeProc = [System.Diagnostics.Process]::Start($psi)
-    $scopeOut = $scopeProc.StandardOutput.ReadToEnd()
-    $scopeErr = $scopeProc.StandardError.ReadToEnd()
-    $scopeProc.WaitForExit()
-
-    if ($scopeProc.ExitCode -ne 0) {
-        [Console]::Error.WriteLine("Error: execution scope check failed for candidate $taskId :")
-        if (-not [string]::IsNullOrWhiteSpace($scopeOut)) { [Console]::Error.WriteLine($scopeOut.Trim()) }
-        if (-not [string]::IsNullOrWhiteSpace($scopeErr)) { [Console]::Error.WriteLine($scopeErr.Trim()) }
-        exit $scopeProc.ExitCode
-    }
-
-    # 2. Stage all changes (uncommitted and untracked)
-    $resAdd = Run-GitCommand -WorkingDir $workspaceDir -GitArgs @('add', '-A')
-    if ($resAdd.ExitCode -ne 0) {
-        Fail "failed to stage working tree changes: $($resAdd.Stderr)"
-    }
-
-    # Determine patch destination
-    $patchDir = Split-Path -Parent $canonPatch
-    if (-not (Test-Path -LiteralPath $patchDir -PathType Container)) {
-        [System.IO.Directory]::CreateDirectory($patchDir) | Out-Null
-    }
-
-    # Generate binary diff from baseline
-    $resDiff = Run-GitCommand -WorkingDir $workspaceDir -GitArgs @('diff', '--cached', '--find-renames', '-p', '--binary', $baseline, '--output', $canonPatch)
-    if ($resDiff.ExitCode -ne 0) {
-        Fail "failed to export git diff from baseline $baseline : $($resDiff.Stderr)"
-    }
-    if (-not (Test-Path -LiteralPath $canonPatch -PathType Leaf)) {
-        Fail "failed to produce patch file at $canonPatch"
-    }
-
-    # 3. Compute content digest
-    $hexDigest = Get-FileSha256 $canonPatch
-    $patchDigest = "sha256:$hexDigest"
-
-    # 4. Verify touched paths in diff against owned and frozen
-    $resNames = Run-GitCommand -WorkingDir $workspaceDir -GitArgs @('diff', '--cached', '--name-status', '-z', '--find-renames', $baseline)
-    if ($resNames.ExitCode -ne 0) {
-        Fail "failed to list exported paths from baseline $baseline : $($resNames.Stderr)"
-    }
-    $rawNames = $resNames.Stdout.Split([char]0, [System.StringSplitOptions]::RemoveEmptyEntries)
-    $touchedList = [System.Collections.Generic.List[string]]::new()
-
-    $nameIndex = 0
-    while ($nameIndex -lt $rawNames.Length) {
-        $status = [string]$rawNames[$nameIndex]
-        if ($nameIndex + 1 -ge $rawNames.Length) {
-            Fail "malformed NUL-delimited git diff output"
-        }
-        $t = Normalize-RelPath ([string]$rawNames[$nameIndex + 1])
-        if ([string]::IsNullOrWhiteSpace($t)) {
-            $nameIndex += 2
-            continue
-        }
-        $touchedList.Add($t)
-        if ($status.StartsWith('R') -or $status.StartsWith('C')) {
-            if ($nameIndex + 2 -ge $rawNames.Length) {
-                Fail "malformed NUL-delimited git rename output"
-            }
-            $renameTarget = Normalize-RelPath ([string]$rawNames[$nameIndex + 2])
-            if (-not [string]::IsNullOrWhiteSpace($renameTarget)) {
-                $touchedList.Add($renameTarget)
-            }
-            $nameIndex += 1
-        }
-        $nameIndex += 2
-    }
-
-    foreach ($t in $touchedList) {
-        foreach ($f in $frozenPaths) {
-            $nf = [string]$f
-            if ($t -eq $nf -or $t.StartsWith("$nf/")) {
-                Fail "exported diff touches frozen path: $t"
-            }
-        }
-
-        $isOwned = $false
-        foreach ($o in $ownedPaths) {
-            $no = [string]$o
-            if ($t -eq $no -or $t.StartsWith("$no/")) {
-                $isOwned = $true
-                break
-            }
-        }
-        if (-not $isOwned) {
-            Fail "exported diff touches unowned path: $t"
-        }
-    }
-
-    # 5. Update manifest
-    $manifestData = [ordered]@{
-        schema_version = $manifest.schema_version
-        marker         = $manifest.marker
-        task_id        = $manifest.task_id
-        source_repo    = $manifest.source_repo
-        workspace_dir  = $manifest.workspace_dir
-        manifest_path  = $manifest.manifest_path
-        baseline       = $manifest.baseline
-        owned_paths    = @($manifest.owned_paths)
-        frozen_paths   = @($manifest.frozen_paths)
-        ledger_path    = if ($manifest.PSObject.Properties['ledger_path']) { $manifest.ledger_path } else { $null }
-        resource_id    = if ($manifest.PSObject.Properties['resource_id']) { $manifest.resource_id } else { $null }
-        status         = "exported"
-        patch_file     = $canonPatch
-        patch_digest   = $patchDigest
-        touched_paths  = @($touchedList)
-        exported_at    = Get-IsoTimestamp
-    }
-
-    $manifestJson = $manifestData | ConvertTo-Json -Depth 5
-    [System.IO.File]::WriteAllText($canonManifest, "$manifestJson`n", [System.Text.UTF8Encoding]::new($false))
-
-    [Console]::Out.WriteLine($canonPatch)
-}
-
-# ---------------------------------------------------------------------------
-# Command: integrate
-# ---------------------------------------------------------------------------
-function Cmd-Integrate([string[]]$cmdArgs) {
-    $manifestPath = ""
-    $targetRepo = ""
-
-    $i = 0
-    while ($i -lt $cmdArgs.Count) {
-        $arg = [string]$cmdArgs[$i]
-        if ($arg -eq '--manifest') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--manifest requires a path" }
-            $manifestPath = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--manifest=')) {
-            $manifestPath = $arg.Substring('--manifest='.Length)
-        } elseif ($arg -eq '--target-repo') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--target-repo requires a path" }
-            $targetRepo = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--target-repo=')) {
-            $targetRepo = $arg.Substring('--target-repo='.Length)
-        } elseif ($arg -eq '-h' -or $arg -eq '--help') {
-            Show-Usage
-            exit 0
-        } else {
-            Fail "unrecognized argument for integrate: $arg"
-        }
-        $i++
-    }
-
-    if ([string]::IsNullOrWhiteSpace($manifestPath)) { Fail "--manifest is required" }
-    $canonManifest = Canonicalize-Path $manifestPath
-    if (-not (Test-Path -LiteralPath $canonManifest -PathType Leaf)) {
-        Fail "manifest file does not exist: $manifestPath"
-    }
-
-    $manifestContent = [System.IO.File]::ReadAllText($canonManifest, [System.Text.Encoding]::UTF8)
-    $manifest = $manifestContent | ConvertFrom-Json
-
-    if ($manifest.marker -ne $script:ManifestMarker) {
-        Fail "invalid manifest marker in $manifestPath"
-    }
-
-    $patchFile = [string]$manifest.patch_file
-    $patchDigest = [string]$manifest.patch_digest
-    $sourceRepo = Canonicalize-Path $manifest.source_repo
-    $taskId = [string]$manifest.task_id
-    $ledgerPath = if ($manifest.PSObject.Properties['ledger_path']) { [string]$manifest.ledger_path } else { "" }
-    $resourceId = if ($manifest.PSObject.Properties['resource_id']) { [string]$manifest.resource_id } else { "" }
-
-    if ([string]::IsNullOrWhiteSpace($patchFile) -or [string]::IsNullOrWhiteSpace($patchDigest)) {
-        Fail "manifest does not record an exported patch file or digest; run verify-export first"
-    }
-    $canonPatch = Canonicalize-Path $patchFile
-    if (-not (Test-Path -LiteralPath $canonPatch -PathType Leaf)) {
-        Fail "patch file not found at: $canonPatch"
-    }
-
-    # 1. Content digest verification
-    $actualDigest = "sha256:" + (Get-FileSha256 $canonPatch)
-    if ($actualDigest -ne $patchDigest) {
-        Fail "patch content digest mismatch: expected $patchDigest, got $actualDigest"
-    }
-
-    if ([string]::IsNullOrWhiteSpace($targetRepo)) {
-        $targetRepo = $sourceRepo
-    }
-    $canonTarget = Canonicalize-Path $targetRepo
-    if (-not (Test-Path -LiteralPath $canonTarget -PathType Container)) {
-        Fail "target repository directory does not exist: $targetRepo"
-    }
-    $resInside = Run-GitCommand -WorkingDir $canonTarget -GitArgs @('rev-parse', '--is-inside-work-tree')
-    if ($resInside.ExitCode -ne 0) {
-        Fail "target repository is not a git worktree: $targetRepo"
-    }
-
-    # 2. Preflight into disposable integration checkout
-    $integBase = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "offload-integ-$taskId-" + [System.Guid]::NewGuid().ToString('N'))
-    $integDir = [System.IO.Path]::Combine($integBase, 'checkout')
-    [System.IO.Directory]::CreateDirectory($integBase) | Out-Null
-
-    $resAdd = Run-GitCommand -WorkingDir $canonTarget -GitArgs @('worktree', 'add', '--detach', $integDir, 'HEAD')
-    if ($resAdd.ExitCode -ne 0) {
-        Fail "failed to create disposable integration worktree at $integDir : $($resAdd.Stderr)"
-    }
-
-    $preflightPassed = $false
-    $applyError = ""
-
-    try {
-        $resApply = Run-GitCommand -WorkingDir $integDir -GitArgs @('apply', '--binary', $canonPatch)
-        if ($resApply.ExitCode -eq 0) {
-            $preflightPassed = $true
-        } else {
-            $applyError = $resApply.Stderr
-        }
-    } finally {
-        # Unconditionally cleanup disposable integration worktree
-        Run-GitCommand -WorkingDir $canonTarget -GitArgs @('worktree', 'remove', '--force', $integDir) | Out-Null
-        if (Test-Path -LiteralPath $integBase) {
-            Remove-Item -LiteralPath $integBase -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        Run-GitCommand -WorkingDir $canonTarget -GitArgs @('worktree', 'prune') | Out-Null
-    }
-
-    if (-not $preflightPassed) {
-        Fail "integration preflight failed (patch conflict or unapplicable delta); candidate retained without publishing changes to target checkout: $applyError"
-    }
-
-    # 3. Apply patch to target repository
-    $resTargetApply = Run-GitCommand -WorkingDir $canonTarget -GitArgs @('apply', '--binary', $canonPatch)
-    if ($resTargetApply.ExitCode -ne 0) {
-        Fail "failed to apply patch to target repository: $targetRepo : $($resTargetApply.Stderr)"
-    }
-
-    # 4. Update manifest status
-    $manifestData = [ordered]@{
-        schema_version = $manifest.schema_version
-        marker         = $manifest.marker
-        task_id        = $manifest.task_id
-        source_repo    = $manifest.source_repo
-        workspace_dir  = $manifest.workspace_dir
-        manifest_path  = $manifest.manifest_path
-        baseline       = $manifest.baseline
-        owned_paths    = @($manifest.owned_paths)
-        frozen_paths   = @($manifest.frozen_paths)
-        ledger_path    = if ($manifest.PSObject.Properties['ledger_path']) { $manifest.ledger_path } else { $null }
-        resource_id    = if ($manifest.PSObject.Properties['resource_id']) { $manifest.resource_id } else { $null }
-        status         = "integrated"
-        patch_file     = $manifest.patch_file
-        patch_digest   = $manifest.patch_digest
-        touched_paths  = @($manifest.touched_paths)
-        exported_at    = $manifest.exported_at
-        integrated_at  = Get-IsoTimestamp
-    }
-
-    $manifestJson = $manifestData | ConvertTo-Json -Depth 5
-    [System.IO.File]::WriteAllText($canonManifest, "$manifestJson`n", [System.Text.UTF8Encoding]::new($false))
-
-    if ($ledgerPath -and $resourceId) {
-        & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $ledgerPath --resource-id $resourceId --state completed --allow-dirty true | Out-Null
-        if ($LASTEXITCODE -ne 0) { Fail "failed to mark integrated execution workspace in resource ledger" }
-    }
-
-    [Console]::Out.WriteLine("Successfully integrated candidate $taskId into $canonTarget")
-}
-
-# ---------------------------------------------------------------------------
-# Command: cleanup
-# ---------------------------------------------------------------------------
-function Cmd-Cleanup([string[]]$cmdArgs) {
-    $manifestPath = ""
-    $status = "success"
-
-    $i = 0
-    while ($i -lt $cmdArgs.Count) {
-        $arg = [string]$cmdArgs[$i]
-        if ($arg -eq '--manifest') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--manifest requires a path" }
-            $manifestPath = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--manifest=')) {
-            $manifestPath = $arg.Substring('--manifest='.Length)
-        } elseif ($arg -eq '--status') {
-            $i++
-            if ($i -ge $cmdArgs.Count) { Fail "--status requires a value" }
-            $status = [string]$cmdArgs[$i]
-        } elseif ($arg.StartsWith('--status=')) {
-            $status = $arg.Substring('--status='.Length)
-        } elseif ($arg -eq '-h' -or $arg -eq '--help') {
-            Show-Usage
-            exit 0
-        } else {
-            Fail "unrecognized argument for cleanup: $arg"
-        }
-        $i++
-    }
-
-    if ([string]::IsNullOrWhiteSpace($manifestPath)) { Fail "--manifest is required" }
-    $canonManifest = Canonicalize-Path $manifestPath
-    if (-not (Test-Path -LiteralPath $canonManifest -PathType Leaf)) {
-        Fail "manifest file does not exist: $manifestPath"
-    }
-
-    $manifestContent = [System.IO.File]::ReadAllText($canonManifest, [System.Text.Encoding]::UTF8)
-    $manifest = $manifestContent | ConvertFrom-Json
-
-    if ($manifest.marker -ne $script:ManifestMarker) {
-        Fail "invalid manifest marker in $manifestPath"
-    }
-
-    $workspaceDir = [string]$manifest.workspace_dir
-    $sourceRepo = [string]$manifest.source_repo
-    $taskId = [string]$manifest.task_id
-    $patchFile = if ($manifest.PSObject.Properties['patch_file']) { [string]$manifest.patch_file } else { "" }
-    $ledgerPath = if ($manifest.PSObject.Properties['ledger_path']) { [string]$manifest.ledger_path } else { "" }
-    $resourceId = if ($manifest.PSObject.Properties['resource_id']) { [string]$manifest.resource_id } else { "" }
-
-    if ([string]::IsNullOrWhiteSpace($workspaceDir)) { Fail "manifest does not specify workspace_dir" }
-    if ([string]::IsNullOrWhiteSpace($sourceRepo)) { Fail "manifest does not specify source_repo" }
-
-    if ($status -notin @('success', 'failed', 'retain')) {
-        Fail "invalid cleanup status: $status (must be success, failed, or retain)"
-    }
-
-    if ($status -in @('failed', 'retain')) {
-        if ($ledgerPath -and $resourceId) {
-            & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $ledgerPath --resource-id $resourceId --state retained | Out-Null
-        }
-        [Console]::Out.WriteLine("Candidate $taskId marked $status; retaining workspace at $workspaceDir")
+    if ($retain) {
+        [Console]::Out.WriteLine("Retained execution workspace: $workspacePath")
         exit 0
     }
 
-    if (-not (Test-Path -LiteralPath $workspaceDir -PathType Container)) {
-        if ($ledgerPath -and $resourceId) {
-            & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger cleanup --ledger $ledgerPath --resource-id $resourceId | Out-Null
-        }
-        Run-GitCommand -WorkingDir $sourceRepo -GitArgs @('worktree', 'prune') | Out-Null
-        Remove-Item -LiteralPath $canonManifest -Force -ErrorAction SilentlyContinue
-        if (-not [string]::IsNullOrWhiteSpace($patchFile)) {
-            Remove-Item -LiteralPath $patchFile -Force -ErrorAction SilentlyContinue
-        }
-        [Console]::Out.WriteLine("Cleaned up manifest for absent workspace: $workspaceDir")
-        exit 0
+    $result = Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'remove', '--force', $workspacePath)
+    if ($result.ExitCode -ne 0) {
+        Fail ("could not remove execution worktree: " + $result.Stderr.Trim())
     }
-
-    $canonWorkspace = Canonicalize-Path $workspaceDir
-    $canonSource = Canonicalize-Path $sourceRepo
-
-    if ($ledgerPath -and $resourceId) {
-        & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger update --ledger $ledgerPath --resource-id $resourceId --state cleanup_pending | Out-Null
-        if ($LASTEXITCODE -ne 0) { Fail "failed to mark execution workspace cleanup-pending in resource ledger" }
-        $ledgerResult = & pwsh -NoProfile -NonInteractive -File $script:ResourceLedger cleanup --ledger $ledgerPath --resource-id $resourceId | ConvertFrom-Json
-        if ($ledgerResult.retained -eq $true) {
-            Fail "execution workspace retained for review: $canonWorkspace"
-        }
-        if ($ledgerResult.removed -eq $true) {
-            if (Test-Path -LiteralPath $canonManifest) { Remove-Item -LiteralPath $canonManifest -Force -ErrorAction SilentlyContinue }
-            if ($patchFile -and (Test-Path -LiteralPath $patchFile)) { Remove-Item -LiteralPath $patchFile -Force -ErrorAction SilentlyContinue }
-            [Console]::Out.WriteLine("Cleaned up manifest-owned workspace: $canonWorkspace")
-            exit 0
-        }
+    if (Test-Path -LiteralPath $workspacePath) {
+        Remove-Item -LiteralPath $workspacePath -Recurse -Force
     }
-
-    # Safety bounds
-    $pathRoot = [System.IO.Path]::GetPathRoot($canonWorkspace)
-    $trimmedRoot = Canonicalize-Path $pathRoot
-    if ([string]::Equals($canonWorkspace, $trimmedRoot, [System.StringComparison]::OrdinalIgnoreCase) -or [string]::IsNullOrEmpty($canonWorkspace)) {
-        Fail "refusing to clean filesystem root: $canonWorkspace"
-    }
-
-    $cwdLocation = Canonicalize-Path (Get-Location).Path
-    if ([string]::Equals($canonWorkspace, $cwdLocation, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Fail "refusing to clean process current directory: $canonWorkspace"
-    }
-    $envCwd = Canonicalize-Path [System.Environment]::CurrentDirectory
-    if ([string]::Equals($canonWorkspace, $envCwd, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Fail "refusing to clean process current directory: $canonWorkspace"
-    }
-
-    $homeDirs = @($env:USERPROFILE, $env:HOME) | Where-Object { -not [string]::IsNullOrEmpty($_) }
-    foreach ($h in $homeDirs) {
-        if ([string]::Equals($canonWorkspace, (Canonicalize-Path $h), [System.StringComparison]::OrdinalIgnoreCase)) {
-            Fail "refusing to clean user home directory: $canonWorkspace"
-        }
-    }
-
-    if ([string]::Equals($canonWorkspace, $canonSource, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Fail "refusing to clean source repository checkout: $canonWorkspace"
-    }
-
-    $dotGitDir = [System.IO.Path]::Combine($canonWorkspace, '.git')
-    if ([System.IO.Directory]::Exists($dotGitDir)) {
-        Fail "refusing to clean main git repository (not a detached worktree): $canonWorkspace"
-    }
-
-    $markerFile = [System.IO.Path]::Combine($canonWorkspace, $script:MarkerName)
-    if (-not (Test-Path -LiteralPath $markerFile -PathType Leaf)) {
-        Fail "refusing to clean unmarked directory (missing $($script:MarkerName)): $canonWorkspace"
-    }
-    $markerVal = ([System.IO.File]::ReadAllText($markerFile)).Trim()
-    if ($markerVal -ne $script:MarkerContent) {
-        Fail "refusing to clean directory with invalid marker content: $canonWorkspace"
-    }
-
-    # Verify registered worktree
-    $resList = Run-GitCommand -WorkingDir $canonSource -GitArgs @('worktree', 'list', '--porcelain')
-    $isRegistered = $false
-    $lines = $resList.Stdout.Split("`n")
-    foreach ($line in $lines) {
-        $tline = $line.Trim()
-        if ($tline.StartsWith('worktree ')) {
-            $wtPath = Canonicalize-Path ($tline.Substring('worktree '.Length))
-            if ([string]::Equals($wtPath, $canonWorkspace, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $isRegistered = $true
-                break
-            }
-        }
-    }
-
-    if (-not $isRegistered) {
-        Fail "directory is not registered as a worktree of ${sourceRepo}: $canonWorkspace"
-    }
-
-    # Remove worktree safely
-    Run-GitCommand -WorkingDir $canonSource -GitArgs @('worktree', 'remove', '--force', $canonWorkspace) | Out-Null
-    if (Test-Path -LiteralPath $canonWorkspace) {
-        Remove-Item -LiteralPath $canonWorkspace -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Run-GitCommand -WorkingDir $canonSource -GitArgs @('worktree', 'prune') | Out-Null
-
-    $wsParent = Split-Path -Parent $canonWorkspace
-    $wsParentName = Split-Path -Leaf $wsParent
-    if ($wsParentName.StartsWith('offload-exec-')) {
-        Remove-Item -LiteralPath $wsParent -Recurse -Force -ErrorAction SilentlyContinue
-    }
-
-    Remove-Item -LiteralPath $canonManifest -Force -ErrorAction SilentlyContinue
-    if (-not [string]::IsNullOrWhiteSpace($patchFile)) {
-        Remove-Item -LiteralPath $patchFile -Force -ErrorAction SilentlyContinue
-    }
-
-    [Console]::Out.WriteLine("Cleaned up execution workspace: $canonWorkspace")
+    Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'prune') | Out-Null
+    Remove-EmptyGeneratedParent $workspacePath
+    [Console]::Out.WriteLine("Removed execution workspace: $workspacePath")
 }
 
-# ---------------------------------------------------------------------------
-# CLI Entrypoint
-# ---------------------------------------------------------------------------
 if ($args.Count -eq 0) {
     Show-Usage
     exit 1
 }
 
-$commandVerb = [string]$args[0]
-$restArgs = if ($args.Count -gt 1) { [string[]]$args[1..($args.Count - 1)] } else { @() }
+$command = [string]$args[0]
+$commandArgs = if ($args.Count -gt 1) { [string[]]$args[1..($args.Count - 1)] } else { @() }
 
-if ($env:OFFLOAD_WORKER_CONTEXT -eq '1' -and $commandVerb -in @('create', 'verify-export', 'export', 'integrate', 'cleanup')) {
-    Fail 'worker context cannot create or mutate execution worktrees; only the orchestrator may invoke this lifecycle helper' 126
-}
-
-switch ($commandVerb) {
-    'create' {
-        Cmd-Create $restArgs
-    }
-    { $_ -in @('verify-export', 'export') } {
-        Cmd-VerifyExport $restArgs
-    }
-    'integrate' {
-        Cmd-Integrate $restArgs
-    }
-    'cleanup' {
-        Cmd-Cleanup $restArgs
-    }
-    { $_ -in @('-h', '--help') } {
-        Show-Usage
-        exit 0
-    }
-    default {
-        Fail "unrecognized command: $commandVerb (must be create, verify-export, integrate, or cleanup)"
-    }
+switch ($command) {
+    'create' { Command-Create $commandArgs }
+    'check' { Command-Check $commandArgs }
+    'cleanup' { Command-Cleanup $commandArgs }
+    { $_ -in @('--help', '-h') } { Show-Usage; exit 0 }
+    default { Fail ("unrecognized command: " + $command + " (expected create, check, or cleanup)") }
 }

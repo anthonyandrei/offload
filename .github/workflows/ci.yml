@@ -14,20 +14,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run research modes suite
-        run: bash tests/test_research_modes.sh
+      - name: Run workflow contract suite
+        run: bash tests/test_workflow_static.sh
 
       - name: Run execution scope suite
         run: bash tests/test_execution_scope.sh
 
-      - name: Run publication compatibility suite
-        run: bash tests/test_publication_compatibility.sh
+      - name: Run isolated execution workspace suite
+        run: bash tests/test_execution_workspace.sh
 
-      - name: Run AGY preflight suite
-        run: bash tests/test_agy_preflight.sh
+      - name: Run research workspace suite
+        run: bash tests/test_research_workspace.sh
 
-      - name: Check Codex adapter syntax
-        run: bash -n scripts/run-codex-json.sh
+      - name: Run research acceptance suite
+        run: bash tests/test_research_acceptance.sh
+
+      - name: Run failed launch fallback suite
+        run: bash tests/test_worker_failure.sh
+
+      - name: Run repository consistency suite
+        run: bash tests/test_repository_consistency.sh
+
+      - name: Check retained helper syntax
+        run: bash -n scripts/check-execution-scope.sh scripts/execution-workspace.sh scripts/make-research-workspace.sh scripts/cleanup-research-workspace.sh
 
   macos-bash:
     name: macOS Bash contract suite
@@ -36,20 +45,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run research modes suite
-        run: bash tests/test_research_modes.sh
+      - name: Run workflow contract suite
+        run: bash tests/test_workflow_static.sh
 
       - name: Run execution scope suite
         run: bash tests/test_execution_scope.sh
 
-      - name: Run publication compatibility suite
-        run: bash tests/test_publication_compatibility.sh
+      - name: Run isolated execution workspace suite
+        run: bash tests/test_execution_workspace.sh
 
-      - name: Run AGY preflight suite
-        run: bash tests/test_agy_preflight.sh
+      - name: Run research workspace suite
+        run: bash tests/test_research_workspace.sh
 
-      - name: Check Codex adapter syntax
-        run: bash -n scripts/run-codex-json.sh
+      - name: Run research acceptance suite
+        run: bash tests/test_research_acceptance.sh
+
+      - name: Run failed launch fallback suite
+        run: bash tests/test_worker_failure.sh
+
+      - name: Run repository consistency suite
+        run: bash tests/test_repository_consistency.sh
+
+      - name: Check retained helper syntax
+        run: bash -n scripts/check-execution-scope.sh scripts/execution-workspace.sh scripts/make-research-workspace.sh scripts/cleanup-research-workspace.sh
 
   windows-powershell:
     name: Windows PowerShell contract suite
@@ -61,17 +79,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run research helpers suite
-        run: pwsh -File tests/test_research_helpers.ps1
+      - name: Run workflow contract suite
+        run: pwsh -File tests/test_workflow_static.ps1
 
       - name: Run execution scope suite
         run: pwsh -File tests/test_execution_scope.ps1
 
-      - name: Run publication compatibility suite
-        run: pwsh -File tests/test_publication_compatibility.ps1
+      - name: Run isolated execution workspace suite
+        run: pwsh -File tests/test_execution_workspace.ps1
 
-      - name: Run AGY preflight suite
-        run: pwsh -File tests/test_agy_preflight.ps1
+      - name: Run research workspace suite
+        run: pwsh -File tests/test_research_workspace.ps1
 
-      - name: Run Codex adapter suite
-        run: pwsh -File tests/test_codex_adapter.ps1
+      - name: Run research acceptance suite
+        run: pwsh -File tests/test_research_acceptance.ps1
+
+      - name: Run failed launch fallback suite
+        run: pwsh -File tests/test_worker_failure.ps1
+
+      - name: Run repository consistency suite
+        run: pwsh -File tests/test_repository_consistency.ps1

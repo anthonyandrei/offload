@@ -1,205 +1,231 @@
 #!/usr/bin/env pwsh
-# scripts/make-research-workspace.ps1
-# Creates an isolated research workspace with scoped repository snapshot.
 
 $ErrorActionPreference = 'Stop'
-Set-StrictMode -Version 3.0
+Set-StrictMode -Version Latest
+
+$script:MarkerName = '.offload-research-workspace'
+$script:MarkerContent = 'offload-research-workspace-v2'
+
+function Fail([string]$Message, [int]$Code = 1) {
+    [Console]::Error.WriteLine("Error: $Message")
+    exit $Code
+}
+
+function Canonicalize-Path([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    if ([string]::Equals($full, $root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $root
+    }
+    return $full.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
+}
+
+function Same-Path([string]$Left, [string]$Right) {
+    return [string]::Equals((Canonicalize-Path $Left), (Canonicalize-Path $Right), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Path-IsWithin([string]$Child, [string]$Parent) {
+    $childPath = Canonicalize-Path $Child
+    $parentPath = Canonicalize-Path $Parent
+    if (Same-Path $childPath $parentPath) {
+        return $true
+    }
+    $prefix = $parentPath.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) + [System.IO.Path]::DirectorySeparatorChar
+    return $childPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-NoReparsePointsInPath([string]$Path) {
+    $probe = Canonicalize-Path $Path
+    while (-not [string]::IsNullOrWhiteSpace($probe)) {
+        if (Test-Path -LiteralPath $probe) {
+            $item = Get-Item -LiteralPath $probe -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Fail ("refusing to use a path containing a reparse point: " + $probe)
+            }
+        }
+        $parent = [System.IO.Directory]::GetParent($probe)
+        if ($null -eq $parent) {
+            break
+        }
+        $probe = $parent.FullName
+    }
+}
+
+function Test-SafeWorkspacePath([string]$Workspace, [string]$Source) {
+    $workspacePath = Canonicalize-Path $Workspace
+    Assert-NoReparsePointsInPath $workspacePath
+    $root = Canonicalize-Path ([System.IO.Path]::GetPathRoot($workspacePath))
+    if (Same-Path $workspacePath $root) {
+        Fail ("refusing to use a filesystem root: " + $workspacePath)
+    }
+
+    foreach ($current in @((Get-Location).Path, [Environment]::CurrentDirectory)) {
+        if (-not [string]::IsNullOrWhiteSpace($current) -and (Same-Path $workspacePath $current)) {
+            Fail ("refusing to use the current directory: " + $workspacePath)
+        }
+    }
+    foreach ($homePath in @($env:USERPROFILE, $env:HOME) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
+        if (Same-Path $workspacePath $homePath) {
+            Fail ("refusing to use a user home directory: " + $workspacePath)
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Source) -and (Path-IsWithin $workspacePath $Source)) {
+        Fail ("research workspace must be outside the source directory: " + $workspacePath)
+    }
+}
+
+function Normalize-RelativePath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        Fail 'research path cannot be empty'
+    }
+    if ([System.IO.Path]::IsPathRooted($Path) -or $Path.StartsWith('/') -or $Path.StartsWith('\')) {
+        Fail ("research path must be relative: " + $Path)
+    }
+
+    $parts = $Path.Replace('\', '/').Split('/')
+    $clean = [System.Collections.Generic.List[string]]::new()
+    foreach ($part in $parts) {
+        if ([string]::IsNullOrEmpty($part) -or $part -eq '.') {
+            continue
+        }
+        if ($part -eq '..') {
+            Fail ("research path escapes the source directory: " + $Path)
+        }
+        if ($part -eq '.git') {
+            Fail 'research snapshots cannot include Git metadata'
+        }
+        $clean.Add($part)
+    }
+    if ($clean.Count -eq 0) {
+        Fail ("research path resolves to the source directory: " + $Path)
+    }
+    return ($clean -join '/')
+}
+
+function Assert-NoReparsePoints([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail ("research snapshots cannot copy links or reparse points: " + $Path)
+    }
+    if ($item.PSIsContainer) {
+        foreach ($child in Get-ChildItem -LiteralPath $Path -Force -Recurse) {
+            if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Fail ("research snapshots cannot copy links or reparse points: " + $child.FullName)
+            }
+        }
+    }
+}
 
 function Show-Usage {
-    [Console]::Error.WriteLine("Usage: make-research-workspace.ps1 [--source-repo <path>] [--path <declared-path> ...] [--ledger <path>] [--assignment-id <id>] [--parent-id <id>]")
+    [Console]::Error.WriteLine(@'
+Usage:
+  make-research-workspace.ps1 --source-repo <path> --path <relative-path> [--path <relative-path> ...] [--workspace <path>]
+
+The helper copies only the declared source paths into a marked disposable
+snapshot under the workspace's repo directory.
+'@)
 }
 
-function Fail([string]$message, [int]$exitCode = 1) {
-    [Console]::Error.WriteLine("Error: $message")
-    exit $exitCode
-}
-
-function Cleanup-And-Fail([string]$ws, [string]$message, [int]$exitCode = 1) {
-    [Console]::Error.WriteLine("Error: $message")
-    if ($script:LedgerPath -and $script:ResourceId -and (Test-Path -LiteralPath $script:LedgerPath -PathType Leaf)) {
-        & pwsh -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'resource-ledger.ps1') update --ledger $script:LedgerPath --resource-id $script:ResourceId --state failed --error $message | Out-Null
-    }
-    if ($ws -and (Test-Path -LiteralPath $ws)) {
-        Remove-Item -LiteralPath $ws -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    exit $exitCode
-}
-
-$sourceRepo = ""
-$declaredPaths = [System.Collections.Generic.List[string]]::new()
-$ledgerPath = ""
-$assignmentId = ""
-$parentId = ""
-$script:LedgerPath = ""
-$script:ResourceId = ""
-
+$source = ''
+$workspace = ''
+$paths = [System.Collections.Generic.List[string]]::new()
 $i = 0
 while ($i -lt $args.Count) {
-    $arg = [string]$args[$i]
-    if ($arg -eq '--source-repo') {
-        $i++
-        if ($i -ge $args.Count) {
-            Show-Usage
-            [Console]::Error.WriteLine("Error: --source-repo requires a path")
-            exit 1
+    $argument = [string]$args[$i]
+    switch ($argument) {
+        '--source-repo' {
+            $i++
+            if ($i -ge $args.Count) { Fail '--source-repo requires a path' }
+            $source = [string]$args[$i]
         }
-        $sourceRepo = [string]$args[$i]
-    } elseif ($arg -eq '--path') {
-        $i++
-        if ($i -ge $args.Count) {
-            Show-Usage
-            [Console]::Error.WriteLine("Error: --path requires a path")
-            exit 1
+        '--path' {
+            $i++
+            if ($i -ge $args.Count) { Fail '--path requires a relative path' }
+            $paths.Add([string]$args[$i])
         }
-        $declaredPaths.Add([string]$args[$i])
-    } elseif ($arg -eq '--ledger') {
-        $i++
-        if ($i -ge $args.Count) { Show-Usage; Fail "--ledger requires a path" }
-        $ledgerPath = [string]$args[$i]
-    } elseif ($arg -eq '--assignment-id') {
-        $i++
-        if ($i -ge $args.Count) { Show-Usage; Fail "--assignment-id requires a value" }
-        $assignmentId = [string]$args[$i]
-    } elseif ($arg -eq '--parent-id') {
-        $i++
-        if ($i -ge $args.Count) { Show-Usage; Fail "--parent-id requires a value" }
-        $parentId = [string]$args[$i]
-    } elseif ($arg -eq '-h' -or $arg -eq '--help') {
-        Show-Usage
-        exit 0
-    } else {
-        Show-Usage
-        [Console]::Error.WriteLine("Error: unrecognized argument: $arg")
-        exit 1
+        '--workspace' {
+            $i++
+            if ($i -ge $args.Count) { Fail '--workspace requires a path' }
+            $workspace = [string]$args[$i]
+        }
+        { $_ -like '--source-repo=*' } { $source = $argument.Substring(14) }
+        { $_ -like '--path=*' } { $paths.Add($argument.Substring(7)) }
+        { $_ -like '--workspace=*' } { $workspace = $argument.Substring(12) }
+        { $_ -in @('--help', '-h') } { Show-Usage; exit 0 }
+        default { Fail ("unrecognized argument: " + $argument) }
     }
     $i++
 }
 
-# Create isolated temporary workspace
-$tempDir = [System.IO.Path]::GetTempPath()
-$workspaceName = "offload-research-" + [System.Guid]::NewGuid().ToString("N")
-$workspace = [System.IO.Path]::Combine($tempDir, $workspaceName)
+if ($env:OFFLOAD_WORKER_CONTEXT -eq '1') {
+    Fail 'worker context cannot create a research snapshot' 126
+}
+if ([string]::IsNullOrWhiteSpace($source)) { Fail '--source-repo is required' }
+if ($paths.Count -eq 0) { Fail 'at least one --path is required' }
+
+$sourcePath = Canonicalize-Path $source
+if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+    Fail ("source directory does not exist: " + $sourcePath)
+}
+$gitCheck = & git -C $sourcePath rev-parse --show-toplevel 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Fail ("source directory is not a Git repository: " + $sourcePath)
+}
+$sourcePath = Canonicalize-Path ([string]$gitCheck.Trim())
+
+$relativePaths = [System.Collections.Generic.List[string]]::new()
+foreach ($rawPath in $paths) {
+    $relativePath = Normalize-RelativePath $rawPath
+    $sourceItemPath = Join-Path $sourcePath ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+    if (-not (Test-Path -LiteralPath $sourceItemPath)) {
+        Fail ("declared research path does not exist: " + $rawPath)
+    }
+    Assert-NoReparsePoints $sourceItemPath
+    [void]$relativePaths.Add($relativePath)
+}
+
+if ([string]::IsNullOrWhiteSpace($workspace)) {
+    $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("offload-research-" + [Guid]::NewGuid().ToString('N'))
+} else {
+    $workspace = Canonicalize-Path $workspace
+}
+Test-SafeWorkspacePath $workspace $sourcePath
+if (Test-Path -LiteralPath $workspace) {
+    Fail ("workspace already exists: " + $workspace)
+}
+[System.IO.Directory]::CreateDirectory($workspace) | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $workspace $script:MarkerName), $script:MarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 
 try {
-    [System.IO.Directory]::CreateDirectory($workspace) | Out-Null
-    $markerFile = [System.IO.Path]::Combine($workspace, '.offload-research-workspace')
-    [System.IO.File]::WriteAllText($markerFile, "offload-research-workspace-v1`n", [System.Text.UTF8Encoding]::new($false))
+    $repoRoot = Join-Path $workspace 'repo'
+    foreach ($relativePath in $relativePaths) {
+        $sourceItemPath = Join-Path $sourcePath ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+        $destinationPath = Join-Path $repoRoot ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
+        $destinationParent = Split-Path -Parent $destinationPath
+        [System.IO.Directory]::CreateDirectory($destinationParent) | Out-Null
+        $sourceItem = Get-Item -LiteralPath $sourceItemPath -Force
+       if ($sourceItem.PSIsContainer) {
+           [System.IO.Directory]::CreateDirectory($destinationPath) | Out-Null
+            foreach ($child in Get-ChildItem -LiteralPath $sourceItemPath -Force) {
+                Copy-Item -LiteralPath $child.FullName -Destination $destinationPath -Recurse -Force
+            }
+       } else {
+            Copy-Item -LiteralPath $sourceItemPath -Destination $destinationPath -Force
+        }
+    }
 } catch {
-    Cleanup-And-Fail $workspace "failed to initialize workspace: $($_.Exception.Message)"
+    if (Test-Path -LiteralPath $workspace) {
+        Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($_.Exception.Message.StartsWith('Error:')) {
+        [Console]::Error.WriteLine($_.Exception.Message)
+    } else {
+        [Console]::Error.WriteLine("Error: could not create research snapshot: " + $_.Exception.Message)
+    }
+    exit 1
 }
 
-if ([string]::IsNullOrWhiteSpace($ledgerPath)) { $ledgerPath = [System.IO.Path]::Combine($tempDir, 'offload-resource-ledger.json') }
-if ([string]::IsNullOrWhiteSpace($assignmentId)) { $assignmentId = $workspaceName }
-if ([string]::IsNullOrWhiteSpace($parentId)) { $parentId = if ($sourceRepo) { $sourceRepo } else { 'orchestrator' } }
-$script:LedgerPath = [System.IO.Path]::GetFullPath($ledgerPath)
-$script:ResourceId = "research-workspace:$assignmentId"
-$ledgerScript = Join-Path $PSScriptRoot 'resource-ledger.ps1'
-& pwsh -NoProfile -NonInteractive -File $ledgerScript register --ledger $script:LedgerPath --assignment-id $assignmentId --parent-id $parentId --resource-type research-workspace --path $workspace --owner-marker '.offload-research-workspace=offload-research-workspace-v1' --resource-id $script:ResourceId --state active | Out-Null
-if ($LASTEXITCODE -ne 0) { Cleanup-And-Fail $workspace 'failed to register research workspace in resource ledger' }
-
-if (-not [string]::IsNullOrEmpty($sourceRepo)) {
-    if (-not (Test-Path -LiteralPath $sourceRepo -PathType Container)) {
-        Cleanup-And-Fail $workspace "source repository does not exist: $sourceRepo"
-    }
-
-    $canonicalRepo = [System.IO.Path]::GetFullPath($sourceRepo).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-
-    foreach ($declaredPath in $declaredPaths) {
-        # Check rooted or absolute
-        if ([System.IO.Path]::IsPathRooted($declaredPath) -or $declaredPath.StartsWith('/') -or $declaredPath.StartsWith('\')) {
-            Cleanup-And-Fail $workspace "declared path must be relative to the source repository: $declaredPath"
-        }
-
-        # Check traversal
-        $normPath = $declaredPath -replace '\\', '/'
-        $parts = $normPath.Split('/')
-        foreach ($part in $parts) {
-            if ($part -eq '..') {
-                Cleanup-And-Fail $workspace "declared path escapes the source repository: $declaredPath"
-            }
-        }
-
-        # Normalize relative path
-        $relPath = $normPath
-        while ($relPath.StartsWith('./')) {
-            $relPath = $relPath.Substring(2)
-        }
-
-        $fullSrc = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($canonicalRepo, $relPath))
-
-        # Ensure it does not escape source repo
-        $repoPrefix = $canonicalRepo + [System.IO.Path]::DirectorySeparatorChar
-        if (-not ($fullSrc -eq $canonicalRepo -or $fullSrc.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
-            Cleanup-And-Fail $workspace "declared path resolves outside source repository: $declaredPath"
-        }
-
-        # Check if declared path exists
-        $srcExists = (Test-Path -LiteralPath $fullSrc)
-        if (-not $srcExists) {
-            [Console]::Error.WriteLine("Warning: declared path does not exist: $fullSrc")
-            continue
-        }
-
-        # Check for symlink/junction/reparse point in path hierarchy
-        $accumPath = $canonicalRepo
-        foreach ($part in $parts) {
-            if ([string]::IsNullOrEmpty($part) -or $part -eq '.') { continue }
-            $accumPath = [System.IO.Path]::Combine($accumPath, $part)
-            if (Test-Path -LiteralPath $accumPath) {
-                $attr = [System.IO.File]::GetAttributes($accumPath)
-                if ($attr.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
-                    Cleanup-And-Fail $workspace "declared path contains a symlink or junction: $declaredPath"
-                }
-            }
-        }
-
-        # If it's a directory, check all descendants for reparse point
-        if (Test-Path -LiteralPath $fullSrc -PathType Container) {
-            try {
-                $dirInfo = [System.IO.DirectoryInfo]::new($fullSrc)
-                $descendants = $dirInfo.EnumerateFileSystemInfos("*", [System.IO.SearchOption]::AllDirectories)
-                foreach ($item in $descendants) {
-                    if ($item.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) {
-                        Cleanup-And-Fail $workspace "declared path contains a symlink or junction: $declaredPath"
-                    }
-                }
-            } catch {
-                Cleanup-And-Fail $workspace "failed scanning directory attributes: $($_.Exception.Message)"
-            }
-        }
-
-        # Copy to destination: $workspace/repo/$relPath
-        $dest = [System.IO.Path]::Combine($workspace, 'repo', ($relPath -replace '/', [System.IO.Path]::DirectorySeparatorChar))
-
-        try {
-            if (Test-Path -LiteralPath $fullSrc -PathType Container) {
-                if (-not [System.IO.Directory]::Exists($dest)) {
-                    [System.IO.Directory]::CreateDirectory($dest) | Out-Null
-                }
-                foreach ($dir in [System.IO.Directory]::GetDirectories($fullSrc, "*", [System.IO.SearchOption]::AllDirectories)) {
-                    $sub = $dir.Substring($fullSrc.Length).TrimStart('/\')
-                    $destSub = [System.IO.Path]::Combine($dest, $sub)
-                    if (-not [System.IO.Directory]::Exists($destSub)) {
-                        [System.IO.Directory]::CreateDirectory($destSub) | Out-Null
-                    }
-                }
-                foreach ($file in [System.IO.Directory]::GetFiles($fullSrc, "*", [System.IO.SearchOption]::AllDirectories)) {
-                    $sub = $file.Substring($fullSrc.Length).TrimStart('/\')
-                    $destFile = [System.IO.Path]::Combine($dest, $sub)
-                    [System.IO.File]::Copy($file, $destFile, $true)
-                }
-            } else {
-                $destParent = [System.IO.Path]::GetDirectoryName($dest)
-                if (-not [string]::IsNullOrEmpty($destParent) -and -not [System.IO.Directory]::Exists($destParent)) {
-                    [System.IO.Directory]::CreateDirectory($destParent) | Out-Null
-                }
-                [System.IO.File]::Copy($fullSrc, $dest, $true)
-            }
-        } catch {
-            Cleanup-And-Fail $workspace "failed to copy declared path: $declaredPath ($($_.Exception.Message))"
-        }
-    }
-}
-
-Write-Output $workspace
-exit 0
+[Console]::Out.WriteLine($workspace)

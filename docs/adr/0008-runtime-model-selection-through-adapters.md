@@ -1,6 +1,6 @@
 # ADR 0008: Select models at runtime through worker adapters
 
-- Status: accepted
+- Status: superseded by [ADR 0012](0012-keep-offload-outcome-based-and-runtime-dynamic.md)
 - Date: 2026-09-04
 - Supersedes: [ADR 0005](0005-bound-model-routing-to-gemini-and-explicit-rules.md)
 

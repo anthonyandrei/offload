@@ -1,6 +1,6 @@
 # ADR 0010: Fail closed when AGY preflight cannot prove eligibility
 
-- Status: accepted
+- Status: superseded by [ADR 0011](0011-launch-first-admission-and-orchestrator-fallback.md)
 - Date: 2026-09-06
 - Extends: ADR 0008 and ADR 0009
 - Issue: [#42](https://github.com/anthonyandrei/offload/issues/42)
