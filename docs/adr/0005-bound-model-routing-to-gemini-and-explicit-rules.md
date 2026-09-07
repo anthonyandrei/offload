@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR 0012
 ---
 
 # Bound model routing to Gemini and explicit rules

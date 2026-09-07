@@ -1,267 +1,61 @@
 ---
 name: offload
-description: Use when the user wants execution or research handed to another CLI agent instead of running it here. Triggers include "offload this", "run this on a worker", or after answering yes to the offload offer. Also offer unprompted when implementation splits into three or more independently gated tasks in a clean git repository, or when a read-only audit or online research fans out across multiple angles or files. Dispatches parallel headless workers through an adapter, gates their output, and reports what was proven versus claimed.
+description: Use when the user explicitly asks to offload work to another worker, names a worker provider, or accepts an offload offer. Offer proactively for large, independently gated implementation or research work when the host instructions permit it.
 ---
 
 # offload
 
-If you are a dispatched worker, stop here. Return worker results to your orchestrator. Workers do not dispatch nested workers. Any agent that can read instructions and run shell commands can orchestrate, including Claude Code, Codex CLI, and similar agents. Assignments prohibit nested worker dispatch, and the workflow enforces that boundary with an orchestrator-owned dispatcher and worker-context guards.
+Offload is an optional delegation workflow. The calling agent remains the orchestrator: it owns the assignment, reviews the result, finishes unfinished work, and gives the final report.
 
-## What this skill does
+Use this skill when the user explicitly asks to offload or run work on another worker, names a worker provider, or accepts a proactive offer. Keep narrow factual answers, explanations, single-source lookups, and focused code reviews local. A worker must not dispatch another worker.
 
-`offload` delegates execution and research tasks to headless workers through a configured adapter. A reference adapter is included, but the workflow contract does not depend on a vendor or exact model ID. You remain the orchestrator. You decompose tasks, set acceptance criteria or bounded questions, and verify evidence and gates. Workers handle exploration, test authoring, code implementation, diff review, and research evidence collection.
+## Before delegation
 
-You never accept worker claims at face value. You verify output through mechanical checks, test execution, diff inspections, or secondary reviews.
+- Describe one bounded assignment. Include the objective, in-scope paths or questions, acceptance criteria, deliverables, and the boundary of the worker's authority.
+- If the user named a provider, honor that choice. Otherwise inspect the worker tools currently available to the host. When the choice matters, use each tool's current native help or model-listing facility rather than relying on copied instructions.
+- Choose the worker, model, and reasoning effort from the task, required capabilities, current availability, cost, relevant benchmark references, and judgment. The benchmark note is advisory evidence, not a routing table.
+- Unknown entitlement, billing, quota, capacity, or benchmark information never blocks an attempted launch. The real launch is the definitive usability check.
+- Start one worker per bounded assignment by default. Split work only when the pieces are genuinely independent and each has its own acceptance criteria.
 
-## Publication boundary
+Do not encode provider command syntax, copied help text, exact model identifiers, a universal catalog, or a role matrix in this workflow. Those details belong to the worker tool and the current runtime.
 
-Published source skills use the vendor-neutral contract in
-[`docs/contracts/publication-compatibility.md`](docs/contracts/publication-compatibility.md).
-`grill-with-docs` owns its interview and documentation workflow and can run
-without offload. Offload is an explicit optional delegation layer. Adapters own
-vendor command syntax, model catalogs, capability probes, and output parsing.
+## Implementation work
 
-Published consumers use capabilities, internal model preferences, separate
-reasoning effort, and normalized results. They do not depend on vendor names,
-family labels, or exact model IDs. The compatibility checker rejects
-unavailable adapters and vendor-specific references. Capability support does not
-enforce security. The orchestrator still owns isolation, execution scope
-checks, cleanup, and acceptance gates.
+- Place implementation work in an appropriately isolated disposable worktree or project copy. The worker must not write directly to the orchestrator's live checkout before review.
+- Give the worker its assignment and acceptance criteria. Do not give it authority to widen its paths, change the assignment, dispatch nested workers, or alter orchestrator state.
+- After launch, inspect the actual files and diff. Check scope, intent, and the relevant project checks. A success message from the worker is evidence to inspect, not an acceptance decision.
+- Accept or integrate changes only when the criteria and relevant verification pass. Reject out-of-scope or unverified changes, then finish the assignment yourself or report the remaining blocker.
+- Remove the disposable workspace after accepted integration. If partial output must be preserved, name it in the report and clean it when the orchestrator has recovered what it needs.
 
-## Preconditions and helper selection
+## Research work
 
-Select the helper family matching your current host shell:
+- Define bounded questions and evidence responsibilities. Use separate disposable snapshots when repository context or concurrent work makes isolation useful.
+- Prefer credible primary sources and claim-level support. Reject broken citations or claims not supported by their cited sources. Mark inference, uncertainty, disagreement, missing evidence, and stale evidence plainly.
+- A worker's research synthesis is not accepted solely because it contains citations or reports success. The orchestrator reviews the sources and the claims they support.
+- Do not require a universal result envelope or provider-specific research record. Keep only the evidence needed to support the final answer.
 
-- **POSIX shells (Bash 3.2+)**: Use `.sh` scripts in `scripts/`. Requires Git, `jq`, Python 3, and the configured adapter's own executable.
-- **PowerShell (PowerShell 7+)**: Use `.ps1` scripts in `scripts/`. Native Windows orchestrators require PowerShell 7 (`pwsh`), Git, and the configured adapter. Windows workflows do not require Bash, WSL, Git Bash, Python, or `jq`.
+## Launch failure and fallback
 
-Check these requirements before dispatching workers:
+- A failed launch or failed run returns the unfinished assignment and any usable partial output to the orchestrator automatically.
+- Do not hide a failed launch with an Offload-managed second automatic attempt or a silent provider switch. The orchestrator may make a new, explicit decision after reporting what failed.
+- The orchestrator completes the remaining work when it can do so safely. Otherwise it reports a resumable partial result, the failure, and the precise blocker.
 
-1. **Offer before dispatch.** When reaching this skill unprompted, offer the choice to the user first following the proactive offer contract. Describe the planned dispatch and ask for confirmation. Ask once per session. A negative response settles the decision for the rest of the session.
-2. **Local factual lookups.** Keep a single factual lookup local with the orchestrator; do not offer or route it to offload.
-3. **Adapter availability.** Verify the configured adapter is invokable and can return a protocol-2 catalog. The adapter must prove authenticated access, current entitlement, billing route, and usage capacity for the selected account and model. An installed CLI or static catalog entry is not enough.
-4. **Git working tree.** Writing workflows (`modes/execution.md`) require a clean git repository (`git rev-parse --is-inside-work-tree` and empty `git status --porcelain`). Research workflows (`modes/repo-research.md`, `modes/web-research.md`) operate in isolated disposable workspaces.
-5. **Preflight model availability check.** Before dispatching the first worker in a run:
-   - Read repository-root `model-policy.json` (resolved relative to helper scripts, never the caller's working directory).
-   - Ask the configured adapters for live catalogs, then filter by verified access, entitlement, billing route, fresh usage, required capabilities, and supported effort.
-   - Estimate assignment, verification, and one retry unit, including active shared reservations. If no eligible worker exists or availability cannot be established, block dispatch and return the affected work to the caller. Do not silently switch providers or fall back to an unverified default.
-   - An explicit provider is checked first and is never replaced silently. Unknown usage is allowed only for an explicit provider after the other checks pass, and the selection records the uncertainty.
-   - Avoid repeating catalog discovery for every worker in the same run unless the adapter reports that availability changed.
-6. **Policy installation, updates, and revert.**
-   - `model-policy.json` is located at repository root alongside helper scripts. Installation must copy the entire skill directory (including `model-policy.json`).
-   - The policy enforces `schema_version: 2`, a non-empty `policy_revision`, `max_effort: "high"`, `max_retries_per_worker: 1`, `quota_action: "handoff"`, and exactly seven role mappings: `scout`, `gate-author`, `implementer`, `reviewer`, `researcher`, `synthesizer`, and `auditor`.
-   - Each role declares an internal preference (`fast`, `balanced`, or `deep`), an independent effort (`low`, `medium`, or `high`), and required capabilities. It does not publish vendor names or exact model IDs.
-   - To update policy: edit `model-policy.json` in the skill root and update `policy_revision`. To revert: restore the prior revision. Launchers validate the entire policy on every invocation. Missing or invalid policy fails closed before launching workers.
-   - There is no policy-level model escalation target. Quality retries use the pinned selection when one exists. A missing pin requires an explicit fallback or handoff record.
+## Proactive offer
 
-## Routing
+Host instructions may offer Offload without an explicit request only when all of the following are true:
 
-Once invoked, select a mode using this order:
+- implementation has at least three independently gated assignments and the Git repository is clean, or
+- a read-only audit or research task has at least two distinct evidence tracks.
 
-1. **Explicit mode override.** Honor an explicit user request specifying a mode (`execution`, `repo-research`, or `web-research`).
-2. **Research-backed mutation.** When a requested mutation depends on external research, route to `modes/web-research.md` first for evidence gathering and audit, then route to `modes/execution.md` for implementation.
-3. **Direct mutation.** Route a direct file or code change with no external research prerequisite to `modes/execution.md`.
-4. **Local read-only question.** Route a read-only question answerable from declared local files to `modes/repo-research.md`.
-5. **External read-only question.** Route a read-only question requiring current or external evidence to `modes/web-research.md`.
-6. **Mixed local and external question.** Route a question needing both local and external evidence to `modes/web-research.md` with a declared repository snapshot.
+Ask for consent before dispatching. A refusal settles the offer for the rest of the session. Do not offer it for narrow work. The host keeps the final result and remains responsible for verification.
 
-## Modes
+## Final report
 
-Load the matching mode document for the selected route and shell-specific commands:
+State the bounded assignment, worker choice when relevant, actual result, files or sources inspected, verification performed, remaining uncertainty, and any failure or fallback. Say whether disposable workspaces were removed. Do not claim a worker ran until its launch succeeded.
 
-- [`modes/execution.md`](modes/execution.md): Dispatches scouts, gate-authors, implementers, and diff reviewers for code and file modifications.
-- [`modes/repo-research.md`](modes/repo-research.md): Dispatches bounded local code investigations and audits in isolated workspaces with direct evidence verification.
-- [`modes/web-research.md`](modes/web-research.md): Dispatches multi-angle online researchers, synthesis, and citation auditing in isolated workspaces.
+## Repository references
 
-## Shared model routing and launcher contract
-
-Offload routes all workers through the repository-root `model-policy.json` and the adapter contract in [`docs/adapter-contract.md`](docs/adapter-contract.md). The launcher selects an eligible current catalog entry. The adapter translates that exact selection into vendor-specific arguments. Callers must never pass `--model` or `--effort` after `--`.
-
-### Launcher invocation
-
-Execution workers must use `scripts/dispatch-worker.sh` or `scripts/dispatch-worker.ps1`, which calls this lower-level launcher after admission. The direct forms below are for the isolated research stages described in the research mode documents.
-
-- **POSIX shells**: `"$OFFLOAD_ROOT/scripts/run-agy-json.sh" --role <role> [--route <default|quality-retry>] --adapter <adapter> --provider <provider> --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> -- <adapter args...>`
-- **PowerShell**: `& "$OffloadRoot/scripts/run-agy-json.ps1" --role <role> [--route <default|quality-retry>] --adapter <adapter> --provider <provider> --output <out> --error <err> --lifecycle <lifecycle.json> --assignment-id <worker_id> --attempt <1|2> --mode <mode> --verification-baseline <baseline> --resource-ledger <ledger.json> '--' <adapter args...>`
-
-In PowerShell command expressions, always quote the delimiter (`'--'`).
-
-### Roles and preferences
-
-| Role | Preference | Effort | Primary mode |
-|---|---|---|---|
-| `scout` | fast | low | Execution |
-| `gate-author` | balanced | high | Execution |
-| `implementer` | balanced | high | Execution |
-| `reviewer` | deep | high | Execution |
-| `researcher` | balanced | high | Repo research / Web research |
-| `synthesizer` | deep | high | Web research |
-| `auditor` | deep | high | Web research |
-
-### Routes
-
-- `--route default` (default): Selects the best eligible catalog entry for the role's preference, effort, and capabilities.
-- `--route quality-retry`: Requires a pin from the prior attempt and reuses that exact adapter, vendor, model ID, and effort. If the pin is missing or unavailable, the launcher records an explicit fallback or handoff condition and does not switch silently.
-
-## Worker adapter contract
-
-The vendor-neutral boundary for one bounded worker assignment is defined in
-[`docs/worker-adapter-contract.md`](docs/worker-adapter-contract.md). The
-orchestrator owns assignment constraints, verification, publication, and
-cleanup decisions. An adapter owns vendor command syntax, output parsing,
-capability discovery, and model catalog handling, then returns the normalized
-result described by that contract. Validate adapter results with
-`scripts/check-worker-adapter.ps1` or `scripts/check-worker-adapter.sh` before
-running the existing execution scope check and gates.
-
-## Shared recovery, retry accounting, and failure handling
-
-### Worker lifecycle contract
-
-Both native launchers write the same lifecycle artifact for every dispatched worker. The state machine is:
-
-`created -> started -> running -> completed|failed|canceled|quota-handoff -> retained -> cleaned`
-
-`started` includes the child process ID. The launcher waits for the child to exit, records its exit code, and only then records `retained` and `cleaned`. Timeout uses `failed` with `failure_class: "timeout"`; cancellation uses `canceled`; explicit quota diagnostics use `quota-handoff`. Output, error, lifecycle, and resource-ledger paths remain available as diagnosis evidence for every non-success terminal state.
-
-The launcher accepts `--timeout-seconds` and a testable `--cancel-file`. A timeout or cancellation terminates the worker, waits for exit, flushes both streams, and finalizes the lifecycle artifact before returning. A zero-exit worker advances to `completed` only when its output is a successful JSON envelope with `structured_output`; malformed output is recorded as `failed` with `failure_class: "malformed_output"`.
-
-`--resource-ledger` records the stable assignment, pinned model, effort, verification baseline, and attempt artifacts. Attempt 2 must use the same assignment and pinned model/effort as attempt 1. Attempt 3 is rejected before dispatch. Resume and retry consumers must read the ledger and select an explicit accepted attempt; they must not infer the latest artifact by wildcard.
-
-### Stable worker IDs and retry ceiling
-
-- A worker represents one logical assignment, not a single process run.
-- Assign each logical assignment a stable `worker_id` across attempts.
-- **Attempt 1** is the initial dispatch.
-- **Attempt 2** is its only permitted retry. Maximum two attempts total per assignment.
-- Changing process IDs, models, conversations, or prompt instructions does not reset the retry count.
-
-### Attempt artifact paths
-
-- Give every worker process its own output and error paths. Include the stable `worker_id` and attempt number in both paths, such as `<worker_id>.attempt1.json` and `<worker_id>.attempt1.err`.
-- Build the paths before each launcher call. Attempt 2 must use new paths, never the attempt 1 paths, so the launcher cannot truncate earlier evidence.
-- Add every process artifact path to that attempt's `evidence_paths` entry in `routing-outcomes.json`.
-- After verification, record one explicit `accepted_attempt` for each logical worker beside that worker's `routing` container, and point its selected output field at that attempt's artifact. Downstream stages read only the accepted attempt paths. They must not use a wildcard or a filename that can refer to the latest retry by accident.
-
-### Failure classification and recovery rules
-
-1. **Verified success**: Output passes mechanical gates and verification checks. Accept result; no retry.
-2. **Quality failure**: The worker completed with a parsable response (exit code 0), but the output fails verification (e.g. machine gate failure normalized to `quality` via `execute-gate.sh` or `execute-gate.ps1`, execution scope violation, reviewer quote mismatch, unsupported synthesis claim, or audit rejection).
-   - If retry budget remains and mode permits correction: retry once (attempt 2) with concrete verification feedback. Use `--route quality-retry` with the recorded pin; if the pin is unavailable, record an explicit fallback or handoff instead of selecting a replacement silently.
-   - If attempt 2 fails or the mode requires immediate fallback: stop retrying and follow that mode's halt, partial-result, or orchestrator fallback path.
-3. **Unrunnable failure**: Gate execution exited 126 or 127, normalized to `failure_class: "unrunnable"` with `verification: not_performed`. Preserve the command, exit code, and diagnostic evidence in `routing-outcomes.json`. Exits 126 and 127 are not quality retries; do not schedule or spend a model retry.
-4. **Operational failure**: Process crash (nonzero exit code), timeout (20 minutes with no output), unparsable JSON, or tool failure.
-   - Follow mode's recovery rule with at most one same-model retry (`--route default`) where permitted. Never escalate models for operational failures.
-5. **Unknown failure**: Record uncertainty and follow the operational-failure path. Do not assume a quality failure or quota issue.
-6. **Quota exhaustion**: Explicit quota exhaustion reported by the adapter or worker diagnostics. Trigger immediate quota handoff.
-
-### Immediate quota handoff
-
-When explicit quota exhaustion is detected:
-- Stop dispatching new workers immediately.
-- Return unfinished work to the calling orchestrator without waiting for running siblings.
-- Do not retry automatically, wait for reset, switch models, or activate paid credits.
-- Preserve completed artifacts.
-- Report status of all assignments: verified, unverified, failed, pending (never dispatched), and still running (with process/job references and output paths). The calling orchestrator takes ownership.
-
-## Run outcome records (`routing-outcomes.json`)
-
-The orchestrator maintains `routing-outcomes.json` in each run's scratch workspace. It records process and verification history per attempt:
-
-- Top-level fields: `schema_version` (integer 1) and `attempts` (array).
-- Each attempt object records:
-  - `worker_id`: Stable assignment identifier.
-  - `role`: One of the 7 policy roles.
-  - `mode`: `execution`, `repo-research`, or `web-research`.
-  - `attempt`: Integer 1 or 2.
-  - `policy_revision`: Policy revision string.
-  - `route`: `"default"` or `"quality-retry"`.
-  - `adapter`: Adapter name and `adapter_revision`.
-  - `vendor`: Adapter-reported vendor family.
-  - `model_id`: Exact selected model ID. `model` may repeat it for compatibility with older records.
-  - `family_hint`: Descriptive adapter metadata. It never grants permissions or promises cross-vendor quality.
-  - `preference`: Internal policy preference (`fast`, `balanced`, or `deep`).
-  - `effort`: Selected reasoning effort (`low`, `medium`, or `high`), kept separate from model identity.
-  - `catalog_revision`: Adapter catalog or probe revision used for selection.
-  - `selection_reason`: Deterministic filtering and ranking reason.
-  - `preflight_reasons`: Exact sanitized diagnostics from the selection record. Copy them unchanged into every attempt.
-  - `usage_uncertain`: Boolean indicating that explicit provider or pin policy admitted unknown usage.
-  - `reason`: Initial dispatch or observed failure and recovery decision authorizing attempt 2.
-  - `started_at`: ISO 8601 UTC timestamp.
-  - `ended_at`: ISO 8601 UTC timestamp (null while running).
-  - `duration_seconds`: Observed elapsed time (null while running).
-  - `exit_code`: Worker process exit code (null while running).
-  - `state`: `"running"`, `"completed"`, `"failed"`, or `"interrupted"`.
-  - `failure_class`: `"none"`, `"quality"`, `"timeout"`, `"tool_error"`, `"malformed_output"`, `"quota"`, `"unrunnable"`, or `"unknown"`.
-  - `verification`: `"pending"`, `"passed"`, `"failed"`, or `"not_performed"`.
-  - `evidence_paths`: Array of output, error, gate, review, or audit artifact paths.
-  - `usage`: Source-attributed reported usage object with explicit units, or null when unavailable.
-
-Pending assignments that never dispatched are listed in the final handoff report, not as attempt records. In web research runs, routing history for a worker may optionally be attached as a `routing` container (`{schema_version: 1, attempts: [...]}`) in each worker entry within `provenance.json`. See [`modes/web-research.md`](modes/web-research.md#provenance-and-cleanup) and canonical fixture [`tests/fixtures/routing-worker.json`](tests/fixtures/routing-worker.json) for the complete worker record example.
-
-## Shared report contract
-
-Use this standard report format across all modes:
-
-```markdown
-## Offload run — N workers, <duration>
-
-| worker | gate / lane | provenance | result | files / findings |
-|--------|-------------|------------|--------|------------------|
-| parser | pytest tests/test_parser.py | agy+red+read | ✓ 12/12 | as assigned (scout) |
-| render | pytest tests/test_render.py | orchestrator (fallback) | ✓ 8/8 | ⚠ +1 stray |
-| docs   | diff                        | agy+grep      | △ judged | as assigned (scout) |
-| auth-audit | audit (isolated)        | orchestrator+checked (high) + orchestrator+sampled (med/low) | complete | 3 findings (2 verified, 1 unverified) |
-
-### render — ownership violation
-owned: src/render.py
-also edited: src/util.py
-<diff excerpt>
-
-### docs — reviewer verdict
-pass: 3/3 criteria, all quotes matched verbatim. No escalation.
-
-### auth-audit — findings & verification sample
-- [HIGH] [orchestrator+checked] Route `/api/v1/reset` lacks session check (src/auth/routes.py:L45-L52) — confirmed.
-- [MED]  [orchestrator+sampled] Token expiry default is 30d (src/config.py:L18) — confirmed by sample.
-- [LOW]  [agy+unverified] "Legacy endpoints may be affected" — unverified (no location cited).
-Sample recorded: 1/1 high checked, 1/2 med/low sampled.
-
-### Claimed by worker, not verified
-- "also improved error messages"
-- "Legacy endpoints may be affected"
-```
-
-### Provenance values
-
-- `orchestrator`: Step performed directly by the orchestrator.
-- `agy+red+read`: Gate written by gate-author, validated by red check and read.
-- `agy+grep`: Recorded artifact reviewed by worker, verbatim quote and digest verified by the orchestrator.
-- `agy→orchestrator`: Reviewer escalated or hedged, diff inspected by orchestrator.
-- `orchestrator+checked`: Evidence location or command directly verified in repository.
-- `orchestrator+sampled`: Sample of medium- or low-priority citations verified.
-- `agy+unverified`: Finding or claim lacking verifiable evidence.
-- `orchestrator (fallback)`: Worker failed or timed out, completed by orchestrator.
-
-### Result classifications
-
-- **Proven**: Verified by an automated command exit code or mechanical check.
-- **Judged**: Evaluated against written criteria by a diff reviewer or orchestrator.
-- **Verified**: Confirmed by direct orchestrator check (`orchestrator+checked`) or sampling (`orchestrator+sampled`) against repository files.
-- **Audited**: Verified by an independent citation auditor worker against live sources.
-- **Claimed**: Asserted by worker output without independent verification; labeled explicitly as unverified.
-
-## Limits and worker safety
-
-- **`--mode plan` is a version-sensitive behavioral hint, not a write barrier.** The accepted compatibility probe on `agy 1.1.25` found the tested direct write outside the permitted artifact area blocked, but exposed tools and command paths remained available. This observation is not a guarantee and plan mode is not the sole containment or safety mechanism.
-- **`--add-dir` grants directory access without confining writes.** A worker can edit files outside its assignment if pointed at the live tree.
-- **Filesystem isolation.** Research modes run in disposable workspaces with scoped file snapshots. Live repository files are never exposed directly to research workers.
-- **Execution safety.** Execution mode requires a clean git baseline, mechanical execution scope checks (`check-execution-scope.sh` or `check-execution-scope.ps1`), frozen path diffs, and test gates.
-- **Orchestrator-owned dispatch.** Use `scripts/dispatch-worker.sh` or `scripts/dispatch-worker.ps1` for every execution assignment. It is the only workflow interface that creates an assignment record, execution worktree, and worker process. The dispatcher sets `OFFLOAD_WORKER_CONTEXT=1`; worker-context calls to the dispatcher, `run-agy-json`, or `execution-workspace` fail with exit 126.
-- **Structured follow-up requests.** Workers may return a structured request for more work. The orchestrator records and evaluates that data explicitly. No worker response can automatically create a child assignment.
-- **Assignment ledger.** Every admitted assignment records its ID, parent ID, depth, child IDs, role, owned and frozen paths, lifecycle state and timestamps, output/error paths, worktree manifest, and timeout/resource budget. The root fixes maximum depth, child width, per-assignment timeout, and total resource units. Admission rejects a request before worktree or process creation when it would exceed any limit.
-- **Vendor boundary versus workflow verification.** `agy --mode plan` and any vendor sandbox are defense in depth. The workflow does not treat prompts or sandbox hints as its sole control; it verifies caller context, ledger admission, worktree lifecycle, scope, frozen paths, and gates.
-- **Bounded scope requirement.** Open-ended research without a bounded question, declared scope, and evidence expectations is out of scope.
-- **Worker timeout.** Every dispatched worker has a bounded dispatcher timeout and forwards the normal AGY output deadline (`--print-timeout 20m`).
-
-Result acceptance is separate from process completion: a parsed envelope, substantive structured output, evidence/scope/gate checks, and (where applicable) review or citation checks must all pass before an explicit `accepted_attempt` is recorded. Exit code 0 alone does not establish verified success. Gate exits 126 or 127 are `unrunnable`, retain their command and diagnostic evidence, use `verification: not_performed`, and do not consume a model retry.
+- [CONTEXT.md](CONTEXT.md) defines the project's terms and durable contract.
+- [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md) records why the workflow stays outcome-based and runtime-dynamic.
+- [Benchmark references](docs/research/2026-09-07-benchmark-references-for-runtime-routing.md) records optional decision evidence.
+- The generic [execution scope checker](scripts/check-execution-scope.sh) and [execution workspace helper](scripts/execution-workspace.sh) enforce the retained implementation safety outcomes.

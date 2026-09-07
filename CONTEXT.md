@@ -1,80 +1,42 @@
 # Offload context
 
-Offload delegates bounded work through compatible worker adapters while the calling agent remains responsible for scope, verification, and reporting. The repository includes a reference adapter, but selection is provider-neutral.
+Offload is a lean, agent-agnostic workflow for delegating bounded implementation and research work. The orchestrator chooses how to execute the workflow from the tools and evidence available at runtime. See [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md).
 
-## Publication boundary
+## Core contract
 
-Published source skills remain vendor-neutral. `grill-with-docs` owns its
-interview and documentation workflow and can run without offload. Offload is
-an optional delegation layer, while adapters own vendor launch syntax, model
-catalogs, capability probes, and output parsing. Consumers depend on stable
-capabilities, model preferences, separate reasoning effort, and normalized
-results, not vendor names or exact model IDs.
+- Treat workers as fallible collaborators, not authoritative executors or hostile processes.
+- Discover available worker CLIs, models, and current command syntax at runtime when useful.
+- Choose whether and where to delegate using the task, current benchmark references, cost, and orchestrator judgment.
+- Do not make delegation depend on quota, entitlement, billing, benchmark, or other speculative pre-checks. A real launch settles whether a chosen worker is usable.
+- Review every worker-authored implementation and run relevant verification before acceptance.
+- Ground research in credible sources, audit citations, and distinguish sourced findings from inference, uncertainty, disagreement, and stale evidence.
+- Return unfinished work to the orchestrator automatically when a worker fails.
+- Isolate delegated work appropriately and remove temporary workspaces after accepted integration.
 
-Capability support does not enforce security. The orchestrator remains
-responsible for isolation, ownership, cleanup, execution scope checks, and
-acceptance gates. The source repository is authoritative; generated and
-installed copies are release outputs. See
-`docs/contracts/publication-compatibility.md` and ADR 0007.
+These are procedural assurances, not a promise that worker output is infallible.
 
 ## Language
 
 **Orchestrator**:
-The calling agent that plans assignments, dispatches workers, and verifies their results.
-_Avoid_: Controller, parent agent
+The calling agent that decides whether and how to delegate, reviews worker output, and owns the final result.
 
 **Worker**:
-A process launched through a compatible adapter and assigned one bounded role. Its process environment is marked as worker context, so the dispatch, launcher, and execution-workspace lifecycle interfaces reject nested assignment, process, or worktree creation.
-_Avoid_: Subagent, child agent
+A fallible collaborator assigned one bounded piece of work. Its output is never accepted solely because the worker reports success.
 
-**Compatible worker adapter**:
-An adapter that implements the worker contract and has verified support for the assignment's required capabilities. An installed agent CLI alone does not establish compatibility.
-_Avoid_: Any installed CLI, universal worker support
+**Runtime discovery**:
+The orchestrator's inspection of currently available CLIs, models, capabilities, and command help. Offload does not store vendor command syntax or normalize provider catalogs.
 
-**Worker selection**:
-The orchestrator's choice of a configured, compatible worker provider before making an offload offer. Selection checks authenticated access, current entitlement, and usage limits against the assignment, verification, and one retry, accounting for workers sharing quota. Rank eligible workers by task capability and expected quality, with remaining capacity as the tie-breaker. Unknown usage excludes automatic selection but permits explicit user selection with disclosed uncertainty and otherwise established access. An explicit user provider choice takes precedence, subject to eligibility checks. The offer names the selected worker and explains the choice. The protocol-2 selector and capacity ledger implement this behavior. See ADR 0009.
-_Avoid_: Always offer one provider, implicit provider switch
+**Decision reference**:
+Current external evidence, such as a relevant benchmark, that grounds routing judgment without determining it. Missing, stale, or mismatched benchmark data never blocks delegation.
 
-**Dispatch ledger**:
-The orchestrator-owned `offload-dispatch-state-v1` record for admitted assignments. It records parentage, depth, child IDs, budgets, owned and frozen paths, lifecycle state, artifacts, and rejected nested-dispatch events.
-_Avoid_: Worker tree, implicit scheduler state
+**Implementation assurance**:
+The requirement that the orchestrator reviews worker-authored changes and performs verification relevant to the assignment before accepting them.
 
-**Helper family**:
-A shell-native set of scripts that implements the same offload operations and command contracts for one supported shell.
-_Avoid_: Port, rewrite
+**Research assurance**:
+The requirement that the orchestrator checks source quality, claim support, and citations before accepting a research synthesis.
 
-**Platform parity**:
-Equivalent workflow behavior, safety checks, artifacts, and failure signals across supported helper families.
-_Avoid_: Identical implementation
+**Orchestrator fallback**:
+The automatic return of unfinished work to the orchestrator after worker failure. Offload does not retry through a routing engine or silently switch providers.
 
-**Native workflow**:
-An offload workflow that runs in a supported host shell without WSL, Git Bash, or another compatibility layer.
-_Avoid_: Cross-platform workflow
-
-**Launcher delimiter**:
-The literal `--` argument that separates launcher options from worker arguments. PowerShell callers write `'--'` so the command parser passes the delimiter to the helper. Arguments after it retain their order and individual values.
-_Avoid_: Optional separator, inferred worker boundary
-
-**Execution scope check**:
-The mechanical comparison of repository changes against a worker's owned and frozen paths.
-_Avoid_: Diff check, ownership check
-
-**Proactive offer contract**:
-The host-independent rule that defines when an orchestrator offers offloading, how often it asks, and how it handles the answer.
-_Avoid_: Hook, Claude hook
-
-**Model routing**:
-The policy and adapter process that selects an available model and independent reasoning effort for an offload worker assignment. It uses a role preference, task capabilities, live availability, static security rules, and quota state.
-_Avoid_: Mode routing, unrestricted model selection
-
-**Role default**:
-The internal preference, reasoning effort, and required capabilities assigned to an offload role. The adapter resolves those requirements to a current model.
-_Avoid_: Best model, permanent model assignment
-
-**Model policy**:
-The shared source of permitted model assignments and routing constraints, read and validated by both shell-native helper families for every offload mode.
-_Avoid_: Per-mode model list, launcher default
-
-**Model promotion**:
-A change to an offload role default justified by repeated local runs on representative tasks with the same inputs and verification gates. ADR 0005 records a one-time exception for the initial 3.8 Flash baseline migration, which requires an integration smoke test.
-_Avoid_: Version upgrade, benchmark ranking
+**Workspace isolation**:
+Separation appropriate to the risk of the delegated work, such as a disposable worktree for implementation or a disposable project copy for research. The workflow specifies the outcome, not shell-specific commands.

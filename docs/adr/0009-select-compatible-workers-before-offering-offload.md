@@ -1,6 +1,6 @@
 # ADR 0009: Select compatible workers before offering offload
 
-- Status: accepted, implementation pending
+- Status: superseded by [ADR 0011](0011-launch-first-admission-and-orchestrator-fallback.md)
 - Date: 2026-09-05
 - Extends: ADR 0003 and ADR 0008
 
