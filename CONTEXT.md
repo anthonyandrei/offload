@@ -40,3 +40,9 @@ The automatic return of unfinished work to the orchestrator after worker failure
 
 **Workspace isolation**:
 Separation appropriate to the risk of the delegated work, such as a disposable worktree for implementation or a disposable project copy for research. The workflow specifies the outcome, not shell-specific commands.
+
+**Delegation lane**:
+One independent, bounded assignment with its own acceptance criteria. File count does not determine whether work has multiple delegation lanes.
+
+**Offer gate**:
+The point immediately before an orchestrator would start a native multi-agent workflow for two or more delegation lanes. Offload uses implicit skill invocation to ask for consent at this point instead of relying on global host instructions.
