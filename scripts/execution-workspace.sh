@@ -281,9 +281,11 @@ case "$command" in
     for path in "${owned[@]}"; do
       scope_args+=(--owned "$path")
     done
-    for path in "${frozen[@]}"; do
-      scope_args+=(--frozen "$path")
-    done
+    if ((${#frozen[@]} > 0)); then
+      for path in "${frozen[@]}"; do
+        scope_args+=(--frozen "$path")
+      done
+    fi
     if (
       cd -P -- "$workspace"
       bash "$scope_checker" "${scope_args[@]}"
