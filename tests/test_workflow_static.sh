@@ -35,11 +35,25 @@ for path in "$root/SKILL.md" "$root/README.md" "$root/AGENTS.md" "$root/CONTEXT.
   assert_file "$path"
 done
 
-for phrase in bounded runtime 'native help' 'acceptance criteria' launch unfinished orchestrator disposable citation inference nested; do
+for phrase in bounded runtime 'native help' 'acceptance criteria' launch unfinished orchestrator disposable citation inference nested 'offer gate' 'two or more' consent independent; do
   assert_contains "$skill" "$phrase" "SKILL.md states $phrase"
 done
-for phrase in runtime benchmark launch unfinished isolated citation inference provider; do
+for phrase in runtime benchmark launch unfinished isolated citation inference provider 'offer gate' 'two or more' consent; do
   assert_contains "$readme" "$phrase" "README.md states $phrase"
+done
+
+expected_description="description: Delegate bounded implementation or research work to another worker provider. Use when the user explicitly asks to offload, names a worker provider, accepts an offload offer, or when the orchestrator is about to start a native multi-agent workflow for two or more independent, bounded assignments."
+assert_contains "$skill" "$expected_description" "SKILL.md uses exact settled frontmatter description"
+
+frontmatter=$(sed -n '2,/^---$/p' "$root/SKILL.md")
+[[ "$frontmatter" != *"Do NOT"* ]] || { printf 'FAIL: SKILL.md frontmatter contains Do NOT\n' >&2; exit 1; }
+pass "SKILL.md frontmatter omits negative Do NOT sentence"
+
+for stale_phrase in "host instructions" "host-approved" "three independently gated" "at least three"; do
+  [[ "$skill" != *"$stale_phrase"* ]] || { printf 'FAIL: SKILL.md contains stale phrase: %s\n' "$stale_phrase" >&2; exit 1; }
+  pass "SKILL.md omits stale offer phrase: $stale_phrase"
+  [[ "$readme" != *"$stale_phrase"* ]] || { printf 'FAIL: README.md contains stale phrase: %s\n' "$stale_phrase" >&2; exit 1; }
+  pass "README.md omits stale offer phrase: $stale_phrase"
 done
 for content in "$skill" "$readme"; do
   [[ "$content" != *'```'* ]] || { printf 'FAIL: active contract has copied command blocks\n' >&2; exit 1; }

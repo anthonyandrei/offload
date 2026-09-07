@@ -1,15 +1,15 @@
 # Offload
 
-Offload is a small, agent-agnostic delegation contract. It lets an orchestrator hand a bounded implementation or research assignment to a worker while keeping responsibility for review, unfinished work, and the final report.
+Offload is a small, agent-agnostic delegation contract. It lets an orchestrator hand a bounded implementation or research assignment to another worker provider, with implicit pre-delegation offers, runtime model and effort selection, and orchestrator verification.
 
 ## Contract
 
 The orchestrator:
 
-- uses Offload only for an explicit request, a named worker provider, an accepted offer, or a host-approved proactive offer;
+- uses Offload when the user explicitly asks to offload, names a worker provider, accepts an offload offer, or implicitly at the offer gate before native multi-agent delegation for two or more independent bounded assignments;
 - describes the assignment, paths or questions, acceptance criteria, deliverables, and authority boundary;
 - discovers current worker tools, model choices, and reasoning options at runtime;
-- makes a task-based choice using capabilities, availability, cost, judgment, and advisory benchmark evidence;
+- chooses the worker, model, and reasoning effort dynamically using task demands, capabilities, availability, cost, judgment, and advisory benchmark references when cost or quality materially matters;
 - treats a real launch as the usability check. Unknown account, entitlement, billing, quota, capacity, or benchmark information does not block launch;
 - keeps the worker bounded and forbids nested delegation;
 - reviews the actual result and relevant verification before accepting it;
@@ -25,14 +25,14 @@ Implementation runs in a disposable isolated worktree or project copy. The orche
 
 Research starts with bounded questions and evidence responsibilities. The worker uses credible sources, and the orchestrator checks that every material citation resolves and supports its claim. Inference, uncertainty, disagreement, missing evidence, and stale evidence stay visible in the final synthesis.
 
-## Proactive offers
+## Proactive offer gate
 
-The host may offer Offload for implementation with at least three independently gated assignments when the repository is clean, or for a read-only audit or research task with at least two independent evidence tracks. The user must consent before dispatch. A refusal settles the offer for the session.
+Offload activates implicitly immediately before an orchestrator begins a native multi-agent workflow for two or more independent, bounded assignments (delegation lanes) in implementation or research. The orchestrator asks once, before native worker dispatch, whether the user prefers another available worker provider. File count alone does not trigger an offer. Explicit requests, named providers, and accepted offers bypass the two-lane threshold. The user must consent before dispatch; a refusal settles the offer for the session and allows native multi-agent delegation to proceed.
 
 ## Repository layout
 
 - [SKILL.md](SKILL.md) is the active delegation contract.
-- [CONTEXT.md](CONTEXT.md) and [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md) define the current vocabulary and decisions.
+- [CONTEXT.md](CONTEXT.md), [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md), and [ADR 0013](docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md) define the current vocabulary and decisions.
 - [Benchmark references](docs/research/2026-09-07-benchmark-references-for-runtime-routing.md) are advisory evidence for runtime choices.
 - [Execution scope](scripts/check-execution-scope.sh) and [execution workspace](scripts/execution-workspace.sh) helpers retain generic implementation safety.
 - [Research workspace](scripts/make-research-workspace.sh) and [research cleanup](scripts/cleanup-research-workspace.sh) helpers retain bounded disposable snapshots.
