@@ -6,7 +6,7 @@ Offload outsources one bounded implementation or research assignment to an exter
 
 The orchestrator:
 
-- activates Offload when the user asks to outsource, names an external vendor or model, or approves outsourcing after a bounded assignment is defined;
+- activates Offload when the user asks to outsource, names an external vendor or model, or approves outsourcing after the orchestrator defines a bounded assignment. The orchestrator can offer that external alternative when the task would otherwise be delegated to a native subagent;
 - uses external vendors only. Native subagents and native multi-agent calls stay outside this contract;
 - defines the objective, scope, acceptance criteria, deliverables, and authority boundary before launch;
 - discovers vendors, models, tools, and current capabilities at runtime without copying catalogs, commands, model matrices, adapters, or routing ledgers into the skill;

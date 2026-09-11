@@ -40,7 +40,7 @@ for phrase in runtime benchmark launch unfinished isolated citation inference 'e
   assert_contains "$readme" "$phrase" "README.md states $phrase"
 done
 
-expected_description="description: Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, or approves outsourcing after the orchestrator defines a bounded assignment."
+expected_description="description: Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, approves outsourcing after the orchestrator defines a bounded assignment, or a bounded task would otherwise be delegated to a native subagent and needs an external alternative."
 assert_contains "$skill" "$expected_description" "SKILL.md uses exact settled frontmatter description"
 
 frontmatter=$(sed -n '2,/^---$/p' "$root/SKILL.md")

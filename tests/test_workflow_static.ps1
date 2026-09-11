@@ -50,7 +50,7 @@ foreach ($phrase in @('runtime', 'benchmark', 'launch', 'unfinished', 'isolated'
     Assert-Contains $readme $phrase "README.md states $phrase"
 }
 
-$expectedDescription = 'Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, or approves outsourcing after the orchestrator defines a bounded assignment.'
+$expectedDescription = 'Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, approves outsourcing after the orchestrator defines a bounded assignment, or a bounded task would otherwise be delegated to a native subagent and needs an external alternative.'
 Assert-Contains $skill "description: $expectedDescription" 'SKILL.md uses exact settled frontmatter description'
 
 $frontmatterMatch = [regex]::Match($skill, '(?s)^---\r?\n(.*?)\r?\n---')
