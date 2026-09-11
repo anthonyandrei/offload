@@ -33,21 +33,21 @@ for path in "$root/SKILL.md" "$root/README.md"; do
   assert_file "$path"
 done
 
-for phrase in bounded runtime 'native help' 'acceptance criteria' launch unfinished orchestrator disposable citation inference nested 'offer gate' 'two or more' consent independent; do
+for phrase in bounded runtime 'acceptance criteria' launch unfinished orchestrator disposable citation inference nested 'external vendor' lightest escalation benchmark usage; do
   assert_contains "$skill" "$phrase" "SKILL.md states $phrase"
 done
-for phrase in runtime benchmark launch unfinished isolated citation inference provider 'offer gate' 'two or more' consent; do
+for phrase in runtime benchmark launch unfinished isolated citation inference 'external vendor' lightest escalation usage; do
   assert_contains "$readme" "$phrase" "README.md states $phrase"
 done
 
-expected_description="description: Delegate bounded implementation or research work to another worker provider. Use when the user explicitly asks to offload, names a worker provider, accepts an offload offer, or when the orchestrator is about to start a native multi-agent workflow for two or more independent, bounded assignments."
+expected_description="description: Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, or approves outsourcing after the orchestrator defines a bounded assignment."
 assert_contains "$skill" "$expected_description" "SKILL.md uses exact settled frontmatter description"
 
 frontmatter=$(sed -n '2,/^---$/p' "$root/SKILL.md")
 [[ "$frontmatter" != *"Do NOT"* ]] || { printf 'FAIL: SKILL.md frontmatter contains Do NOT\n' >&2; exit 1; }
 pass "SKILL.md frontmatter omits negative Do NOT sentence"
 
-for stale_phrase in "host instructions" "host-approved" "three independently gated" "at least three"; do
+for stale_phrase in "native multi-agent workflow" "two or more" "delegation lanes" "proactive offer gate" "two-lane" "host instructions" "host-approved" "three independently gated" "at least three" "silent provider switch" "second automatic attempt"; do
   [[ "$skill" != *"$stale_phrase"* ]] || { printf 'FAIL: SKILL.md contains stale phrase: %s\n' "$stale_phrase" >&2; exit 1; }
   pass "SKILL.md omits stale offer phrase: $stale_phrase"
   [[ "$readme" != *"$stale_phrase"* ]] || { printf 'FAIL: README.md contains stale phrase: %s\n' "$stale_phrase" >&2; exit 1; }

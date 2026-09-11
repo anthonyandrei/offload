@@ -1,27 +1,36 @@
 ---
 name: offload
-description: Delegate bounded implementation or research work to another worker provider. Use when the user explicitly asks to offload, names a worker provider, accepts an offload offer, or when the orchestrator is about to start a native multi-agent workflow for two or more independent, bounded assignments.
+description: Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, or approves outsourcing after the orchestrator defines a bounded assignment.
 ---
 
 # offload
 
-Offload is an optional delegation workflow. The calling agent remains the orchestrator: it owns the assignment, reviews the result, finishes unfinished work, and gives the final report.
+Offload is an external-vendor outsourcing workflow. The calling agent remains the orchestrator: it defines the assignment, routes it, reviews the result, handles bounded recovery, and gives the final report.
 
-Keep narrow factual answers, explanations, single-source lookups, and focused code reviews local. Explicit requests, named worker providers, and accepted offers bypass the two-lane proactive threshold. A worker must not dispatch another worker.
+Native subagent or native multi-agent calling is outside the Offload contract. Keep narrow factual answers, explanations, single-source lookups, and focused code reviews local. An external worker must not dispatch nested workers.
 
-## Before delegation
+## Activation and consent
 
-- Describe one bounded assignment. Include the objective, in-scope paths or questions, acceptance criteria, deliverables, and the boundary of the worker's authority.
-- If the user named a provider, honor that choice. Otherwise inspect the worker tools currently available to the host. When the choice matters, use each tool's current native help or model-listing facility rather than relying on copied instructions.
-- When worker, model, or reasoning-effort choices materially affect expected cost or quality, consult a relevant benchmark source below. Prefer current evidence for the exact model and effort under consideration. If exact evidence is absent, select from task demands, required capabilities, current availability, cost, and judgment. Missing or stale benchmark evidence never blocks an attempted launch.
-- Unknown entitlement, billing, quota, capacity, or benchmark information never blocks an attempted launch. The real launch is the definitive usability check.
-- Start one worker per bounded assignment by default. Split work only when the pieces are genuinely independent and each has its own acceptance criteria.
+Activate Offload only when:
 
-Do not encode provider command syntax, copied help text, exact model identifiers, a universal catalog, or a role matrix in this workflow. Those details belong to the worker tool and the current runtime.
+- the user explicitly asks to outsource or offload, or names an external vendor or model; OR
+- the orchestrator defines one bounded implementation or research assignment with an objective, scope, acceptance criteria, deliverables, and authority boundary, asks whether the user wants to outsource it, and the user approves.
+
+Generic outsourcing approval allows routing across available external vendors and one benchmark- and usage-guided cross-vendor quality escalation. A named vendor constrains routing and escalation to that vendor. A named exact model remains pinned without replacement or escalation. A decline leaves the assignment with the orchestrator.
+
+## Before outsourcing
+
+- Describe one bounded assignment with its objective, in-scope paths or questions, acceptance criteria, deliverables, and authority boundary.
+- Discover plausible external vendors, models, and tools dynamically through the current runtime. Do not publish or depend on a copied vendor catalog, command syntax, exact model matrix, adapter interface, role matrix, normalized quota protocol, routing algorithm, capacity ledger, performance ledger, or persistent benchmark cache.
+- Consult the relevant advisory benchmark reference below for every model and reasoning-effort choice. Prefer current evidence for the exact candidate and effort. Keep missing, mismatched, or stale evidence visible without blocking launch, and never combine incomparable benchmarks into a synthetic score.
+- Inspect native vendor usage or capacity information when available. Confirmed exhaustion removes a candidate from automatic selection. Unknown, unsupported, stale, or unclear usage does not block launch; a real launch is the definitive admission check.
+- Select the lightest model and lowest reasoning effort that appear capable of the assignment's requirements and acceptance criteria. Use benchmark fit, capacity, cost, speed, and orchestrator judgment as tie-breakers.
+- Honor explicitly named vendors and exact models.
+- Start one external worker per bounded assignment by default. Split work only when the pieces are genuinely independent and each has its own acceptance criteria.
 
 ## Implementation work
 
-- Place implementation work in an appropriately isolated disposable worktree or project copy. The worker must not write directly to the orchestrator's live checkout before review.
+- Place implementation work in an appropriately isolated disposable worktree or project copy. The external worker must not write directly to the orchestrator's live checkout before review.
 - Give the worker its assignment and acceptance criteria. Do not give it authority to widen its paths, change the assignment, dispatch nested workers, or alter orchestrator state.
 - After launch, inspect the actual files and diff. Check scope, intent, and the relevant project checks. A success message from the worker is evidence to inspect, not an acceptance decision.
 - Accept or integrate changes only when the criteria and relevant verification pass. Reject out-of-scope or unverified changes, then finish the assignment yourself or report the remaining blocker.
@@ -34,26 +43,16 @@ Do not encode provider command syntax, copied help text, exact model identifiers
 - A worker's research synthesis is not accepted solely because it contains citations or reports success. The orchestrator reviews the sources and the claims they support.
 - Do not require a universal result envelope or provider-specific research record. Keep only the evidence needed to support the final answer.
 
-## Launch failure and fallback
+## Failure handling and bounded escalation
 
-- A failed launch or failed run returns the unfinished assignment and any usable partial output to the orchestrator automatically.
-- Do not hide a failed launch with an Offload-managed second automatic attempt or a silent provider switch. The orchestrator may make a new, explicit decision after reporting what failed.
-- The orchestrator completes the remaining work when it can do so safely. Otherwise it reports a resumable partial result, the failure, and the precise blocker.
-
-## Proactive offer gate
-
-When an orchestrator is about to start a native multi-agent workflow for two or more independent, bounded assignments (delegation lanes) in implementation or research:
-
-- Offer Offload once immediately before native worker delegation begins, asking whether the user prefers another available worker provider.
-- Keep the offer vendor-neutral unless the user already named a provider.
-- Require user consent before dispatching Offload workers. If the user declines, proceed with the native multi-agent workflow and do not offer again during that session.
-- File count alone does not trigger an offer; a single coherent change spanning multiple files remains local unless it contains two or more independent assignments.
-- Explicit requests, named worker providers, and accepted offers bypass this threshold.
-- Implicit activation at this gate is model-selected guidance rather than a guaranteed host lifecycle hook.
+- Launch failure, timeout, quota failure, or tool failure returns the unfinished assignment and any usable partial output to the orchestrator without automatic provider switching.
+- A quality-gate failure, such as unmet acceptance criteria, an unverified diff, or unsupported research citations, permits exactly one automatic escalation after refreshing benchmark and usage checks.
+- The escalation chooses the smallest credible improvement among available capable candidates. Generic approval permits cross-vendor escalation. A named vendor constrains escalation to that vendor. A named exact model remains pinned.
+- If the escalation fails its quality gate, stop automatic attempts. No third automatic attempt is permitted. Finish the assignment locally when safe; otherwise report the usable partial result, failure, and precise blocker.
 
 ## Final report
 
-State the bounded assignment, worker choice when relevant, actual result, files or sources inspected, verification performed, remaining uncertainty, and any failure or fallback. Say whether disposable workspaces were removed. Do not claim a worker ran until its launch succeeded.
+State the bounded assignment, selected vendor and model, benchmark evidence consulted, native usage observations, actual result, files or sources inspected, verification performed, escalation details, remaining uncertainty, and any failure or blocker. Say whether disposable workspaces were removed. Do not claim a worker ran until its launch succeeded.
 
 ## Benchmark references
 

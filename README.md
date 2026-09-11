@@ -1,33 +1,30 @@
 # Offload
 
-Offload is a small, agent-agnostic delegation contract. It lets an orchestrator hand a bounded implementation or research assignment to another worker provider, with implicit pre-delegation offers, runtime model and effort selection, and orchestrator verification.
+Offload outsources one bounded implementation or research assignment to an external vendor. The orchestrator defines the work, routes it from what is available at runtime, reviews the result, and owns the finish.
 
 ## Contract
 
 The orchestrator:
 
-- uses Offload when the user explicitly asks to offload, names a worker provider, accepts an offload offer, or implicitly at the offer gate before native multi-agent delegation for two or more independent bounded assignments;
-- describes the assignment, paths or questions, acceptance criteria, deliverables, and authority boundary;
-- discovers current worker tools, model choices, and reasoning options at runtime;
-- chooses the worker, model, and reasoning effort dynamically using task demands, capabilities, availability, cost, judgment, and advisory benchmark references when cost or quality materially matters;
-- treats a real launch as the usability check. Unknown account, entitlement, billing, quota, capacity, or benchmark information does not block launch;
-- keeps the worker bounded and forbids nested delegation;
-- reviews the actual result and relevant verification before accepting it;
-- finishes unfinished work itself or reports the precise blocker.
-
-The workflow does not carry provider commands, copied help, exact model identifiers, a universal catalog, a role matrix, or a hidden selection protocol. A named provider choice is honored. A failed launch returns the unfinished assignment to the orchestrator without a silent switch or automatic second attempt.
+- activates Offload when the user asks to outsource, names an external vendor or model, or approves outsourcing after a bounded assignment is defined;
+- uses external vendors only. Native subagents and native multi-agent calls stay outside this contract;
+- defines the objective, scope, acceptance criteria, deliverables, and authority boundary before launch;
+- discovers vendors, models, tools, and current capabilities at runtime without copying catalogs, commands, model matrices, adapters, or routing ledgers into the skill;
+- consults relevant advisory benchmarks and native usage signals. Exact current evidence is preferred, but missing or stale evidence does not block a real launch;
+- selects the lightest model and lowest reasoning effort that appear capable of meeting the acceptance criteria;
+- honors named vendors and exact models;
+- returns launch, timeout, quota, and tool failures without automatic provider switching; the assignment remains unfinished;
+- allows exactly one quality-gate escalation after refreshed benchmark and usage checks. Generic approval can switch vendors; named vendor and exact model constraints still apply;
+- stops after a failed escalation, finishing locally when safe or reporting the usable partial result and precise blocker;
+- reviews implementation diffs and verification, audits research citations, cleans disposable workspaces, and reports what happened.
 
 ## Implementation assignments
 
-Implementation runs in a disposable isolated worktree or project copy. The orchestrator checks the final diff for scope and intent, runs the relevant project checks, and accepts or integrates the result only when the acceptance criteria pass. The disposable workspace is removed after recovery or acceptance.
+Implementation runs in a disposable isolated worktree or project copy. The orchestrator checks the final diff for scope and intent, runs the relevant project checks, and accepts or integrates the result only when the acceptance criteria pass.
 
 ## Research assignments
 
 Research starts with bounded questions and evidence responsibilities. The worker uses credible sources, and the orchestrator checks that every material citation resolves and supports its claim. Inference, uncertainty, disagreement, missing evidence, and stale evidence stay visible in the final synthesis.
-
-## Proactive offer gate
-
-Offload activates implicitly immediately before an orchestrator begins a native multi-agent workflow for two or more independent, bounded assignments (delegation lanes) in implementation or research. The orchestrator asks once, before native worker dispatch, whether the user prefers another available worker provider. File count alone does not trigger an offer. Explicit requests, named providers, and accepted offers bypass the two-lane threshold. The user must consent before dispatch; a refusal settles the offer for the session and allows native multi-agent delegation to proceed.
 
 ## Repository layout
 
@@ -42,4 +39,4 @@ Install the repository directory as a skill. `SKILL.md` is the contract and `scr
 
 ## Verification
 
-The contract suite runs natively in Bash and PowerShell. It checks the active documentation, helper behavior, disposable workspace safety, bounded research snapshots, failed-launch fallback, and references to removed workflow machinery.
+The contract suite runs in Bash and PowerShell. It checks the active documentation, helper behavior, disposable workspace safety, bounded research snapshots, failed-launch fallback, and references to removed workflow machinery.
