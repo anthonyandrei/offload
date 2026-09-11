@@ -27,11 +27,9 @@ assert_absent() {
 
 skill=$(<"$root/SKILL.md")
 readme=$(<"$root/README.md")
-agents=$(<"$root/AGENTS.md")
-context=$(<"$root/CONTEXT.md")
 ci=$(<"$root/.github/workflows/ci.yml")
 
-for path in "$root/SKILL.md" "$root/README.md" "$root/AGENTS.md" "$root/CONTEXT.md"; do
+for path in "$root/SKILL.md" "$root/README.md"; do
   assert_file "$path"
 done
 
@@ -60,19 +58,24 @@ for content in "$skill" "$readme"; do
   pass 'active contract has no copied command blocks'
 done
 
-for content_name in skill readme agents context; do
+for content_name in skill readme; do
   content=${!content_name}
   for term in model-policy.json 'modes/' 'modes\\' dispatch-worker run-agy-json run-claude-json run-codex-json select-compatible-worker capacity-ledger resource-ledger routing-outcomes worker-adapter publication-compatibility schema_version; do
     [[ "$content" != *"$term"* ]] || { printf 'FAIL: %s contains %s\n' "$content_name" "$term" >&2; exit 1; }
     pass "$content_name omits $term"
   done
-  if [[ "$content_name" != context ]]; then
-    if printf '%s\n' "$content" | grep -Eiq '(^|[^[:alpha:]])(agy|claude|codex|gemini)([^[:alpha:]]|$)'; then
-      printf 'FAIL: %s contains a copied vendor name\n' "$content_name" >&2
-      exit 1
-    fi
-    pass "$content_name omits copied vendor names"
+  if printf '%s\n' "$content" | grep -Eiq '(^|[^[:alpha:]])(agy|claude|codex|gemini)([^[:alpha:]]|$)'; then
+    printf 'FAIL: %s contains a copied vendor name\n' "$content_name" >&2
+    exit 1
   fi
+  pass "$content_name omits copied vendor names"
+done
+
+for source in \
+  'https://deepswe.datacurve.ai/' 'https://livebench.ai/' \
+  'https://drb.futuresearch.ai/' 'https://deepresearch-bench.github.io/' \
+  'https://artificialanalysis.ai/models'; do
+  assert_contains "$skill" "$source" "SKILL.md retains benchmark source: $source"
 done
 
 for relative in \

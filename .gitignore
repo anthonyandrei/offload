@@ -1,4 +1,9 @@
 
-# AI assistant artifacts
+# Local AI assistant artifacts
 state.md
 session-log.md
+/AGENTS.md
+/CLAUDE.md
+/CONTEXT.md
+/docs/adr/
+/docs/research/

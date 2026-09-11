@@ -31,16 +31,14 @@ Offload activates implicitly immediately before an orchestrator begins a native 
 
 ## Repository layout
 
-- [SKILL.md](SKILL.md) is the active delegation contract.
-- [CONTEXT.md](CONTEXT.md), [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md), and [ADR 0013](docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md) define the current vocabulary and decisions.
-- [Benchmark references](docs/research/2026-09-07-benchmark-references-for-runtime-routing.md) are advisory evidence for runtime choices.
+- [SKILL.md](SKILL.md) is the active delegation contract and contains the advisory benchmark sources.
 - [Execution scope](scripts/check-execution-scope.sh) and [execution workspace](scripts/execution-workspace.sh) helpers retain generic implementation safety.
 - [Research workspace](scripts/make-research-workspace.sh) and [research cleanup](scripts/cleanup-research-workspace.sh) helpers retain bounded disposable snapshots.
 - The tests under [tests](tests) check the contract, isolation, scope, cleanup, failure fallback, and repository consistency.
 
 ## Installation
 
-Install the complete repository directory as a skill. The repository is the source of truth for the contract and its generic safety helpers.
+Install the repository directory as a skill. `SKILL.md` is the contract and `scripts/` contains its generic safety helpers.
 
 ## Verification
 

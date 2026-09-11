@@ -30,9 +30,7 @@ function Assert-NotContains([string]$Content, [string]$Needle, [string]$Name) {
 $root = Split-Path -Parent $PSScriptRoot
 $activePaths = @(
     (Join-Path $root 'SKILL.md'),
-    (Join-Path $root 'README.md'),
-    (Join-Path $root 'AGENTS.md'),
-    (Join-Path $root 'CONTEXT.md')
+    (Join-Path $root 'README.md')
 )
 $activeContent = @{}
 foreach ($path in $activePaths) {
@@ -78,9 +76,15 @@ foreach ($pair in $activeContent.GetEnumerator()) {
     foreach ($term in $removedConcepts) {
         Assert-NotContains $pair.Value $term "$([IO.Path]::GetFileName($pair.Key)) omits $term"
     }
-    if ([IO.Path]::GetFileName($pair.Key) -ne 'CONTEXT.md') {
-        Assert-False ($pair.Value -match '(?i)(^|[^a-z])(agy|claude|codex|gemini)([^a-z]|$)') "$([IO.Path]::GetFileName($pair.Key)) omits copied vendor names"
-    }
+    Assert-False ($pair.Value -match '(?i)(^|[^a-z])(agy|claude|codex|gemini)([^a-z]|$)') "$([IO.Path]::GetFileName($pair.Key)) omits copied vendor names"
+}
+
+foreach ($source in @(
+    'https://deepswe.datacurve.ai/', 'https://livebench.ai/',
+    'https://drb.futuresearch.ai/', 'https://deepresearch-bench.github.io/',
+    'https://artificialanalysis.ai/models'
+)) {
+    Assert-Contains $skill $source "SKILL.md retains benchmark source: $source"
 }
 
 $removedPaths = @(

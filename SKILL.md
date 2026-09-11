@@ -13,7 +13,7 @@ Keep narrow factual answers, explanations, single-source lookups, and focused co
 
 - Describe one bounded assignment. Include the objective, in-scope paths or questions, acceptance criteria, deliverables, and the boundary of the worker's authority.
 - If the user named a provider, honor that choice. Otherwise inspect the worker tools currently available to the host. When the choice matters, use each tool's current native help or model-listing facility rather than relying on copied instructions.
-- When worker, model, or reasoning-effort choices materially affect expected cost or quality, consult the benchmark reference note. Prefer current evidence for the exact model and effort under consideration. If exact evidence is absent, select from task demands, required capabilities, current availability, cost, and judgment. Missing or stale benchmark evidence never blocks an attempted launch.
+- When worker, model, or reasoning-effort choices materially affect expected cost or quality, consult a relevant benchmark source below. Prefer current evidence for the exact model and effort under consideration. If exact evidence is absent, select from task demands, required capabilities, current availability, cost, and judgment. Missing or stale benchmark evidence never blocks an attempted launch.
 - Unknown entitlement, billing, quota, capacity, or benchmark information never blocks an attempted launch. The real launch is the definitive usability check.
 - Start one worker per bounded assignment by default. Split work only when the pieces are genuinely independent and each has its own acceptance criteria.
 
@@ -55,10 +55,18 @@ When an orchestrator is about to start a native multi-agent workflow for two or 
 
 State the bounded assignment, worker choice when relevant, actual result, files or sources inspected, verification performed, remaining uncertainty, and any failure or fallback. Say whether disposable workspaces were removed. Do not claim a worker ran until its launch succeeded.
 
-## Repository references
+## Benchmark references
 
-- [CONTEXT.md](CONTEXT.md) defines the project's terms and durable contract.
-- [ADR 0012](docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md) records why the workflow stays outcome-based and runtime-dynamic.
-- [ADR 0013](docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md) records why the proactive offer uses implicit invocation before native multi-agent delegation.
-- [Benchmark references](docs/research/2026-09-07-benchmark-references-for-runtime-routing.md) records optional decision evidence.
+- **Coding and implementation:** [DeepSWE](https://deepswe.datacurve.ai/) reports software-engineering success, effort, token use, steps, and benchmark cost under a common mini-swe-agent harness. Treat it as advisory because the harness differs from native worker CLIs.
+- **General non-coding work:** [LiveBench](https://livebench.ai/) provides objective, category-level evaluation for reasoning, data analysis, language, and instruction following. Its [evaluation code and data](https://github.com/LiveBench/LiveBench) are public. Use the relevant category rather than its overall score.
+- **Multi-step web research:** [FutureSearch Deep Research Bench](https://drb.futuresearch.ai/) compares research configurations by accuracy, cost, and estimated runtime. Its [paper](https://arxiv.org/abs/2506.06287) documents the benchmark and research harness.
+- **Citation-heavy research reports:** [DeepResearch Bench](https://deepresearch-bench.github.io/) evaluates report quality and citation support. Its [repository](https://github.com/Ayanami0730/deep_research_bench) publishes the tasks and evaluation code. Scores apply to complete research systems and should not be transferred automatically to their base models.
+- **Optional cost and speed context:** [Artificial Analysis](https://artificialanalysis.ai/models) provides cross-vendor quality, price, speed, and latency information with a documented [data API](https://artificialanalysis.ai/data-api). It remains optional because its composite methodology and API access introduce their own constraints.
+
+Human-preference leaderboards such as Arena can serve as subjective tie-breakers, but preference is not a substitute for correctness. Tool-use benchmarks such as BFCL are useful only when function calling is central to the assignment.
+
+Benchmark evidence ranks plausible candidates; it does not establish that a CLI exists, that an account has access, or that a launch will succeed. Benchmark prices estimate API execution, not subscription quota or marginal CLI cost. Whole-agent research benchmarks measure the search stack, prompts, and harness as well as the underlying model. Missing exact model or effort data stays missing. No benchmark lookup, parser, cache, freshness gate, or API is required. The orchestrator's review of the actual result outranks benchmark reputation.
+
+## Retained helpers
+
 - The generic [execution scope checker](scripts/check-execution-scope.sh) and [execution workspace helper](scripts/execution-workspace.sh) enforce the retained implementation safety outcomes.

@@ -10,11 +10,7 @@ function Assert-False([bool]$Condition, [string]$Name) { Assert-True (-not $Cond
 
 $root = Split-Path -Parent $PSScriptRoot
 $activeRelative = @(
-    'SKILL.md', 'README.md', 'AGENTS.md', 'CONTEXT.md', 'CLAUDE.md',
-    '.github/workflows/ci.yml',
-    'docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md',
-    'docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md',
-    'docs/research/2026-09-07-benchmark-references-for-runtime-routing.md'
+    'SKILL.md', 'README.md', '.github/workflows/ci.yml'
 )
 $activeContent = foreach ($relative in $activeRelative) {
     $path = Join-Path $root $relative
@@ -37,7 +33,7 @@ foreach ($content in $activeContent) {
 }
 
 foreach ($relative in @(
-    'SKILL.md', 'README.md', 'CONTEXT.md', 'AGENTS.md', 'CLAUDE.md',
+    'SKILL.md', 'README.md',
     'scripts/check-execution-scope.ps1', 'scripts/check-execution-scope.sh',
     'scripts/execution-workspace.ps1', 'scripts/execution-workspace.sh',
     'scripts/make-research-workspace.ps1', 'scripts/make-research-workspace.sh',
@@ -56,25 +52,20 @@ foreach ($relative in @(
 
 $skill = [IO.File]::ReadAllText((Join-Path $root 'SKILL.md'))
 $readme = [IO.File]::ReadAllText((Join-Path $root 'README.md'))
-foreach ($link in @('CONTEXT.md', 'docs/adr/0012-keep-offload-outcome-based-and-runtime-dynamic.md', 'docs/adr/0013-use-implicit-invocation-for-the-offer-gate.md', 'docs/research/2026-09-07-benchmark-references-for-runtime-routing.md', 'scripts/check-execution-scope.sh', 'scripts/execution-workspace.sh')) {
+foreach ($link in @('scripts/check-execution-scope.sh', 'scripts/execution-workspace.sh')) {
     Assert-True ($skill.Contains($link) -or $readme.Contains($link)) "active docs retain link: $link"
 }
 
-$supersededAdrs = @(
-    '0001-maintain-shell-native-helper-families.md',
-    '0003-use-a-portable-proactive-offer-contract.md',
-    '0005-bound-model-routing-to-gemini-and-explicit-rules.md',
-    '0007-cross-library-publication-boundaries.md',
-    '0008-runtime-model-selection-through-adapters.md',
-    '0009-select-compatible-workers-before-offering-offload.md',
-    '0010-agy-preflight-discovery.md',
-    '0011-launch-first-admission-and-orchestrator-fallback.md'
-)
-foreach ($docPath in @('SKILL.md', 'README.md', 'AGENTS.md', 'CONTEXT.md', 'CLAUDE.md')) {
-    $content = [IO.File]::ReadAllText((Join-Path $root $docPath))
-    foreach ($adr in $supersededAdrs) {
-        Assert-False ($content.Contains($adr)) "$docPath omits link to superseded ADR: $adr"
-    }
+foreach ($source in @(
+    'https://deepswe.datacurve.ai/', 'https://livebench.ai/',
+    'https://drb.futuresearch.ai/', 'https://deepresearch-bench.github.io/',
+    'https://artificialanalysis.ai/models'
+)) {
+    Assert-True $skill.Contains($source) "SKILL.md retains benchmark source: $source"
+}
+
+foreach ($stale in @('CONTEXT.md', 'docs/adr/', 'docs/research/')) {
+    Assert-False ($skill.Contains($stale) -or $readme.Contains($stale)) "active docs omit local artifact path: $stale"
 }
 
 [Console]::Out.WriteLine("all repository consistency checks passed ($($script:TotalTests) tests)")
