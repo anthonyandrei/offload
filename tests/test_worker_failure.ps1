@@ -31,6 +31,30 @@ try {
     Assert-True ($attempt2Exit -eq 20) 'escalation worker reports quality-gate failure'
     Assert-True ([IO.File]::ReadAllText($qualityCounter).Trim() -eq '2') 'escalation worker invoked on quality failure'
 
+    $outcomes = @(
+        [pscustomobject]@{ Name = 'successful-completion'; Mode = 'success'; ExitCode = 0 },
+        [pscustomobject]@{ Name = 'launch-failure'; Mode = 'launch-failure'; ExitCode = 17 },
+        [pscustomobject]@{ Name = 'timeout'; Mode = 'timeout'; ExitCode = 124 },
+        [pscustomobject]@{ Name = 'quality-gate-failure'; Mode = 'quality-failure'; ExitCode = 20 },
+        [pscustomobject]@{ Name = 'escalation-failure'; Mode = 'escalation-failure'; ExitCode = 30 },
+        [pscustomobject]@{ Name = 'local-finish'; Mode = 'local-finish'; ExitCode = 0 }
+    )
+    foreach ($outcome in $outcomes) {
+        $outcomeCounter = Join-Path $tempRoot ($outcome.Name + '-counter.txt')
+        & pwsh -NoProfile -NonInteractive -File $fixture $outcomeCounter $outcome.Mode
+        $outcomeExit = $LASTEXITCODE
+        Assert-True ($outcomeExit -eq $outcome.ExitCode) "$($outcome.Name) has a deterministic terminal outcome"
+        Assert-True ([IO.File]::ReadAllText($outcomeCounter).Trim() -eq '1') "$($outcome.Name) records one bounded run"
+    }
+
+    foreach ($field in @('deliverables', 'diffs', 'evidence', 'transient run facts')) {
+        Assert-True ($skill.Contains($field)) "lifecycle report captures $field"
+    }
+    Assert-True ($skill.Contains('before cleanup')) 'lifecycle report captures fields before cleanup'
+    foreach ($outcome in @('success', 'launch failure', 'timeout', 'quality-gate failure', 'escalation failure', 'local finish')) {
+        Assert-True ($skill.Contains($outcome)) "contract names terminal outcome: $outcome"
+    }
+
     Assert-True ($skill.Contains('unfinished assignment')) 'contract returns unfinished work to the orchestrator'
     Assert-True ($skill.Contains('without automatic provider switching')) 'contract forbids automatic provider switching on infrastructure failure'
     Assert-True ($skill.Contains('quality-gate failure') -and $skill.Contains('exactly one automatic escalation')) 'contract permits one automatic escalation on quality-gate failure'

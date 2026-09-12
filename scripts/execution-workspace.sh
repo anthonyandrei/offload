@@ -17,6 +17,13 @@ fail() {
   exit "$code"
 }
 
+cleanup_fail() {
+  local leftover=$1
+  local message=$2
+  printf 'WARNING: cleanup incomplete; leftover path: %s\n' "$leftover" >&2
+  fail "$message"
+}
+
 canonical_existing_path() {
   [[ -d "$1" ]] || fail "directory does not exist: $1"
   (CDPATH= cd -P -- "$1" && pwd -P)
@@ -128,13 +135,13 @@ remove_empty_generated_parent() {
   content=$(<"$marker")
   [[ "$content" = "$generated_parent_marker_content" ]] || fail "generated execution parent marker is invalid: $marker"
   if ! rm -f -- "$marker"; then
-    fail "could not remove generated execution parent marker: $marker"
+    cleanup_fail "$parent" "could not remove generated execution parent marker: $marker"
   fi
-  [[ ! -e "$marker" && ! -L "$marker" ]] || fail "cleanup left generated execution parent marker: $marker"
+  [[ ! -e "$marker" && ! -L "$marker" ]] || cleanup_fail "$parent" "cleanup left generated execution parent marker: $marker"
   if ! rmdir -- "$parent"; then
-    fail "could not remove generated execution parent: $parent"
+    cleanup_fail "$parent" "could not remove generated execution parent: $parent"
   fi
-  [[ ! -e "$parent" && ! -L "$parent" ]] || fail "cleanup left generated execution parent: $parent"
+  [[ ! -e "$parent" && ! -L "$parent" ]] || cleanup_fail "$parent" "cleanup left generated execution parent: $parent"
 }
 
 cleanup_failed_execution_creation() {
@@ -386,14 +393,14 @@ case "$command" in
     fi
 
     if ! git -C "$source_path" worktree remove --force "$workspace" >/dev/null; then
-      fail "could not remove execution worktree: $workspace"
+      cleanup_fail "$workspace" "could not remove execution worktree: $workspace"
     fi
     if [[ -e "$workspace" || -L "$workspace" ]]; then
       if ! rm -rf -- "$workspace"; then
-        fail "could not remove execution workspace: $workspace"
+        cleanup_fail "$workspace" "could not remove execution workspace: $workspace"
       fi
     fi
-    [[ ! -e "$workspace" && ! -L "$workspace" ]] || fail "cleanup left execution workspace: $workspace"
+    [[ ! -e "$workspace" && ! -L "$workspace" ]] || cleanup_fail "$workspace" "cleanup left execution workspace: $workspace"
     git -C "$source_path" worktree prune >/dev/null 2>&1 || true
     remove_empty_generated_parent "$workspace"
     printf 'Removed execution workspace: %s\n' "$workspace"

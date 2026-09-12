@@ -13,6 +13,13 @@ fail() {
   exit "$code"
 }
 
+cleanup_fail() {
+  local leftover=$1
+  local message=$2
+  printf 'WARNING: cleanup incomplete; leftover path: %s\n' "$leftover" >&2
+  fail "$message"
+}
+
 canonical_existing_path() {
   [[ -d "$1" ]] || fail "directory does not exist: $1"
   (CDPATH= cd -P -- "$1" && pwd -P)
@@ -94,7 +101,7 @@ if ((retain)); then
 fi
 
 if ! remove_tree_safely "$workspace"; then
-  fail "could not remove research workspace: $workspace"
+  cleanup_fail "$workspace" "could not remove research workspace: $workspace"
 fi
-[[ ! -e "$workspace" && ! -L "$workspace" ]] || fail "cleanup left research workspace: $workspace"
+[[ ! -e "$workspace" && ! -L "$workspace" ]] || cleanup_fail "$workspace" "cleanup left research workspace: $workspace"
 printf 'Removed research workspace: %s\n' "$workspace"

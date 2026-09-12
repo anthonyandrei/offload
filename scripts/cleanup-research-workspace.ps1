@@ -11,6 +11,11 @@ function Fail([string]$Message, [int]$Code = 1) {
     exit $Code
 }
 
+function Cleanup-Fail([string]$LeftoverPath, [string]$Message, [int]$Code = 1) {
+    [Console]::Error.WriteLine("WARNING: cleanup incomplete; leftover path: $LeftoverPath")
+    Fail $Message $Code
+}
+
 function Canonicalize-Path([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return ''
@@ -143,9 +148,9 @@ if ($retained) {
 try {
     Remove-TreeSafely $workspacePath
 } catch {
-    Fail ("could not remove research workspace; leftover path: " + $workspacePath + ": " + $_.Exception.Message)
+    Cleanup-Fail $workspacePath ("could not remove research workspace; leftover path: " + $workspacePath + ": " + $_.Exception.Message)
 }
 if (Test-Path -LiteralPath $workspacePath) {
-    Fail ("cleanup left research workspace; leftover path: " + $workspacePath)
+    Cleanup-Fail $workspacePath ("cleanup left research workspace; leftover path: " + $workspacePath)
 }
 [Console]::Out.WriteLine("Removed research workspace: $workspacePath")

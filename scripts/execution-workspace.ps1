@@ -15,6 +15,11 @@ function Fail([string]$Message, [int]$Code = 1) {
     exit $Code
 }
 
+function Cleanup-Fail([string]$LeftoverPath, [string]$Message, [int]$Code = 1) {
+    [Console]::Error.WriteLine("WARNING: cleanup incomplete; leftover path: $LeftoverPath")
+    Fail $Message $Code
+}
+
 function Canonicalize-Path([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return ''
@@ -479,26 +484,26 @@ function Command-Cleanup([string[]]$CommandArgs) {
 
     $result = Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'remove', '--force', $workspacePath)
     if ($result.ExitCode -ne 0) {
-        Fail ("could not remove execution worktree; leftover path: " + $workspacePath + ": " + $result.Stderr.Trim())
+        Cleanup-Fail $workspacePath ("could not remove execution worktree; leftover path: " + $workspacePath + ": " + $result.Stderr.Trim())
     }
     if (Test-Path -LiteralPath $workspacePath) {
         try {
             Remove-TreeSafely $workspacePath
         } catch {
-            Fail ("could not remove execution worktree; leftover path: " + $workspacePath + ": " + $_.Exception.Message)
+            Cleanup-Fail $workspacePath ("could not remove execution worktree; leftover path: " + $workspacePath + ": " + $_.Exception.Message)
         }
     }
     if (Test-Path -LiteralPath $workspacePath) {
-        Fail ("cleanup left execution worktree; leftover path: " + $workspacePath)
+        Cleanup-Fail $workspacePath ("cleanup left execution worktree; leftover path: " + $workspacePath)
     }
     Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'prune') | Out-Null
     try {
         Remove-EmptyGeneratedParent $workspacePath
     } catch {
-        Fail ("could not remove generated execution workspace parent; leftover path: " + $generatedParent + ": " + $_.Exception.Message)
+        Cleanup-Fail $generatedParent ("could not remove generated execution workspace parent; leftover path: " + $generatedParent + ": " + $_.Exception.Message)
     }
     if (-not [string]::IsNullOrWhiteSpace($generatedParent) -and (Test-Path -LiteralPath $generatedParent)) {
-        Fail ("cleanup left generated execution workspace parent; leftover path: " + $generatedParent)
+        Cleanup-Fail $generatedParent ("cleanup left generated execution workspace parent; leftover path: " + $generatedParent)
     }
     [Console]::Out.WriteLine("Removed execution workspace: $workspacePath")
 }

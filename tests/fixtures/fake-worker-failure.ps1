@@ -11,7 +11,11 @@ if (Test-Path -LiteralPath $counter -PathType Leaf) {
 [IO.File]::WriteAllText($counter, [string]($count + 1) + [Environment]::NewLine)
 
 switch ($mode) {
+    'success' { exit 0 }
+    'local-finish' { exit 0 }
+    'timeout' { exit 124 }
     'quality-failure' { exit 20 }
+    'escalation-failure' { exit 30 }
     'quality-escalate' {
         if ($count -ge 2) { exit 30 }
         exit 20

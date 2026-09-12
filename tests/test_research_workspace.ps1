@@ -64,6 +64,7 @@ try {
     try {
         $lockedCleanup = Invoke-Script $cleanup @('--workspace', $lockedWorkspace)
         Assert-False ($lockedCleanup.ExitCode -eq 0) 'research cleanup reports a removal failure'
+        Assert-True ($lockedCleanup.Stderr.Contains('WARNING: cleanup incomplete; leftover path:')) 'research cleanup failure reports a prominent warning'
         Assert-True ($lockedCleanup.Stderr.Contains($lockedWorkspace)) 'research cleanup reports the exact leftover workspace path'
     } finally {
         $lock.Dispose()
