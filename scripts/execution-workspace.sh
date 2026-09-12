@@ -244,6 +244,7 @@ case "$command" in
       generated_parent=$(mktemp -d "${TMPDIR:-/tmp}/offload-exec-${task_id}-XXXXXX") || fail 'could not create a temporary workspace parent'
       workspace="$generated_parent/checkout"
       trap cleanup_failed_execution_creation EXIT
+      workspace=$(canonical_workspace_path "$workspace")
     else
       workspace=$(canonical_workspace_path "$workspace")
     fi
