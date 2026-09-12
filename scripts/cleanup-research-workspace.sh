@@ -23,12 +23,12 @@ remove_tree_safely() {
   local entry
   while IFS= read -r -d '' entry; do
     if [[ -L "$entry" || ! -d "$entry" ]]; then
-      rm -f -- "$entry"
+      rm -f -- "$entry" || return 1
     else
-      remove_tree_safely "$entry"
+      remove_tree_safely "$entry" || return 1
     fi
   done < <(find -P "$path" -mindepth 1 -maxdepth 1 -print0)
-  rmdir -- "$path"
+  rmdir -- "$path" || return 1
 }
 
 show_usage() {
@@ -81,14 +81,20 @@ if [[ -n "${HOME:-}" && -d "$HOME" ]]; then
   [[ "$workspace" != "$home" ]] || fail "refusing to clean a user home directory: $workspace"
 fi
 marker="$workspace/$marker_name"
+[[ ! -L "$marker" ]] || fail "refusing to clean a marker symlink: $marker"
 [[ -f "$marker" ]] || fail "refusing to clean an unmarked directory: $workspace"
 [[ "$(<"$marker")" = "$marker_content" ]] || fail "refusing to clean a directory with an invalid marker: $workspace"
-[[ ! -e "$workspace/.git" ]] || fail "refusing to clean a Git checkout: $workspace"
+if git -C "$workspace" rev-parse --show-toplevel >/dev/null 2>&1; then
+  fail "refusing to clean a Git checkout: $workspace"
+fi
 
 if ((retain)); then
   printf 'Retained research workspace: %s\n' "$workspace"
   exit 0
 fi
 
-remove_tree_safely "$workspace"
+if ! remove_tree_safely "$workspace"; then
+  fail "could not remove research workspace: $workspace"
+fi
+[[ ! -e "$workspace" && ! -L "$workspace" ]] || fail "cleanup left research workspace: $workspace"
 printf 'Removed research workspace: %s\n' "$workspace"
