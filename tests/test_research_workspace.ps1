@@ -56,6 +56,22 @@ try {
     Assert-True ($removed.ExitCode -eq 0) 'research cleanup removes a marked snapshot'
     Assert-False (Test-Path -LiteralPath $workspace) 'removed research snapshot is gone'
 
+    $lockedWorkspace = Join-Path $tempRoot 'locked-snapshot'
+    $lockedCreated = Invoke-Script $make @('--source-repo', $repo, '--path', 'notes/brief.md', '--workspace', $lockedWorkspace)
+    Assert-True ($lockedCreated.ExitCode -eq 0) 'research snapshot is available for cleanup failure verification'
+    $lockedFile = Join-Path $lockedWorkspace 'repo/notes/brief.md'
+    $lock = [IO.File]::Open($lockedFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $lockedCleanup = Invoke-Script $cleanup @('--workspace', $lockedWorkspace)
+        Assert-False ($lockedCleanup.ExitCode -eq 0) 'research cleanup reports a removal failure'
+        Assert-True ($lockedCleanup.Stderr.Contains($lockedWorkspace)) 'research cleanup reports the exact leftover workspace path'
+    } finally {
+        $lock.Dispose()
+        if (Test-Path -LiteralPath $lockedWorkspace) {
+            Remove-Item -LiteralPath $lockedWorkspace -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $unmarked = Join-Path $tempRoot 'unmarked'
     [IO.Directory]::CreateDirectory($unmarked) | Out-Null
     $rejected = Invoke-Script $cleanup @('--workspace', $unmarked)

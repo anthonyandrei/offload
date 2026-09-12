@@ -5,6 +5,8 @@ Set-StrictMode -Version Latest
 
 $script:MarkerName = '.offload-execution-workspace'
 $script:MarkerContent = 'offload-execution-workspace-v2'
+$script:GeneratedParentMarkerName = '.offload-execution-parent'
+$script:GeneratedParentMarkerContent = 'offload-execution-parent-v1'
 $script:ScriptDir = Split-Path -Parent $PSCommandPath
 $script:ScopeChecker = Join-Path $script:ScriptDir 'check-execution-scope.ps1'
 
@@ -194,18 +196,53 @@ function Require-RegisteredWorktree([string]$SourceRepository, [string]$Workspac
     Fail ("workspace is not registered as a worktree of " + $SourceRepository + ": " + $Workspace)
 }
 
-function Remove-EmptyGeneratedParent([string]$Workspace) {
+function Get-GeneratedParent([string]$Workspace) {
     $parent = Split-Path -Parent $Workspace
     if ([string]::IsNullOrWhiteSpace($parent)) {
-        return
+        return ''
     }
     $name = Split-Path -Leaf $parent
     if (-not $name.StartsWith('offload-exec-', [System.StringComparison]::Ordinal)) {
+        return ''
+    }
+    $marker = Join-Path $parent $script:GeneratedParentMarkerName
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+        return ''
+    }
+    $markerItem = Get-Item -LiteralPath $marker -Force
+    if (($markerItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Fail ("refusing to use a generated execution parent marker reparse point: " + $parent)
+    }
+    if ([System.IO.File]::ReadAllText($marker).Trim() -ne $script:GeneratedParentMarkerContent) {
+        Fail ("generated execution parent marker is invalid: " + $parent)
+    }
+    return $parent
+}
+
+function Remove-EmptyGeneratedParent([string]$Workspace) {
+    $parent = Get-GeneratedParent $Workspace
+    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
         return
     }
-    if (@(Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
-        Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue
+    $marker = Join-Path $parent $script:GeneratedParentMarkerName
+    $children = @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop | Where-Object { $_.Name -ne $script:GeneratedParentMarkerName })
+    if ($children.Count -eq 0) {
+        Remove-Item -LiteralPath $marker -Force -ErrorAction Stop
+        Remove-Item -LiteralPath $parent -Force -ErrorAction Stop
     }
+}
+
+function Remove-TreeSafely([string]$Path) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+        } elseif ($item.PSIsContainer) {
+            Remove-TreeSafely $item.FullName
+        } else {
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+        }
+    }
+    Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
 }
 
 function Show-Usage {
@@ -226,6 +263,7 @@ function Command-Create([string[]]$CommandArgs) {
     $taskId = ''
     $baseline = ''
     $workspace = ''
+    $generatedParent = ''
     $i = 0
 
     while ($i -lt $CommandArgs.Count) {
@@ -272,7 +310,8 @@ function Command-Create([string[]]$CommandArgs) {
     $sourcePath = Require-GitRepository (Canonicalize-Path $source)
     $resolvedBaseline = Resolve-Commit $sourcePath $baseline
     if ([string]::IsNullOrWhiteSpace($workspace)) {
-        $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("offload-exec-{0}-{1}" -f $taskId, ([Guid]::NewGuid().ToString('N')))
+        $generatedParent = Join-Path ([System.IO.Path]::GetTempPath()) ("offload-exec-{0}-{1}" -f $taskId, ([Guid]::NewGuid().ToString('N')))
+        $workspace = Join-Path $generatedParent 'checkout'
     } else {
         $workspace = Canonicalize-Path $workspace
     }
@@ -283,19 +322,34 @@ function Command-Create([string[]]$CommandArgs) {
 
     $parent = Split-Path -Parent $workspace
     if (-not [string]::IsNullOrWhiteSpace($parent)) {
-        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+        try {
+            [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+            if (-not [string]::IsNullOrWhiteSpace($generatedParent)) {
+                [System.IO.File]::WriteAllText((Join-Path $generatedParent $script:GeneratedParentMarkerName), $script:GeneratedParentMarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+            }
+        } catch {
+            if (-not [string]::IsNullOrWhiteSpace($generatedParent) -and (Test-Path -LiteralPath $generatedParent)) {
+                try { Remove-TreeSafely $generatedParent } catch {}
+            }
+            Fail ("could not prepare execution workspace: " + $workspace + ": " + $_.Exception.Message)
+        }
     }
 
     $result = Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'add', '--detach', $workspace, $resolvedBaseline)
     if ($result.ExitCode -ne 0) {
-        Fail ("could not create execution worktree: " + $result.Stderr.Trim())
+        try { Remove-EmptyGeneratedParent $workspace } catch {}
+        Fail ("could not create execution worktree: " + $workspace + ": " + $result.Stderr.Trim())
     }
 
     try {
         [System.IO.File]::WriteAllText((Join-Path $workspace $script:MarkerName), $script:MarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
     } catch {
         Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'remove', '--force', $workspace) | Out-Null
-        Fail ("could not mark execution worktree: " + $_.Exception.Message)
+        if (Test-Path -LiteralPath $workspace) {
+            try { Remove-TreeSafely $workspace } catch {}
+        }
+        try { Remove-EmptyGeneratedParent $workspace } catch {}
+        Fail ("could not mark execution worktree: " + $workspace + ": " + $_.Exception.Message)
     }
 
     [Console]::Out.WriteLine($workspace)
@@ -416,6 +470,7 @@ function Command-Cleanup([string[]]$CommandArgs) {
     Test-SafeWorkspacePath $workspacePath $sourcePath
     Read-Marker $workspacePath
     Require-RegisteredWorktree $sourcePath $workspacePath
+    $generatedParent = Get-GeneratedParent $workspacePath
 
     if ($retain) {
         [Console]::Out.WriteLine("Retained execution workspace: $workspacePath")
@@ -424,13 +479,27 @@ function Command-Cleanup([string[]]$CommandArgs) {
 
     $result = Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'remove', '--force', $workspacePath)
     if ($result.ExitCode -ne 0) {
-        Fail ("could not remove execution worktree: " + $result.Stderr.Trim())
+        Fail ("could not remove execution worktree; leftover path: " + $workspacePath + ": " + $result.Stderr.Trim())
     }
     if (Test-Path -LiteralPath $workspacePath) {
-        Remove-Item -LiteralPath $workspacePath -Recurse -Force
+        try {
+            Remove-TreeSafely $workspacePath
+        } catch {
+            Fail ("could not remove execution worktree; leftover path: " + $workspacePath + ": " + $_.Exception.Message)
+        }
+    }
+    if (Test-Path -LiteralPath $workspacePath) {
+        Fail ("cleanup left execution worktree; leftover path: " + $workspacePath)
     }
     Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'prune') | Out-Null
-    Remove-EmptyGeneratedParent $workspacePath
+    try {
+        Remove-EmptyGeneratedParent $workspacePath
+    } catch {
+        Fail ("could not remove generated execution workspace parent; leftover path: " + $generatedParent + ": " + $_.Exception.Message)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($generatedParent) -and (Test-Path -LiteralPath $generatedParent)) {
+        Fail ("cleanup left generated execution workspace parent; leftover path: " + $generatedParent)
+    }
     [Console]::Out.WriteLine("Removed execution workspace: $workspacePath")
 }
 

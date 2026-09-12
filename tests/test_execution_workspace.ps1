@@ -68,6 +68,30 @@ try {
     Assert-True ($cleaned.ExitCode -eq 0) 'cleanup removes a marked registered worktree'
     Assert-False (Test-Path -LiteralPath $workspace) 'cleaned workspace is gone'
 
+    $generated = Invoke-Helper @('create', '--source-repo', $repo, '--task-id', 'generated', '--baseline', $baseline)
+    Assert-True ($generated.ExitCode -eq 0) 'create makes a generated disposable worktree'
+    $generatedWorkspace = $generated.Stdout.Trim()
+    $generatedParent = Split-Path -Parent $generatedWorkspace
+    Assert-True ((Split-Path -Leaf $generatedWorkspace) -eq 'checkout') 'generated worktree uses a checkout child'
+    Assert-True ((Split-Path -Leaf $generatedParent).StartsWith('offload-exec-', [StringComparison]::Ordinal)) 'generated worktree has a disposable parent'
+    Assert-True (Test-Path -LiteralPath $generatedParent -PathType Container) 'generated parent exists'
+    $generatedCleaned = Invoke-Helper @('cleanup', '--source-repo', $repo, '--workspace', $generatedWorkspace)
+    Assert-True ($generatedCleaned.ExitCode -eq 0) 'cleanup removes the generated worktree'
+    Assert-False (Test-Path -LiteralPath $generatedWorkspace) 'generated worktree is gone'
+    Assert-False (Test-Path -LiteralPath $generatedParent) 'generated parent is gone'
+
+    $verification = Invoke-Helper @('create', '--source-repo', $repo, '--task-id', 'verification', '--baseline', $baseline)
+    Assert-True ($verification.ExitCode -eq 0) 'create makes a worktree for cleanup verification'
+    $verificationWorkspace = $verification.Stdout.Trim()
+    $verificationParent = Split-Path -Parent $verificationWorkspace
+    [IO.File]::WriteAllText((Join-Path $verificationParent 'leftover.txt'), "leftover`n")
+    $verificationFailed = Invoke-Helper @('cleanup', '--source-repo', $repo, '--workspace', $verificationWorkspace)
+    Assert-False ($verificationFailed.ExitCode -eq 0) 'cleanup fails when its generated parent remains'
+    Assert-True ($verificationFailed.Stderr.Contains($verificationParent)) 'cleanup reports the exact leftover parent path'
+    Assert-False (Test-Path -LiteralPath $verificationWorkspace) 'cleanup still removes the worktree before reporting parent failure'
+    Assert-True (Test-Path -LiteralPath $verificationParent -PathType Container) 'leftover parent remains visible for manual cleanup'
+    Remove-Item -LiteralPath (Join-Path $verificationParent 'leftover.txt') -Force
+
     $unmarked = Join-Path $tempRoot 'unmarked'
     [IO.Directory]::CreateDirectory($unmarked) | Out-Null
     $rejected = Invoke-Helper @('cleanup', '--source-repo', $repo, '--workspace', $unmarked)
