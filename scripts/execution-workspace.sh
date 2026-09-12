@@ -243,13 +243,16 @@ case "$command" in
     if [[ -z "$workspace" ]]; then
       generated_parent=$(mktemp -d "${TMPDIR:-/tmp}/offload-exec-${task_id}-XXXXXX") || fail 'could not create a temporary workspace parent'
       workspace="$generated_parent/checkout"
+      trap cleanup_failed_execution_creation EXIT
     else
       workspace=$(canonical_workspace_path "$workspace")
     fi
     check_safe_workspace_path "$workspace" "$source_path"
     [[ ! -e "$workspace" && ! -L "$workspace" ]] || fail "workspace already exists: $workspace"
     mkdir -p -- "$(dirname -- "$workspace")"
-    trap cleanup_failed_execution_creation EXIT
+    if [[ -z "$generated_parent" ]]; then
+      trap cleanup_failed_execution_creation EXIT
+    fi
 
     if [[ -n "$generated_parent" ]]; then
       if ! printf '%s\n' "$generated_parent_marker_content" > "$generated_parent/$generated_parent_marker_name"; then
