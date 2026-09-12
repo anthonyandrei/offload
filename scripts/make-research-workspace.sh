@@ -14,6 +14,14 @@ fail() {
   exit "$code"
 }
 
+cleanup_failed_research_creation() {
+  local status=$?
+  if ((status != 0)) && [[ "${workspace_created:-0}" = 1 ]] && [[ -n "${workspace:-}" ]]; then
+    rm -rf -- "$workspace" >/dev/null 2>&1 || true
+  fi
+  return "$status"
+}
+
 canonical_existing_path() {
   [[ -d "$1" ]] || fail "directory does not exist: $1"
   (CDPATH= cd -P -- "$1" && pwd -P)
@@ -117,6 +125,7 @@ USAGE
 
 source=''
 workspace=''
+workspace_created=0
 paths=()
 while (($#)); do
   case "$1" in
@@ -175,12 +184,16 @@ done
 
 if [[ -z "$workspace" ]]; then
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/offload-research-XXXXXX") || fail 'could not create a research workspace'
+  workspace_created=1
+  trap cleanup_failed_research_creation EXIT
   check_safe_workspace_path "$workspace" "$source_path"
 else
   workspace=$(canonical_workspace_path "$workspace")
   check_safe_workspace_path "$workspace" "$source_path"
   [[ ! -e "$workspace" ]] || fail "workspace already exists: $workspace"
   mkdir -p -- "$workspace"
+  workspace_created=1
+  trap cleanup_failed_research_creation EXIT
 fi
 printf '%s\n' "$marker_content" > "$workspace/$marker_name"
 
@@ -197,4 +210,5 @@ for relative_path in "${relative_paths[@]}"; do
   fi
 done
 
+trap - EXIT
 printf '%s\n' "$workspace"

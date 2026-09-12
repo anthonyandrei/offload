@@ -3,6 +3,8 @@ set -euo pipefail
 
 marker_name='.offload-execution-workspace'
 marker_content='offload-execution-workspace-v2'
+generated_parent_marker_name='.offload-execution-parent'
+generated_parent_marker_content='offload-execution-parent-v1'
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 scope_checker="$script_dir/check-execution-scope.sh"
 
@@ -88,6 +90,7 @@ check_safe_workspace_path() {
 read_marker() {
   local workspace=$1
   local marker="$workspace/$marker_name"
+  [[ ! -L "$marker" ]] || fail "workspace marker is not a regular file: $marker"
   [[ -f "$marker" ]] || fail "workspace is not marked as disposable: $workspace"
   local content
   content=$(<"$marker")
@@ -117,8 +120,32 @@ remove_empty_generated_parent() {
   local workspace=$1
   local parent
   parent=$(dirname -- "$workspace")
-  [[ "$(basename -- "$parent")" = offload-exec-* ]] || return 0
-  rmdir -- "$parent" 2>/dev/null || true
+  local marker="$parent/$generated_parent_marker_name"
+  [[ -e "$marker" || -L "$marker" ]] || return 0
+  [[ ! -L "$marker" ]] || fail "generated execution parent marker is invalid: $marker"
+  [[ -f "$marker" ]] || fail "generated execution parent marker is invalid: $marker"
+  local content
+  content=$(<"$marker")
+  [[ "$content" = "$generated_parent_marker_content" ]] || fail "generated execution parent marker is invalid: $marker"
+  if ! rm -f -- "$marker"; then
+    fail "could not remove generated execution parent marker: $marker"
+  fi
+  [[ ! -e "$marker" && ! -L "$marker" ]] || fail "cleanup left generated execution parent marker: $marker"
+  if ! rmdir -- "$parent"; then
+    fail "could not remove generated execution parent: $parent"
+  fi
+  [[ ! -e "$parent" && ! -L "$parent" ]] || fail "cleanup left generated execution parent: $parent"
+}
+
+cleanup_failed_execution_creation() {
+  local status=$?
+  if ((status != 0)) && [[ -n "${generated_parent:-}" ]]; then
+    if [[ -n "${source_path:-}" && -n "${workspace:-}" ]]; then
+      git -C "$source_path" worktree remove --force "$workspace" >/dev/null 2>&1 || true
+    fi
+    rm -rf -- "$generated_parent" >/dev/null 2>&1 || true
+  fi
+  return "$status"
 }
 
 show_usage() {
@@ -143,6 +170,7 @@ case "$command" in
     task_id=''
     baseline=''
     workspace=''
+    generated_parent=''
     while (($#)); do
       case "$1" in
         --source-repo)
@@ -198,8 +226,9 @@ case "$command" in
     baseline_commit=$(resolve_commit "$source_path" "$baseline")
 
     if [[ -z "$workspace" ]]; then
-      temp_parent=$(mktemp -d "${TMPDIR:-/tmp}/offload-exec-${task_id}-XXXXXX") || fail 'could not create a temporary workspace parent'
-      workspace="$temp_parent/checkout"
+      generated_parent=$(mktemp -d "${TMPDIR:-/tmp}/offload-exec-${task_id}-XXXXXX") || fail 'could not create a temporary workspace parent'
+      workspace="$generated_parent/checkout"
+      trap cleanup_failed_execution_creation EXIT
     else
       workspace=$(canonical_workspace_path "$workspace")
     fi
@@ -207,12 +236,20 @@ case "$command" in
     [[ ! -e "$workspace" ]] || fail "workspace already exists: $workspace"
     mkdir -p -- "$(dirname -- "$workspace")"
 
+    if [[ -n "$generated_parent" ]]; then
+      if ! printf '%s\n' "$generated_parent_marker_content" > "$generated_parent/$generated_parent_marker_name"; then
+        fail "could not mark generated execution workspace parent: $generated_parent"
+      fi
+    fi
     if ! git -C "$source_path" worktree add --detach "$workspace" "$baseline_commit" >/dev/null; then
       fail "could not create execution worktree: $workspace"
     fi
     if ! printf '%s\n' "$marker_content" > "$workspace/$marker_name"; then
       git -C "$source_path" worktree remove --force "$workspace" >/dev/null 2>&1 || true
       fail "could not mark execution worktree: $workspace"
+    fi
+    if [[ -n "$generated_parent" ]]; then
+      trap - EXIT
     fi
     printf '%s\n' "$workspace"
     ;;
@@ -348,10 +385,15 @@ case "$command" in
       exit 0
     fi
 
-    git -C "$source_path" worktree remove --force "$workspace" >/dev/null || fail "could not remove execution worktree: $workspace"
-    if [[ -e "$workspace" ]]; then
-      rm -rf -- "$workspace"
+    if ! git -C "$source_path" worktree remove --force "$workspace" >/dev/null; then
+      fail "could not remove execution worktree: $workspace"
     fi
+    if [[ -e "$workspace" || -L "$workspace" ]]; then
+      if ! rm -rf -- "$workspace"; then
+        fail "could not remove execution workspace: $workspace"
+      fi
+    fi
+    [[ ! -e "$workspace" && ! -L "$workspace" ]] || fail "cleanup left execution workspace: $workspace"
     git -C "$source_path" worktree prune >/dev/null 2>&1 || true
     remove_empty_generated_parent "$workspace"
     printf 'Removed execution workspace: %s\n' "$workspace"
