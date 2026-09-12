@@ -25,6 +25,28 @@ if bash "$fixture" "$quality_counter" quality-escalate; then attempt2_exit=0; el
 assert_true test "$( [ "$attempt2_exit" -eq 20 ] && printf true || printf false )" 'escalation worker reports quality-gate failure'
 assert_true test "$( [ "$(<"$quality_counter")" -eq 2 ] && printf true || printf false )" 'escalation worker invoked on quality failure'
 
+for outcome in \
+  'successful-completion|success|0' \
+  'launch-failure|launch-failure|17' \
+  'timeout|timeout|124' \
+  'quality-gate-failure|quality-failure|20' \
+  'escalation-failure|escalation-failure|30' \
+  'local-finish|local-finish|0'; do
+  IFS='|' read -r outcome_name mode expected_exit <<< "$outcome"
+  outcome_counter="$temp_root/$outcome_name-counter.txt"
+  if bash "$fixture" "$outcome_counter" "$mode"; then outcome_exit=0; else outcome_exit=$?; fi
+  assert_true test "$( [ "$outcome_exit" -eq "$expected_exit" ] && printf true || printf false )" "$outcome_name has a deterministic terminal outcome"
+  assert_true test "$( [ "$(<"$outcome_counter")" -eq 1 ] && printf true || printf false )" "$outcome_name records one bounded run"
+done
+
+for field in deliverables diffs evidence 'transient run facts'; do
+  assert_true test "$( printf '%s' "$skill" | grep -Fq -- "$field" && printf true || printf false )" "lifecycle report captures $field"
+done
+assert_true test "$( printf '%s' "$skill" | grep -Fq 'before cleanup' && printf true || printf false )" 'lifecycle report captures fields before cleanup'
+for outcome in success 'launch failure' timeout 'quality-gate failure' 'escalation failure' 'local finish'; do
+  assert_true test "$( printf '%s' "$skill" | grep -Fq -- "$outcome" && printf true || printf false )" "contract names terminal outcome: $outcome"
+done
+
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'unfinished assignment' && printf true || printf false )" 'contract returns unfinished work to the orchestrator'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'without automatic provider switching' && printf true || printf false )" 'contract forbids automatic provider switching on infrastructure failure'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'quality-gate failure' && printf '%s' "$skill" | grep -Fq 'exactly one automatic escalation' && printf true || printf false )" 'contract permits one automatic escalation on quality-gate failure'

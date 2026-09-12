@@ -66,6 +66,7 @@ printf 'leftover\n' > "$leftover_parent/leftover.txt"
 cleanup_error="$temp_root/execution-cleanup-error"
 if output=$(bash "$helper" cleanup --source-repo "$repo" --workspace "$leftover_workspace" 2>"$cleanup_error"); then leftover_cleanup_code=0; else leftover_cleanup_code=$?; fi
 assert_true test "$( [ "$leftover_cleanup_code" -ne 0 ] && printf true || printf false )" 'cleanup fails when the generated parent remains'
+assert_true test "$( grep -Fq -- 'WARNING: cleanup incomplete; leftover path:' "$cleanup_error" && printf true || printf false )" 'execution cleanup failure reports a prominent warning'
 assert_true test "$( grep -Fq -- "$leftover_parent" "$cleanup_error" && printf true || printf false )" 'execution cleanup failure names the leftover parent'
 assert_true test "$( [ ! -e "$leftover_workspace" ] && printf true || printf false )" 'failed execution cleanup still removes the worktree'
 assert_true test "$( [ -e "$leftover_parent" ] && printf true || printf false )" 'failed execution cleanup preserves the leftover parent'

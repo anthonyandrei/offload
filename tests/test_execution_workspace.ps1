@@ -87,6 +87,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $verificationParent 'leftover.txt'), "leftover`n")
     $verificationFailed = Invoke-Helper @('cleanup', '--source-repo', $repo, '--workspace', $verificationWorkspace)
     Assert-False ($verificationFailed.ExitCode -eq 0) 'cleanup fails when its generated parent remains'
+    Assert-True ($verificationFailed.Stderr.Contains('WARNING: cleanup incomplete; leftover path:')) 'execution cleanup failure reports a prominent warning'
     Assert-True ($verificationFailed.Stderr.Contains($verificationParent)) 'cleanup reports the exact leftover parent path'
     Assert-False (Test-Path -LiteralPath $verificationWorkspace) 'cleanup still removes the worktree before reporting parent failure'
     Assert-True (Test-Path -LiteralPath $verificationParent -PathType Container) 'leftover parent remains visible for manual cleanup'

@@ -50,6 +50,7 @@ chmod +x "$fake_bin/rmdir"
 cleanup_error="$temp_root/research-cleanup-error"
 if output=$(PATH="$fake_bin:$PATH" bash "$cleanup_helper" --workspace "$leftover" 2>"$cleanup_error"); then leftover_cleanup_code=0; else leftover_cleanup_code=$?; fi
 assert_true test "$( [ "$leftover_cleanup_code" -ne 0 ] && printf true || printf false )" 'research cleanup fails when removal leaves the workspace'
+assert_true test "$( grep -Fq -- 'WARNING: cleanup incomplete; leftover path:' "$cleanup_error" && printf true || printf false )" 'research cleanup failure reports a prominent warning'
 assert_true test "$( grep -Fq -- "$leftover" "$cleanup_error" && printf true || printf false )" 'research cleanup failure names the leftover workspace'
 assert_true test "$( [ -e "$leftover" ] && printf true || printf false )" 'failed research cleanup preserves the leftover workspace'
 
