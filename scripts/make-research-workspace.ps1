@@ -119,6 +119,19 @@ function Assert-NoReparsePoints([string]$Path) {
     }
 }
 
+function Remove-TreeSafely([string]$Path) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+        } elseif ($item.PSIsContainer) {
+            Remove-TreeSafely $item.FullName
+        } else {
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+        }
+    }
+    Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+}
+
 function Show-Usage {
     [Console]::Error.WriteLine(@'
 Usage:
@@ -197,9 +210,9 @@ if (Test-Path -LiteralPath $workspace) {
     Fail ("workspace already exists: " + $workspace)
 }
 [System.IO.Directory]::CreateDirectory($workspace) | Out-Null
-[System.IO.File]::WriteAllText((Join-Path $workspace $script:MarkerName), $script:MarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 
 try {
+    [System.IO.File]::WriteAllText((Join-Path $workspace $script:MarkerName), $script:MarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
     $repoRoot = Join-Path $workspace 'repo'
     foreach ($relativePath in $relativePaths) {
         $sourceItemPath = Join-Path $sourcePath ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
@@ -218,7 +231,7 @@ try {
     }
 } catch {
     if (Test-Path -LiteralPath $workspace) {
-        Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
+        try { Remove-TreeSafely $workspace } catch {}
     }
     if ($_.Exception.Message.StartsWith('Error:')) {
         [Console]::Error.WriteLine($_.Exception.Message)

@@ -27,6 +27,23 @@ function Same-Path([string]$Left, [string]$Right) {
     return [string]::Equals((Canonicalize-Path $Left), (Canonicalize-Path $Right), [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Assert-NoReparsePointsInPath([string]$Path) {
+    $probe = Canonicalize-Path $Path
+    while (-not [string]::IsNullOrWhiteSpace($probe)) {
+        if (Test-Path -LiteralPath $probe) {
+            $item = Get-Item -LiteralPath $probe -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Fail ("refusing to use a path containing a reparse point: " + $probe)
+            }
+        }
+        $parent = [System.IO.Directory]::GetParent($probe)
+        if ($null -eq $parent) {
+            break
+        }
+        $probe = $parent.FullName
+    }
+}
+
 function Read-Marker([string]$Workspace) {
     if ((Get-Item -LiteralPath $Workspace -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
         Fail ("refusing to clean a reparse point: " + $Workspace)
@@ -45,16 +62,16 @@ function Read-Marker([string]$Workspace) {
 }
 
 function Remove-TreeSafely([string]$Path) {
-    foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force)) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)) {
         if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            Remove-Item -LiteralPath $item.FullName -Force
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
         } elseif ($item.PSIsContainer) {
             Remove-TreeSafely $item.FullName
         } else {
-            Remove-Item -LiteralPath $item.FullName -Force
+            Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
         }
     }
-    Remove-Item -LiteralPath $Path -Force
+    Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
 }
 
 function Show-Usage {
@@ -98,6 +115,7 @@ if ([string]::IsNullOrWhiteSpace($workspace)) {
     Fail '--workspace is required'
 }
 $workspacePath = Canonicalize-Path $workspace
+Assert-NoReparsePointsInPath $workspacePath
 $root = Canonicalize-Path ([System.IO.Path]::GetPathRoot($workspacePath))
 if (Same-Path $workspacePath $root) {
     Fail ("refusing to clean a filesystem root: " + $workspacePath)
@@ -122,5 +140,12 @@ if ($retained) {
     exit 0
 }
 
-Remove-TreeSafely $workspacePath
+try {
+    Remove-TreeSafely $workspacePath
+} catch {
+    Fail ("could not remove research workspace; leftover path: " + $workspacePath + ": " + $_.Exception.Message)
+}
+if (Test-Path -LiteralPath $workspacePath) {
+    Fail ("cleanup left research workspace; leftover path: " + $workspacePath)
+}
 [Console]::Out.WriteLine("Removed research workspace: $workspacePath")
