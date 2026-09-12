@@ -29,6 +29,17 @@ for reference in \
   pass "active docs omit removed reference: $reference"
 done
 
+for term in \
+  'vendor catalog' 'command table' 'model matrix' 'provider interface' \
+  'persistent usage telemetry' 'performance ledger' \
+  'quota protocol' 'role matrix' 'routing algorithm'; do
+  if [[ "$active_content" == *"$term"* ]]; then
+    printf 'FAIL: active docs mention stale architecture: %s\n' "$term" >&2
+    exit 1
+  fi
+  pass "active docs omit stale architecture: $term"
+done
+
 for relative in \
   SKILL.md README.md \
   scripts/check-execution-scope.ps1 scripts/check-execution-scope.sh \

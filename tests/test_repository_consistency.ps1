@@ -26,9 +26,17 @@ $removedReferences = @(
     'scripts/select-compatible-worker.sh', 'scripts/capacity-ledger.ps1', 'scripts/resource-ledger.ps1',
     'docs/worker-adapter-contract.md', 'docs/contracts/publication-compatibility.md'
 )
+$staleArchitecture = @(
+    'vendor catalog', 'command table', 'model matrix', 'provider interface',
+    'persistent usage telemetry', 'performance ledger',
+    'quota protocol', 'role matrix', 'routing algorithm'
+)
 foreach ($content in $activeContent) {
     foreach ($reference in $removedReferences) {
         Assert-False ($content.Contains($reference)) "active docs omit removed reference: $reference"
+    }
+    foreach ($term in $staleArchitecture) {
+        Assert-False ($content.Contains($term)) "active docs omit stale architecture: $term"
     }
 }
 
