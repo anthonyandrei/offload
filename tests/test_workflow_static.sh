@@ -25,6 +25,17 @@ assert_absent() {
   pass "removed path is absent: ${1#$root/}"
 }
 
+assert_ordered() {
+  local content=$1 first=$2 second=$3 third=$4 name=$5
+  content=$(printf '%s' "$content" | tr '[:upper:]' '[:lower:]')
+  local after_first=${content#*"$first"}
+  [[ "$after_first" != "$content" ]] || { printf 'FAIL: %s\n' "$name" >&2; exit 1; }
+  local after_second=${after_first#*"$second"}
+  [[ "$after_second" != "$after_first" ]] || { printf 'FAIL: %s\n' "$name" >&2; exit 1; }
+  [[ "$after_second" == *"$third"* ]] || { printf 'FAIL: %s\n' "$name" >&2; exit 1; }
+  pass "$name"
+}
+
 skill=$(<"$root/SKILL.md")
 readme=$(<"$root/README.md")
 ci=$(<"$root/.github/workflows/ci.yml")
@@ -33,14 +44,44 @@ for path in "$root/SKILL.md" "$root/README.md"; do
   assert_file "$path"
 done
 
+for work_class in \
+  'repository reconnaissance' 'analysis' 'test investigation' 'implementation' \
+  'research' 'transformations' 'artifact-producing work' \
+  'independently executable long-running work'; do
+  assert_contains "$skill" "$work_class" "SKILL.md names bounded work class: $work_class"
+  assert_contains "$readme" "$work_class" "README.md names bounded work class: $work_class"
+done
 for phrase in bounded runtime 'acceptance criteria' launch unfinished orchestrator disposable citation inference nested 'external vendor' lightest escalation benchmark usage; do
   assert_contains "$skill" "$phrase" "SKILL.md states $phrase"
 done
 for phrase in runtime benchmark launch unfinished isolated citation inference 'external vendor' lightest escalation usage; do
   assert_contains "$readme" "$phrase" "README.md states $phrase"
 done
+assert_contains "$skill" 'Open-ended, indefinite, or tightly interactive work stays local.' 'SKILL.md keeps open-ended and tightly interactive work local'
+assert_contains "$readme" 'Open-ended or tightly interactive work stays local.' 'README.md keeps open-ended and tightly interactive work local'
+assert_contains "$skill" 'Every assignment uses the same shape: objective, scope, acceptance criteria, deliverables, and authority.' 'SKILL.md defines the generic assignment shape'
+assert_contains "$readme" 'objective, scope, acceptance criteria, deliverables, and authority' 'README.md repeats the generic assignment shape'
+assert_contains "$skill" 'shared authority and acceptance criteria' 'SKILL.md permits shared-authority phases'
+assert_contains "$skill" 'Genuinely independent work keeps separate boundaries' 'SKILL.md separates independent work'
+assert_ordered "$skill" 'version-matched official documentation' 'installed version and native help' 'real launch is the definitive admission check' 'SKILL.md states runtime discovery precedence'
+assert_contains "$skill" 'transient launch record' 'SKILL.md keeps launch facts transient'
+for launch_fact in 'selected tool' 'installed version' 'documentation source' 'invocation shape' 'model or effort setting' 'usage observation' 'launch result'; do
+  assert_contains "$skill" "$launch_fact" "SKILL.md reports launch fact: $launch_fact"
+done
+for secret_term in credentials tokens secrets; do
+  assert_contains "$skill" "$secret_term" "SKILL.md excludes $secret_term from run records"
+done
+assert_contains "$skill" 'confirmed exhaustion removes a candidate' 'SKILL.md handles confirmed exhaustion'
+assert_contains "$skill" 'unknown or stale evidence does not block launch' 'SKILL.md treats unknown evidence as non-blocking'
+assert_contains "$skill" 'named vendor' 'SKILL.md honors named vendors'
+assert_contains "$skill" 'exact model' 'SKILL.md honors exact models'
+assert_contains "$skill" 'infrastructure failures' 'SKILL.md identifies infrastructure failures'
+assert_contains "$skill" 'exactly one automatic escalation' 'SKILL.md limits quality escalation'
+assert_contains "$skill" 'cleanup status' 'SKILL.md requires cleanup status in the final report'
+assert_contains "$skill" 'every terminal path' 'SKILL.md requires cleanup on every terminal path'
+assert_contains "$skill" 'exact path' 'SKILL.md reports the cleanup path on failure'
 
-expected_description="description: Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, approves outsourcing after the orchestrator defines a bounded assignment, or a bounded task would otherwise be delegated to a native subagent and needs an external alternative."
+expected_description="description: Outsource bounded repository reconnaissance, analysis, test investigation, implementation, research, transformations, artifact-producing work, and independently executable long-running work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, approves outsourcing after the orchestrator defines a bounded assignment, or a bounded task would otherwise be delegated to a native subagent and needs an external alternative."
 assert_contains "$skill" "$expected_description" "SKILL.md uses exact settled frontmatter description"
 
 frontmatter=$(sed -n '2,/^---$/p' "$root/SKILL.md")
@@ -60,7 +101,7 @@ done
 
 for content_name in skill readme; do
   content=${!content_name}
-  for term in model-policy.json 'modes/' 'modes\\' dispatch-worker run-agy-json run-claude-json run-codex-json select-compatible-worker capacity-ledger resource-ledger routing-outcomes worker-adapter publication-compatibility schema_version; do
+  for term in model-policy.json 'modes/' 'modes\\' dispatch-worker run-agy-json run-claude-json run-codex-json select-compatible-worker capacity-ledger resource-ledger routing-outcomes worker-adapter publication-compatibility schema_version 'vendor catalog' 'command table' 'model matrix' 'provider interface' 'persistent usage telemetry' 'performance ledger' 'quota protocol' 'role matrix' 'routing algorithm'; do
     [[ "$content" != *"$term"* ]] || { printf 'FAIL: %s contains %s\n' "$content_name" "$term" >&2; exit 1; }
     pass "$content_name omits $term"
   done

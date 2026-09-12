@@ -43,14 +43,45 @@ $readme = $activeContent[$activePaths[1]]
 $ciPath = Join-Path $root '.github/workflows/ci.yml'
 $ci = [IO.File]::ReadAllText($ciPath)
 
+foreach ($workClass in @(
+    'repository reconnaissance', 'analysis', 'test investigation', 'implementation',
+    'research', 'transformations', 'artifact-producing work',
+    'independently executable long-running work'
+)) {
+    Assert-Contains $skill $workClass "SKILL.md names bounded work class: $workClass"
+    Assert-Contains $readme $workClass "README.md names bounded work class: $workClass"
+}
 foreach ($phrase in @('bounded', 'runtime', 'acceptance criteria', 'launch', 'unfinished', 'orchestrator', 'disposable', 'citation', 'inference', 'nested', 'external vendor', 'lightest', 'escalation', 'benchmark', 'usage')) {
     Assert-Contains $skill $phrase "SKILL.md states $phrase"
 }
 foreach ($phrase in @('runtime', 'benchmark', 'launch', 'unfinished', 'isolated', 'citation', 'inference', 'external vendor', 'lightest', 'escalation', 'usage')) {
     Assert-Contains $readme $phrase "README.md states $phrase"
 }
+Assert-Contains $skill 'Open-ended, indefinite, or tightly interactive work stays local.' 'SKILL.md keeps open-ended and tightly interactive work local'
+Assert-Contains $readme 'Open-ended or tightly interactive work stays local.' 'README.md keeps open-ended and tightly interactive work local'
+Assert-Contains $skill 'Every assignment uses the same shape: objective, scope, acceptance criteria, deliverables, and authority.' 'SKILL.md defines the generic assignment shape'
+Assert-Contains $readme 'objective, scope, acceptance criteria, deliverables, and authority' 'README.md repeats the generic assignment shape'
+Assert-Contains $skill 'shared authority and acceptance criteria' 'SKILL.md permits shared-authority phases'
+Assert-Contains $skill 'Genuinely independent work keeps separate boundaries' 'SKILL.md separates independent work'
+Assert-True ($skill -match '(?is)version-matched official documentation.*installed version and native help.*real launch is the definitive admission check') 'SKILL.md states runtime discovery precedence'
+Assert-Contains $skill 'transient launch record' 'SKILL.md keeps launch facts transient'
+foreach ($launchFact in @('selected tool', 'installed version', 'documentation source', 'invocation shape', 'model or effort setting', 'usage observation', 'launch result')) {
+    Assert-Contains $skill $launchFact "SKILL.md reports launch fact: $launchFact"
+}
+foreach ($secretTerm in @('credentials', 'tokens', 'secrets')) {
+    Assert-Contains $skill $secretTerm "SKILL.md excludes $secretTerm from run records"
+}
+Assert-Contains $skill 'confirmed exhaustion removes a candidate' 'SKILL.md handles confirmed exhaustion'
+Assert-Contains $skill 'unknown or stale evidence does not block launch' 'SKILL.md treats unknown evidence as non-blocking'
+Assert-Contains $skill 'named vendor' 'SKILL.md honors named vendors'
+Assert-Contains $skill 'exact model' 'SKILL.md honors exact models'
+Assert-Contains $skill 'infrastructure failures' 'SKILL.md identifies infrastructure failures'
+Assert-Contains $skill 'exactly one automatic escalation' 'SKILL.md limits quality escalation'
+Assert-Contains $skill 'cleanup status' 'SKILL.md requires cleanup status in the final report'
+Assert-Contains $skill 'every terminal path' 'SKILL.md requires cleanup on every terminal path'
+Assert-Contains $skill 'exact path' 'SKILL.md reports the cleanup path on failure'
 
-$expectedDescription = 'Outsource bounded implementation or research work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, approves outsourcing after the orchestrator defines a bounded assignment, or a bounded task would otherwise be delegated to a native subagent and needs an external alternative.'
+$expectedDescription = 'Outsource bounded repository reconnaissance, analysis, test investigation, implementation, research, transformations, artifact-producing work, and independently executable long-running work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, approves outsourcing after the orchestrator defines a bounded assignment, or a bounded task would otherwise be delegated to a native subagent and needs an external alternative.'
 Assert-Contains $skill "description: $expectedDescription" 'SKILL.md uses exact settled frontmatter description'
 
 $frontmatterMatch = [regex]::Match($skill, '(?s)^---\r?\n(.*?)\r?\n---')
@@ -70,7 +101,10 @@ $removedConcepts = @(
     'model-policy.json', 'modes/', 'modes\', 'dispatch-worker', 'run-agy-json',
     'run-claude-json', 'run-codex-json', 'select-compatible-worker',
     'capacity-ledger', 'resource-ledger', 'routing-outcomes', 'worker-adapter',
-    'publication-compatibility', 'schema_version'
+    'publication-compatibility', 'schema_version', 'vendor catalog', 'command table',
+    'model matrix', 'provider interface',
+    'persistent usage telemetry', 'performance ledger', 'quota protocol',
+    'role matrix', 'routing algorithm'
 )
 foreach ($pair in $activeContent.GetEnumerator()) {
     foreach ($term in $removedConcepts) {

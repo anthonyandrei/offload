@@ -1,30 +1,27 @@
 # Offload
 
-Offload outsources one bounded implementation or research assignment to an external vendor. The orchestrator defines the work, routes it from what is available at runtime, reviews the result, and owns the finish.
+Offload outsources one bounded assignment that benefits from independent execution to an external vendor. Eligible work includes bounded repository reconnaissance, analysis, test investigation, implementation, research, transformations, artifact-producing work, and independently executable long-running work. Open-ended or tightly interactive work stays local. Native subagents remain outside the contract.
 
 ## Contract
 
 The orchestrator:
 
-- activates Offload when the user asks to outsource, names an external vendor or model, or approves outsourcing after the orchestrator defines a bounded assignment. The orchestrator can offer that external alternative when the task would otherwise be delegated to a native subagent;
-- uses external vendors only. Native subagents and native multi-agent calls stay outside this contract;
-- defines the objective, scope, acceptance criteria, deliverables, and authority boundary before launch;
-- discovers vendors, models, tools, and current capabilities at runtime without copying catalogs, commands, model matrices, adapters, or routing ledgers into the skill;
-- consults relevant advisory benchmarks and native usage signals. Exact current evidence is preferred, but missing or stale evidence does not block a real launch;
-- selects the lightest model and lowest reasoning effort that appear capable of meeting the acceptance criteria;
+- activates Offload after an explicit outsourcing request, a named vendor or model, or user approval of a defined bounded assignment;
+- defines every assignment with the same shape: objective, scope, acceptance criteria, deliverables, and authority;
+- keeps phases with shared authority and acceptance criteria together, and gives genuinely independent work separate boundaries;
+- discovers current vendor, model, and tool details at runtime;
+- uses version-matched official documentation for capability, installed version and native help for invocation details, and a real launch as the definitive admission check;
+- keeps the launch record transient to the run and excludes credentials, tokens, and secrets;
+- uses advisory benchmark references and native usage observations to choose the lightest capable model and effort, while unknown or stale evidence does not block launch;
 - honors named vendors and exact models;
-- returns launch, timeout, quota, and tool failures without automatic provider switching; the assignment remains unfinished;
-- allows exactly one quality-gate escalation after refreshed benchmark and usage checks. Generic approval can switch vendors; named vendor and exact model constraints still apply;
-- stops after a failed escalation, finishing locally when safe or reporting the usable partial result and precise blocker;
-- reviews implementation diffs and verification, audits research citations, cleans disposable workspaces, and reports what happened.
+- returns infrastructure failures and unfinished work without automatic provider switching;
+- allows exactly one quality-gate escalation, then finishes locally when safe or reports the usable partial result and precise blocker;
+- reviews implementation diffs and research citations before acceptance;
+- reports the assignment, selection, benchmark and usage evidence, result, verification, uncertainty or blockers, and cleanup status after removing and verifying every disposable workspace.
 
-## Implementation assignments
+## Work types
 
-Implementation runs in a disposable isolated worktree or project copy. The orchestrator checks the final diff for scope and intent, runs the relevant project checks, and accepts or integrates the result only when the acceptance criteria pass.
-
-## Research assignments
-
-Research starts with bounded questions and evidence responsibilities. The worker uses credible sources, and the orchestrator checks that every material citation resolves and supports its claim. Inference, uncertainty, disagreement, missing evidence, and stale evidence stay visible in the final synthesis.
+Implementation uses an isolated disposable worktree or project copy. Repository reconnaissance can use a complete disposable workspace, and temporary notes remain disposable. Research uses bounded questions, credible sources, citation checks, and visible inference or uncertainty. Transformations and artifact-producing work define their source, output, format, and acceptance checks.
 
 ## Repository layout
 
@@ -35,7 +32,7 @@ Research starts with bounded questions and evidence responsibilities. The worker
 
 ## Installation
 
-Install the repository directory as a skill. `SKILL.md` is the contract and `scripts/` contains its generic safety helpers.
+Install the repository directory as a skill. `SKILL.md` is the contract and `scripts/` contains the generic safety helpers.
 
 ## Verification
 
