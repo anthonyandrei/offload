@@ -61,7 +61,8 @@ function Read-Marker([string]$Workspace) {
     if ($content -ne $script:MarkerContent) {
         Fail ("refusing to clean a directory with an invalid marker: " + $Workspace)
     }
-    if (Test-Path -LiteralPath (Join-Path $Workspace '.git')) {
+    & git -C $Workspace rev-parse --show-toplevel 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
         Fail ("refusing to clean a Git checkout: " + $Workspace)
     }
 }

@@ -6,9 +6,11 @@ Set-StrictMode -Version Latest
 $script:TotalTests = 0
 function Pass([string]$Name) { [void]($script:TotalTests++); [Console]::Out.WriteLine("ok - $Name") }
 function Assert-True([bool]$Condition, [string]$Name) { if (-not $Condition) { throw "FAIL: $Name" }; Pass $Name }
+function Assert-False([bool]$Condition, [string]$Name) { Assert-True (-not $Condition) $Name }
 
 $root = Split-Path -Parent $PSScriptRoot
 $fixture = Join-Path $root 'tests/fixtures/fake-worker-failure.ps1'
+$cleanup = Join-Path $root 'scripts/cleanup-research-workspace.ps1'
 $skill = [IO.File]::ReadAllText((Join-Path $root 'SKILL.md'))
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('offload-failure-ps-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($tempRoot) | Out-Null
@@ -41,10 +43,26 @@ try {
     )
     foreach ($outcome in $outcomes) {
         $outcomeCounter = Join-Path $tempRoot ($outcome.Name + '-counter.txt')
-        & pwsh -NoProfile -NonInteractive -File $fixture $outcomeCounter $outcome.Mode
+        $lifecycleWorkspace = Join-Path $tempRoot ($outcome.Name + '-workspace')
+        [IO.Directory]::CreateDirectory($lifecycleWorkspace) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $lifecycleWorkspace '.offload-research-workspace'), "offload-research-workspace-v2`n")
+        & pwsh -NoProfile -NonInteractive -File $fixture $outcomeCounter $outcome.Mode $lifecycleWorkspace
         $outcomeExit = $LASTEXITCODE
         Assert-True ($outcomeExit -eq $outcome.ExitCode) "$($outcome.Name) has a deterministic terminal outcome"
         Assert-True ([IO.File]::ReadAllText($outcomeCounter).Trim() -eq '1') "$($outcome.Name) records one bounded run"
+        $capturedResult = ''
+        foreach ($artifact in @('deliverables', 'diffs', 'evidence', 'transient-run-facts')) {
+            $artifactPath = Join-Path $lifecycleWorkspace ($artifact + '.txt')
+            Assert-True (Test-Path -LiteralPath $artifactPath -PathType Leaf) "$($outcome.Name) captures $artifact before cleanup"
+            $capturedValue = [IO.File]::ReadAllText($artifactPath).Trim()
+            Assert-True (-not [string]::IsNullOrWhiteSpace($capturedValue)) "$($outcome.Name) captures non-empty $artifact"
+            $capturedResult += $capturedValue
+        }
+        $cleanupOutput = & pwsh -NoProfile -NonInteractive -File $cleanup --workspace $lifecycleWorkspace 2>&1
+        $cleanupExit = $LASTEXITCODE
+        Assert-True ($cleanupExit -eq 0) "$($outcome.Name) cleanup succeeds"
+        Assert-False (Test-Path -LiteralPath $lifecycleWorkspace) "$($outcome.Name) cleanup removes its workspace"
+        Assert-True ($capturedResult.Contains($outcome.Mode)) "$($outcome.Name) retains the pre-cleanup capture"
     }
 
     foreach ($field in @('deliverables', 'diffs', 'evidence', 'transient run facts')) {

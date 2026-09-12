@@ -146,11 +146,19 @@ remove_empty_generated_parent() {
 
 cleanup_failed_execution_creation() {
   local status=$?
-  if ((status != 0)) && [[ -n "${generated_parent:-}" ]]; then
-    if [[ -n "${source_path:-}" && -n "${workspace:-}" ]]; then
+  if ((status != 0)); then
+    if [[ -n "${source_path:-}" && -n "${workspace:-}" && -e "$workspace" ]]; then
       git -C "$source_path" worktree remove --force "$workspace" >/dev/null 2>&1 || true
     fi
-    rm -rf -- "$generated_parent" >/dev/null 2>&1 || true
+    if [[ -n "${workspace:-}" && ( -e "$workspace" || -L "$workspace" ) ]] && { ! rm -rf -- "$workspace" >/dev/null 2>&1 || [[ -e "$workspace" || -L "$workspace" ]]; }; then
+      printf 'WARNING: cleanup incomplete; leftover path: %s\n' "$workspace" >&2
+    fi
+    if [[ -n "${generated_parent:-}" && ( -e "$generated_parent" || -L "$generated_parent" ) ]] && { ! rm -rf -- "$generated_parent" >/dev/null 2>&1 || [[ -e "$generated_parent" || -L "$generated_parent" ]]; }; then
+      printf 'WARNING: cleanup incomplete; leftover path: %s\n' "$generated_parent" >&2
+    fi
+    if [[ -n "${source_path:-}" ]]; then
+      git -C "$source_path" worktree prune >/dev/null 2>&1 || true
+    fi
   fi
   return "$status"
 }
@@ -235,13 +243,13 @@ case "$command" in
     if [[ -z "$workspace" ]]; then
       generated_parent=$(mktemp -d "${TMPDIR:-/tmp}/offload-exec-${task_id}-XXXXXX") || fail 'could not create a temporary workspace parent'
       workspace="$generated_parent/checkout"
-      trap cleanup_failed_execution_creation EXIT
     else
       workspace=$(canonical_workspace_path "$workspace")
     fi
     check_safe_workspace_path "$workspace" "$source_path"
-    [[ ! -e "$workspace" ]] || fail "workspace already exists: $workspace"
+    [[ ! -e "$workspace" && ! -L "$workspace" ]] || fail "workspace already exists: $workspace"
     mkdir -p -- "$(dirname -- "$workspace")"
+    trap cleanup_failed_execution_creation EXIT
 
     if [[ -n "$generated_parent" ]]; then
       if ! printf '%s\n' "$generated_parent_marker_content" > "$generated_parent/$generated_parent_marker_name"; then
@@ -252,12 +260,9 @@ case "$command" in
       fail "could not create execution worktree: $workspace"
     fi
     if ! printf '%s\n' "$marker_content" > "$workspace/$marker_name"; then
-      git -C "$source_path" worktree remove --force "$workspace" >/dev/null 2>&1 || true
       fail "could not mark execution worktree: $workspace"
     fi
-    if [[ -n "$generated_parent" ]]; then
-      trap - EXIT
-    fi
+    trap - EXIT
     printf '%s\n' "$workspace"
     ;;
   check)

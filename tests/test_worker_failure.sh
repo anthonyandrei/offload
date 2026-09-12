@@ -3,6 +3,7 @@ set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 fixture="$root/tests/fixtures/fake-worker-failure.sh"
+cleanup_helper="$root/scripts/cleanup-research-workspace.sh"
 skill=$(<"$root/SKILL.md")
 temp_root=$(mktemp -d "/tmp/offload-failure-sh.XXXXXX")
 trap 'rm -rf -- "$temp_root"' EXIT
@@ -34,9 +35,22 @@ for outcome in \
   'local-finish|local-finish|0'; do
   IFS='|' read -r outcome_name mode expected_exit <<< "$outcome"
   outcome_counter="$temp_root/$outcome_name-counter.txt"
-  if bash "$fixture" "$outcome_counter" "$mode"; then outcome_exit=0; else outcome_exit=$?; fi
+  lifecycle_workspace="$temp_root/$outcome_name-workspace"
+  mkdir -p -- "$lifecycle_workspace"
+  printf 'offload-research-workspace-v2\n' > "$lifecycle_workspace/.offload-research-workspace"
+  if bash "$fixture" "$outcome_counter" "$mode" "$lifecycle_workspace"; then outcome_exit=0; else outcome_exit=$?; fi
   assert_true test "$( [ "$outcome_exit" -eq "$expected_exit" ] && printf true || printf false )" "$outcome_name has a deterministic terminal outcome"
   assert_true test "$( [ "$(<"$outcome_counter")" -eq 1 ] && printf true || printf false )" "$outcome_name records one bounded run"
+  captured_result=''
+  for artifact in deliverables diffs evidence transient-run-facts; do
+    artifact_path="$lifecycle_workspace/$artifact.txt"
+    assert_true test "$( [ -s "$artifact_path" ] && printf true || printf false )" "$outcome_name captures $artifact before cleanup"
+    captured_result="$captured_result$(<"$artifact_path")"
+  done
+  if output=$(bash "$cleanup_helper" --workspace "$lifecycle_workspace"); then lifecycle_cleanup_code=0; else lifecycle_cleanup_code=$?; fi
+  assert_true test "$( [ "$lifecycle_cleanup_code" -eq 0 ] && printf true || printf false )" "$outcome_name cleanup succeeds"
+  assert_true test "$( [ ! -e "$lifecycle_workspace" ] && printf true || printf false )" "$outcome_name cleanup removes its workspace"
+  assert_true test "$( printf '%s' "$captured_result" | grep -Fq -- "$mode" && printf true || printf false )" "$outcome_name retains the pre-cleanup capture"
 done
 
 for field in deliverables diffs evidence 'transient run facts'; do

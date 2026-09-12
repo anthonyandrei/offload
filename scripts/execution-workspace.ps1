@@ -250,6 +250,30 @@ function Remove-TreeSafely([string]$Path) {
     Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
 }
 
+function Cleanup-FailedExecutionCreation([string]$SourcePath, [string]$WorkspacePath, [string]$GeneratedParentPath) {
+    if (-not [string]::IsNullOrWhiteSpace($WorkspacePath) -and (Test-Path -LiteralPath $WorkspacePath)) {
+        try {
+            & git -C $SourcePath worktree remove --force $WorkspacePath 2>$null | Out-Null
+        } catch {}
+        if (Test-Path -LiteralPath $WorkspacePath) {
+            try { Remove-TreeSafely $WorkspacePath } catch {}
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($GeneratedParentPath) -and (Test-Path -LiteralPath $GeneratedParentPath)) {
+        try { Remove-TreeSafely $GeneratedParentPath } catch {}
+    }
+
+    $leftovers = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in @($WorkspacePath, $GeneratedParentPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
+        if (Test-Path -LiteralPath $path) { $leftovers.Add($path) }
+    }
+    if ($leftovers.Count -gt 0) {
+        foreach ($path in $leftovers) {
+            [Console]::Error.WriteLine("WARNING: cleanup incomplete; leftover path: $path")
+        }
+    }
+}
+
 function Show-Usage {
     [Console]::Error.WriteLine(@'
 Usage:
@@ -326,35 +350,23 @@ function Command-Create([string[]]$CommandArgs) {
     }
 
     $parent = Split-Path -Parent $workspace
-    if (-not [string]::IsNullOrWhiteSpace($parent)) {
-        try {
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($parent)) {
             [System.IO.Directory]::CreateDirectory($parent) | Out-Null
             if (-not [string]::IsNullOrWhiteSpace($generatedParent)) {
                 [System.IO.File]::WriteAllText((Join-Path $generatedParent $script:GeneratedParentMarkerName), $script:GeneratedParentMarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
             }
-        } catch {
-            if (-not [string]::IsNullOrWhiteSpace($generatedParent) -and (Test-Path -LiteralPath $generatedParent)) {
-                try { Remove-TreeSafely $generatedParent } catch {}
-            }
-            Fail ("could not prepare execution workspace: " + $workspace + ": " + $_.Exception.Message)
         }
-    }
 
-    $result = Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'add', '--detach', $workspace, $resolvedBaseline)
-    if ($result.ExitCode -ne 0) {
-        try { Remove-EmptyGeneratedParent $workspace } catch {}
-        Fail ("could not create execution worktree: " + $workspace + ": " + $result.Stderr.Trim())
-    }
-
-    try {
+        $result = Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'add', '--detach', $workspace, $resolvedBaseline)
+        if ($result.ExitCode -ne 0) {
+            throw ("could not create execution worktree: " + $workspace + ": " + $result.Stderr.Trim())
+        }
         [System.IO.File]::WriteAllText((Join-Path $workspace $script:MarkerName), $script:MarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
     } catch {
-        Run-Git -WorkingDirectory $sourcePath -Arguments @('worktree', 'remove', '--force', $workspace) | Out-Null
-        if (Test-Path -LiteralPath $workspace) {
-            try { Remove-TreeSafely $workspace } catch {}
-        }
-        try { Remove-EmptyGeneratedParent $workspace } catch {}
-        Fail ("could not mark execution worktree: " + $workspace + ": " + $_.Exception.Message)
+        $creationError = $_.Exception.Message
+        Cleanup-FailedExecutionCreation $sourcePath $workspace $generatedParent
+        Fail $creationError
     }
 
     [Console]::Out.WriteLine($workspace)

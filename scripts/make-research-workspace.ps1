@@ -209,9 +209,8 @@ Test-SafeWorkspacePath $workspace $sourcePath
 if (Test-Path -LiteralPath $workspace) {
     Fail ("workspace already exists: " + $workspace)
 }
-[System.IO.Directory]::CreateDirectory($workspace) | Out-Null
-
 try {
+    [System.IO.Directory]::CreateDirectory($workspace) | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $workspace $script:MarkerName), $script:MarkerContent + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
     $repoRoot = Join-Path $workspace 'repo'
     foreach ($relativePath in $relativePaths) {
@@ -230,13 +229,19 @@ try {
         }
     }
 } catch {
+    $creationError = $_.Exception.Message
+    $cleanupIncomplete = $false
     if (Test-Path -LiteralPath $workspace) {
-        try { Remove-TreeSafely $workspace } catch {}
+        try { Remove-TreeSafely $workspace } catch { $cleanupIncomplete = $true }
+        if (Test-Path -LiteralPath $workspace) { $cleanupIncomplete = $true }
     }
-    if ($_.Exception.Message.StartsWith('Error:')) {
-        [Console]::Error.WriteLine($_.Exception.Message)
+    if ($cleanupIncomplete) {
+        [Console]::Error.WriteLine("WARNING: cleanup incomplete; leftover path: $workspace")
+    }
+    if ($creationError.StartsWith('Error:')) {
+        [Console]::Error.WriteLine($creationError)
     } else {
-        [Console]::Error.WriteLine("Error: could not create research snapshot: " + $_.Exception.Message)
+        [Console]::Error.WriteLine("Error: could not create research snapshot: " + $creationError)
     }
     exit 1
 }

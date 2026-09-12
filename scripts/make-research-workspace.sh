@@ -17,7 +17,9 @@ fail() {
 cleanup_failed_research_creation() {
   local status=$?
   if ((status != 0)) && [[ "${workspace_created:-0}" = 1 ]] && [[ -n "${workspace:-}" ]]; then
-    rm -rf -- "$workspace" >/dev/null 2>&1 || true
+    if ! rm -rf -- "$workspace" >/dev/null 2>&1 || [[ -e "$workspace" || -L "$workspace" ]]; then
+      printf 'WARNING: cleanup incomplete; leftover path: %s\n' "$workspace" >&2
+    fi
   fi
   return "$status"
 }

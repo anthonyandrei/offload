@@ -94,6 +94,13 @@ try {
     Assert-False ($insideSource.ExitCode -eq 0) 'research snapshot rejects a workspace inside the source'
     Assert-False (Test-Path -LiteralPath $inside) 'source-bound workspace rejection leaves no workspace'
 
+    $markedInside = Join-Path $repo 'marked-snapshot'
+    [IO.Directory]::CreateDirectory($markedInside) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $markedInside '.offload-research-workspace'), "offload-research-workspace-v2`n")
+    $markedInsideCleanup = Invoke-Script $cleanup @('--workspace', $markedInside)
+    Assert-False ($markedInsideCleanup.ExitCode -eq 0) 'research cleanup rejects a marked directory inside a Git repository'
+    Assert-True (Test-Path -LiteralPath $markedInside -PathType Container) 'Git-contained research directory is preserved'
+
     $sourceAlias = Join-Path $tempRoot 'source-alias'
     New-Item -ItemType Junction -Path $sourceAlias -Target $repo | Out-Null
     $junctionWorkspace = Join-Path $sourceAlias 'snapshot'
