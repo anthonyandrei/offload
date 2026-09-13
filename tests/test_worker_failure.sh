@@ -64,7 +64,7 @@ done
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'unfinished assignment' && printf true || printf false )" 'contract returns unfinished work to the orchestrator'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'without automatic provider switching' && printf true || printf false )" 'contract forbids automatic provider switching on infrastructure failure'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'quality-gate failure' && printf '%s' "$skill" | grep -Fq 'exactly one automatic escalation' && printf true || printf false )" 'contract permits one automatic escalation on quality-gate failure'
-assert_true test "$( printf '%s' "$skill" | grep -Fq 'smallest credible improvement' && printf true || printf false )" 'escalation chooses smallest credible improvement'
+assert_true test "$( printf '%s' "$skill" | grep -Fq 'smallest credible improvement in quality' && printf '%s' "$skill" | grep -Fq 'remains reasonably priced' && printf true || printf false )" 'escalation chooses smallest credible quality improvement at a reasonable price'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'cross-vendor escalation' && printf true || printf false )" 'generic approval permits cross-vendor escalation'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'constrains escalation to that vendor' && printf true || printf false )" 'named vendor constrains escalation'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'exact model remains pinned' && printf true || printf false )" 'named exact model remains pinned'

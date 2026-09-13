@@ -12,7 +12,7 @@ The orchestrator:
 - discovers current vendor, model, and tool details at runtime;
 - uses version-matched official documentation for capability, installed version and native help for invocation details, and a real launch as the definitive admission check;
 - keeps the launch record transient to the run and excludes credentials, tokens, and secrets;
-- uses advisory benchmark references and native usage observations to choose the lightest capable model and effort, while unknown or stale evidence does not block launch;
+- uses the task's best-matched advisory benchmark and available pricing to prefer the most accurate capable model and effort, while skipping a clear price outlier without a material quality advantage;
 - honors named vendors and exact models;
 - returns infrastructure failures and unfinished work without automatic provider switching;
 - allows exactly one quality-gate escalation, then finishes locally when safe or reports the usable partial result and precise blocker;

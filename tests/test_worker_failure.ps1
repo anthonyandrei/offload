@@ -76,7 +76,7 @@ try {
     Assert-True ($skill.Contains('unfinished assignment')) 'contract returns unfinished work to the orchestrator'
     Assert-True ($skill.Contains('without automatic provider switching')) 'contract forbids automatic provider switching on infrastructure failure'
     Assert-True ($skill.Contains('quality-gate failure') -and $skill.Contains('exactly one automatic escalation')) 'contract permits one automatic escalation on quality-gate failure'
-    Assert-True ($skill.Contains('smallest credible improvement')) 'escalation chooses smallest credible improvement'
+    Assert-True (($skill.Contains('smallest credible improvement in quality')) -and ($skill.Contains('remains reasonably priced'))) 'escalation chooses smallest credible quality improvement at a reasonable price'
     Assert-True ($skill.Contains('cross-vendor escalation')) 'generic approval permits cross-vendor escalation'
     Assert-True ($skill.Contains('constrains escalation to that vendor')) 'named vendor constrains escalation'
     Assert-True ($skill.Contains('exact model remains pinned')) 'named exact model remains pinned'

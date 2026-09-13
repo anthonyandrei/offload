@@ -51,12 +51,25 @@ foreach ($workClass in @(
     Assert-Contains $skill $workClass "SKILL.md names bounded work class: $workClass"
     Assert-Contains $readme $workClass "README.md names bounded work class: $workClass"
 }
-foreach ($phrase in @('bounded', 'runtime', 'acceptance criteria', 'launch', 'unfinished', 'orchestrator', 'disposable', 'citation', 'inference', 'nested', 'external vendor', 'lightest', 'escalation', 'benchmark', 'usage')) {
+foreach ($phrase in @('bounded', 'runtime', 'acceptance criteria', 'launch', 'unfinished', 'orchestrator', 'disposable', 'citation', 'inference', 'nested', 'external vendor', 'quality', 'price', 'escalation', 'benchmark', 'usage')) {
     Assert-Contains $skill $phrase "SKILL.md states $phrase"
 }
-foreach ($phrase in @('runtime', 'benchmark', 'launch', 'unfinished', 'isolated', 'citation', 'inference', 'external vendor', 'lightest', 'escalation', 'usage')) {
+foreach ($phrase in @('runtime', 'benchmark', 'launch', 'unfinished', 'isolated', 'citation', 'inference', 'external vendor', 'quality', 'price', 'escalation', 'usage')) {
     Assert-Contains $readme $phrase "README.md states $phrase"
 }
+foreach ($phrase in @(
+    'best matches the task', 'exact model and reasoning effort', 'most accurate candidate',
+    'same benchmark context', 'price is a clear outlier', 'material quality advantage',
+    'not a fixed multiplier', 'current runtime or published pricing',
+    'benchmark cost is comparative evidence', 'If several benchmarks apply',
+    'Do not combine incomparable benchmarks or scores into a synthetic ranking'
+)) {
+    Assert-Contains $skill $phrase "SKILL.md states routing rule: $phrase"
+}
+Assert-Contains $readme 'most accurate capable model and effort' 'README.md states quality-first routing'
+Assert-Contains $readme 'clear price outlier' 'README.md states relative price guardrail'
+Assert-NotContains $skill 'lightest model' 'SKILL.md omits superseded lightest-model preference'
+Assert-NotContains $readme 'lightest capable model' 'README.md omits superseded lightest-model preference'
 Assert-Contains $skill 'Open-ended, indefinite, or tightly interactive work stays local.' 'SKILL.md keeps open-ended and tightly interactive work local'
 Assert-Contains $readme 'Open-ended or tightly interactive work stays local.' 'README.md keeps open-ended and tightly interactive work local'
 Assert-Contains $skill 'Every assignment uses the same shape: objective, scope, acceptance criteria, deliverables, and authority.' 'SKILL.md defines the generic assignment shape'

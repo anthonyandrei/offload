@@ -34,7 +34,7 @@ Discover vendors, models, tools, and capabilities at runtime. Runtime discovery 
 
 Report a mismatch as uncertainty instead of guessing. Keep a transient launch record for the current run only. It may contain the selected tool, installed version, documentation source, invocation shape, model or effort setting, usage observation, and launch result. Exclude credentials, tokens, and secrets from that record and from the final report. Vendor and model details remain run-time facts rather than fixed contract content.
 
-Use relevant advisory benchmark references and native usage observations to choose the lightest model and lowest reasoning effort that appear capable of meeting the acceptance criteria. Missing evidence does not block launch. Unknown or stale evidence does not block launch. Confirmed exhaustion removes a candidate from automatic selection. Never combine incomparable benchmarks into a synthetic score.
+Use the advisory benchmark reference that best matches the task, preferring evidence for the exact model and reasoning effort. Treat each model-and-effort pair as one candidate. Among candidates that appear capable of meeting the acceptance criteria, prefer the most accurate candidate. Compare its estimated assignment cost with the other capable candidates in the same benchmark context and skip it only when its price is a clear outlier without a material quality advantage. Reasonable relative price is a judgment, not a fixed multiplier. Use current runtime or published pricing when available; benchmark cost is comparative evidence when current pricing is unavailable. If several benchmarks apply, use the best-matched task category and keep other evidence secondary. Do not combine incomparable benchmarks or scores into a synthetic ranking. Missing evidence does not block launch. Unknown or stale evidence does not block launch. Confirmed exhaustion removes a candidate from automatic selection.
 
 Honor explicitly named vendors and exact models. Generic approval permits cross-vendor escalation. A named vendor constrains escalation to that vendor. An exact model remains pinned.
 
@@ -56,7 +56,7 @@ For transformations and artifact-producing work, scope the source, output, forma
 
 Infrastructure failures, including launch, timeout, quota, and tool failures, return the unfinished assignment and any usable partial output to the orchestrator without automatic provider switching. The assignment remains unfinished until the orchestrator completes it locally or reports the blocker.
 
-A quality-gate failure, such as unmet acceptance criteria, an unverified diff, or unsupported research citations, permits exactly one automatic escalation after refreshing benchmark and usage checks. Choose the smallest credible improvement among available capable candidates.
+A quality-gate failure, such as unmet acceptance criteria, an unverified diff, or unsupported research citations, permits exactly one automatic escalation after refreshing benchmark and usage checks. Choose the smallest credible improvement in quality that remains reasonably priced against the other capable candidates.
 
 If the escalation fails its quality gate, stop automatic attempts. No third automatic attempt is permitted. Finish the assignment locally when safe. Otherwise report the usable partial result and precise blocker.
 
