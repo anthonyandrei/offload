@@ -78,7 +78,7 @@ try {
     Assert-True ($skill.Contains('quality-gate failure') -and $skill.Contains('exactly one automatic escalation')) 'contract permits one automatic escalation on quality-gate failure'
     Assert-True (($skill.Contains('smallest credible improvement in quality')) -and ($skill.Contains('remains reasonably priced'))) 'escalation chooses smallest credible quality improvement at a reasonable price'
     Assert-True ($skill.Contains('cross-vendor escalation')) 'generic approval permits cross-vendor escalation'
-    Assert-True ($skill.Contains('constrains escalation to that vendor')) 'named vendor constrains escalation'
+    Assert-True ($skill.Contains('constrains routing and escalation to that vendor')) 'named vendor constrains routing and escalation'
     Assert-True ($skill.Contains('exact model remains pinned')) 'named exact model remains pinned'
     Assert-True ($skill.Contains('No third automatic attempt is permitted')) 'contract forbids a third automatic attempt'
     Assert-True ($skill.Contains('Finish the assignment locally when safe')) 'orchestrator finishes locally when safe'

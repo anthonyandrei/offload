@@ -12,12 +12,12 @@ The orchestrator:
 - discovers current vendor, model, and tool details at runtime;
 - uses version-matched official documentation for capability, installed version and native help for invocation details, and a real launch as the definitive admission check;
 - keeps the launch record transient to the run and excludes credentials, tokens, and secrets;
-- uses the task's best-matched advisory benchmark and available pricing to prefer the most accurate capable model and effort, while skipping a clear price outlier without a material quality advantage;
-- honors named vendors and exact models;
+- uses benchmark-first routing for every automatic initial selection and quality escalation: after discovering plausible candidates, opens the actual task-matched benchmark URL and uses its latest result as primary quality evidence before adjudicating, prefers the most accurate capable model and effort, and skips it only for a clear price outlier among comparable capable candidates without a material quality advantage; use judgment to interpret the benchmark result against runtime facts, not to bypass it, and record any concrete departure reason;
+- honors named vendors, models, and reasoning efforts, while applying benchmark-first routing to any remaining unpinned dimensions;
 - returns infrastructure failures and unfinished work without automatic provider switching;
 - allows exactly one quality-gate escalation, then finishes locally when safe or reports the usable partial result and precise blocker;
 - reviews implementation diffs and research citations before acceptance;
-- reports the assignment, selection, benchmark and usage evidence, result, verification, uncertainty or blockers, and cleanup status after removing and verifying every disposable workspace.
+- reports the assignment, selection, benchmark URL and access date, benchmark result or explicit evidence gap, usage evidence, result, verification, any departure reason, uncertainty or blockers, and cleanup status after removing and verifying every disposable workspace.
 
 ## Work types
 

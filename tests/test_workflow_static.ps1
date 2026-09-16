@@ -40,6 +40,9 @@ foreach ($path in $activePaths) {
 
 $skill = $activeContent[$activePaths[0]]
 $readme = $activeContent[$activePaths[1]]
+$context = [IO.File]::ReadAllText((Join-Path $root 'CONTEXT.md'))
+$adr = [IO.File]::ReadAllText((Join-Path $root 'docs/adr/0015-prefer-quality-first-routing-within-a-reasonable-relative-price.md'))
+$research = [IO.File]::ReadAllText((Join-Path $root 'docs/research/2026-09-07-benchmark-references-for-runtime-routing.md'))
 $ciPath = Join-Path $root '.github/workflows/ci.yml'
 $ci = [IO.File]::ReadAllText($ciPath)
 
@@ -77,6 +80,15 @@ Assert-Contains $readme 'objective, scope, acceptance criteria, deliverables, an
 Assert-Contains $skill 'shared authority and acceptance criteria' 'SKILL.md permits shared-authority phases'
 Assert-Contains $skill 'Genuinely independent work keeps separate boundaries' 'SKILL.md separates independent work'
 Assert-True ($skill -match '(?is)version-matched official documentation.*installed version and native help.*real launch is the definitive admission check') 'SKILL.md states runtime discovery precedence'
+Assert-True ($skill -match '(?is)opens the actual URL.*latest relevant result.*adjudicating candidates') 'SKILL.md requires benchmark-first routing'
+Assert-Contains $skill 'benchmark-first routing' 'SKILL.md names benchmark-first routing'
+Assert-Contains $skill 'primary quality evidence' 'SKILL.md makes benchmark results primary quality evidence'
+Assert-Contains $skill 'Use judgment to interpret the benchmark result against runtime facts, not to bypass it' 'SKILL.md bases judgment on benchmark results'
+Assert-Contains $skill 'explicit evidence gap' 'SKILL.md records benchmark evidence gaps'
+Assert-Contains $skill 'benchmark URL' 'SKILL.md records the benchmark URL'
+Assert-Contains $skill 'access date' 'SKILL.md records benchmark access date'
+Assert-Contains $skill 'departure reason' 'SKILL.md records routing departures'
+Assert-Contains $skill 'fully pinned vendor, model, and effort' 'SKILL.md exempts fully pinned choices'
 Assert-Contains $skill 'transient launch record' 'SKILL.md keeps launch facts transient'
 foreach ($launchFact in @('selected tool', 'installed version', 'documentation source', 'invocation shape', 'model or effort setting', 'usage observation', 'launch result')) {
     Assert-Contains $skill $launchFact "SKILL.md reports launch fact: $launchFact"
@@ -93,6 +105,11 @@ Assert-Contains $skill 'exactly one automatic escalation' 'SKILL.md limits quali
 Assert-Contains $skill 'cleanup status' 'SKILL.md requires cleanup status in the final report'
 Assert-Contains $skill 'every terminal path' 'SKILL.md requires cleanup on every terminal path'
 Assert-Contains $skill 'exact path' 'SKILL.md reports the cleanup path on failure'
+Assert-Contains $readme 'actual task-matched benchmark URL' 'README.md requires the actual benchmark URL'
+Assert-Contains $readme 'every automatic initial selection and quality escalation' 'README.md applies benchmark-first routing to every automatic route'
+Assert-Contains $context 'Benchmark-first routing' 'CONTEXT.md defines benchmark-first routing'
+Assert-Contains $adr 'Clarified: 2026-09-16' 'ADR 0015 records the clarification date'
+Assert-Contains $research 'every automatic initial selection and quality escalation' 'benchmark research requires every automatic route to check the URL'
 
 $expectedDescription = 'Outsource bounded repository reconnaissance, analysis, test investigation, implementation, research, transformations, artifact-producing work, and independently executable long-running work to an external vendor. Use when the user explicitly asks to offload, names an external vendor or model, approves outsourcing after the orchestrator defines a bounded assignment, or a bounded task would otherwise be delegated to a native subagent and needs an external alternative.'
 Assert-Contains $skill "description: $expectedDescription" 'SKILL.md uses exact settled frontmatter description'

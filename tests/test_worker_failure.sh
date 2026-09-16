@@ -66,7 +66,7 @@ assert_true test "$( printf '%s' "$skill" | grep -Fq 'without automatic provider
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'quality-gate failure' && printf '%s' "$skill" | grep -Fq 'exactly one automatic escalation' && printf true || printf false )" 'contract permits one automatic escalation on quality-gate failure'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'smallest credible improvement in quality' && printf '%s' "$skill" | grep -Fq 'remains reasonably priced' && printf true || printf false )" 'escalation chooses smallest credible quality improvement at a reasonable price'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'cross-vendor escalation' && printf true || printf false )" 'generic approval permits cross-vendor escalation'
-assert_true test "$( printf '%s' "$skill" | grep -Fq 'constrains escalation to that vendor' && printf true || printf false )" 'named vendor constrains escalation'
+assert_true test "$( printf '%s' "$skill" | grep -Fq 'constrains routing and escalation to that vendor' && printf true || printf false )" 'named vendor constrains routing and escalation'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'exact model remains pinned' && printf true || printf false )" 'named exact model remains pinned'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'No third automatic attempt is permitted' && printf true || printf false )" 'contract forbids a third automatic attempt'
 assert_true test "$( printf '%s' "$skill" | grep -Fq 'Finish the assignment locally when safe' && printf true || printf false )" 'orchestrator finishes locally when safe'
