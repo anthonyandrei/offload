@@ -144,11 +144,10 @@ for content_name in skill readme; do
 done
 
 for source in \
-  'https://deepswe.datacurve.ai/' 'https://livebench.ai/' \
-  'https://drb.futuresearch.ai/' 'https://deepresearch-bench.github.io/' \
-  'https://artificialanalysis.ai/models'; do
+  'https://deepswe.datacurve.ai/' 'https://artificialanalysis.ai/models'; do
   assert_contains "$skill" "$source" "SKILL.md retains benchmark source: $source"
 done
+assert_contains "$skill" 'its results are a proxy' 'SKILL.md labels research routing evidence as a proxy'
 
 for relative in \
   model-policy.json modes/execution.md modes/repo-research.md modes/web-research.md \

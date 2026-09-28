@@ -64,11 +64,13 @@ for link in scripts/check-execution-scope.sh scripts/execution-workspace.sh; do
 done
 
 for source in \
-  'https://deepswe.datacurve.ai/' 'https://livebench.ai/' \
-  'https://drb.futuresearch.ai/' 'https://deepresearch-bench.github.io/' \
-  'https://artificialanalysis.ai/models'; do
+  'https://deepswe.datacurve.ai/' 'https://artificialanalysis.ai/models'; do
   [[ "$skill" == *"$source"* ]] || { printf 'FAIL: SKILL.md lacks benchmark source: %s\n' "$source" >&2; exit 1; }
   pass "SKILL.md retains benchmark source: $source"
+done
+for source in 'https://livebench.ai/' 'https://drb.futuresearch.ai/' 'https://deepresearch-bench.github.io/'; do
+  [[ "$skill" != *"$source"* ]] || { printf 'FAIL: SKILL.md retains old benchmark source: %s\n' "$source" >&2; exit 1; }
+  pass "SKILL.md omits old benchmark source: $source"
 done
 
 for stale in CONTEXT.md docs/adr/ docs/research/; do

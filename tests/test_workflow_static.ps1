@@ -144,12 +144,11 @@ foreach ($pair in $activeContent.GetEnumerator()) {
 }
 
 foreach ($source in @(
-    'https://deepswe.datacurve.ai/', 'https://livebench.ai/',
-    'https://drb.futuresearch.ai/', 'https://deepresearch-bench.github.io/',
-    'https://artificialanalysis.ai/models'
+    'https://deepswe.datacurve.ai/', 'https://artificialanalysis.ai/models'
 )) {
     Assert-Contains $skill $source "SKILL.md retains benchmark source: $source"
 }
+Assert-Contains $skill 'its results are a proxy' 'SKILL.md labels research routing evidence as a proxy'
 
 $removedPaths = @(
     'model-policy.json', 'modes/execution.md', 'modes/repo-research.md', 'modes/web-research.md',

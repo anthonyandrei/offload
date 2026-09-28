@@ -25,7 +25,7 @@ Implementation uses an isolated disposable worktree or project copy. Repository 
 
 ## Repository layout
 
-- [SKILL.md](SKILL.md) is the active delegation contract and contains the advisory benchmark sources.
+- [SKILL.md](SKILL.md) is the active delegation contract and names DeepSWE for implementation and Artificial Analysis for other work. Artificial Analysis is only a proxy for web research and citation quality.
 - [Execution scope](scripts/check-execution-scope.sh) and [execution workspace](scripts/execution-workspace.sh) helpers retain generic implementation safety.
 - [Research workspace](scripts/make-research-workspace.sh) and [research cleanup](scripts/cleanup-research-workspace.sh) helpers retain bounded disposable snapshots.
 - The tests under [tests](tests) check the contract, isolation, scope, cleanup, failure fallback, and repository consistency.

@@ -65,11 +65,12 @@ foreach ($link in @('scripts/check-execution-scope.sh', 'scripts/execution-works
 }
 
 foreach ($source in @(
-    'https://deepswe.datacurve.ai/', 'https://livebench.ai/',
-    'https://drb.futuresearch.ai/', 'https://deepresearch-bench.github.io/',
-    'https://artificialanalysis.ai/models'
+    'https://deepswe.datacurve.ai/', 'https://artificialanalysis.ai/models'
 )) {
     Assert-True $skill.Contains($source) "SKILL.md retains benchmark source: $source"
+}
+foreach ($source in @('https://livebench.ai/', 'https://drb.futuresearch.ai/', 'https://deepresearch-bench.github.io/')) {
+    Assert-False $skill.Contains($source) "SKILL.md omits old benchmark source: $source"
 }
 
 foreach ($stale in @('CONTEXT.md', 'docs/adr/', 'docs/research/')) {

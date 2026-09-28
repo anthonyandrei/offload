@@ -69,10 +69,7 @@ If cleanup fails, preserve the usable result and report a prominent cleanup warn
 ## Advisory benchmark references
 
 - Coding and implementation: [DeepSWE](https://deepswe.datacurve.ai/) reports software-engineering success, effort, token use, steps, and benchmark cost under a common mini-swe-agent harness. Treat it as advisory because the harness differs from native worker CLIs.
-- General non-coding work: [LiveBench](https://livebench.ai/) provides objective, category-level evaluation for reasoning, data analysis, language, and instruction following. Use the relevant category rather than its overall score.
-- Multi-step web research: [FutureSearch Deep Research Bench](https://drb.futuresearch.ai/) compares research configurations by accuracy, cost, and estimated runtime. Its [paper](https://arxiv.org/abs/2506.06287) documents the benchmark and research harness.
-- Citation-heavy research reports: [DeepResearch Bench](https://deepresearch-bench.github.io/) evaluates report quality and citation support. Scores apply to complete research systems and should not be transferred automatically to their base models.
-- Optional cost and speed context: [Artificial Analysis](https://artificialanalysis.ai/models) provides cross-vendor quality, price, speed, and latency information with a documented [data API](https://artificialanalysis.ai/data-api). It remains optional because its composite methodology and API access introduce their own constraints.
+- Other work, including research: [Artificial Analysis](https://artificialanalysis.ai/models) provides model quality, price, speed, and latency comparisons. Use the most relevant evaluation rather than assuming its overall intelligence score measures every task. For web research and citation-heavy reports, its results are a proxy, not a direct test of source finding or citation support. State that limitation in the routing report and check the worker's sources and citations before acceptance.
 
 Human-preference leaderboards can serve as subjective tie-breakers, but preference is not a substitute for correctness. Tool-use benchmarks are useful only when function calling is central to the assignment.
 
